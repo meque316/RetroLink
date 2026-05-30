@@ -1,8 +1,16 @@
 {
   "name": "retrolink",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev:server": "cd server && npm run dev",
-    "dev:client": "cd client && npm run dev"
+    "dev:client": "cd client && npm run dev",
+    "electron": "electron ."
+  },
+  "dependencies": {
+    "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "electron": "^42.3.0"
   }
 }
