@@ -6,10 +6,11 @@ const {
 } = require("electron");
 
 const path = require("path");
-const {
-  execFile,
-} = require("child_process");
+const { execFile } = require("child_process");
 
+/*
+CREATE WINDOW
+*/
 function createWindow() {
   const win = new BrowserWindow({
     width: 1400,
@@ -31,12 +32,15 @@ function createWindow() {
   );
 }
 
+/*
+APP READY
+*/
 app.whenReady().then(() => {
   createWindow();
 
   app.on(
     "activate",
-    function () {
+    () => {
       if (
         BrowserWindow.getAllWindows()
           .length === 0
@@ -47,9 +51,12 @@ app.whenReady().then(() => {
   );
 });
 
+/*
+CLOSE APP
+*/
 app.on(
   "window-all-closed",
-  function () {
+  () => {
     if (
       process.platform !==
       "darwin"
@@ -61,6 +68,7 @@ app.on(
 
 /*
 SELECT GAME EXE
+Lets user choose quake3.exe
 */
 ipcMain.handle(
   "select-game-exe",
@@ -95,6 +103,9 @@ ipcMain.handle(
 
 /*
 LAUNCH GAME
+Important:
+Quake must run from its own folder
+so it can find /baseq3 and pak0.pk3
 */
 ipcMain.handle(
   "launch-game",
@@ -108,8 +119,23 @@ ipcMain.handle(
     }
 
     try {
+      /*
+      Example:
+      gamePath:
+      C:\Users\Capitan Meque\Desktop\Quake 3 Arena\quake3.exe
+
+      gameDir becomes:
+      C:\Users\Capitan Meque\Desktop\Quake 3 Arena
+      */
+      const gameDir =
+        path.dirname(gamePath);
+
       execFile(
         gamePath,
+        [],
+        {
+          cwd: gameDir,
+        },
         (error) => {
           if (error) {
             console.error(
@@ -131,7 +157,8 @@ ipcMain.handle(
 
       return {
         success: false,
-        error: error.message,
+        error:
+          error.message,
       };
     }
   }
