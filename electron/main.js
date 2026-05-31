@@ -9,6 +9,17 @@ const path = require("path");
 const { execFile } = require("child_process");
 
 /*
+Detect environment
+
+Development:
+Loads Vite server
+
+Production:
+Loads built frontend files
+*/
+const isDev = !app.isPackaged;
+
+/*
 CREATE WINDOW
 */
 function createWindow() {
@@ -27,9 +38,28 @@ function createWindow() {
     },
   });
 
-  win.loadURL(
-    "http://localhost:5173"
-  );
+  /*
+  DEVELOPMENT
+  */
+  if (isDev) {
+    win.loadURL(
+      "http://localhost:5173"
+    );
+  }
+
+  /*
+  PRODUCTION
+  */
+  else {
+    const indexPath = path.join(
+      app.getAppPath(),
+      "client",
+      "dist",
+      "index.html"
+    );
+
+    win.loadFile(indexPath);
+  }
 }
 
 /*
@@ -103,9 +133,7 @@ ipcMain.handle(
 
 /*
 LAUNCH GAME
-Important:
-Quake must run from its own folder
-so it can find /baseq3 and pak0.pk3
+Runs Quake from its own folder
 */
 ipcMain.handle(
   "launch-game",
@@ -119,14 +147,6 @@ ipcMain.handle(
     }
 
     try {
-      /*
-      Example:
-      gamePath:
-      C:\Users\Capitan Meque\Desktop\Quake 3 Arena\quake3.exe
-
-      gameDir becomes:
-      C:\Users\Capitan Meque\Desktop\Quake 3 Arena
-      */
       const gameDir =
         path.dirname(gamePath);
 
