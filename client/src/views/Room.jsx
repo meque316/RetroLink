@@ -1,6 +1,13 @@
 import React, { useEffect, useState } from "react";
 import socket from "../socket";
-import { Crown, Users, Play, LogOut, Wifi, WifiOff, ShieldCheck, ShieldAlert } from "lucide-react";
+import {
+  Crown,
+  Play,
+  LogOut,
+  ShieldCheck,
+  ShieldAlert,
+  Radio,
+} from "lucide-react";
 
 function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
@@ -8,28 +15,29 @@ function Room({ room, leaveRoom }) {
   const [gamePath, setGamePath] = useState("");
 
   /*
-  P2P STATE
-  */
-  const [peerConnected, setPeerConnected] = useState(false);
-  const [ping, setPing] = useState(null);
-
-  /*
   PORT STATE
   */
   const [portStatus, setPortStatus] = useState(null);
-  // null = checking, { portAvailable, upnpSuccess, port } = result
+
+  /*
+  RELAY STATE
+  null     = conectando
+  "ok"     = conectado al relay
+  "error"  = falló la conexión
+  */
+  const [relayStatus, setRelayStatus] = useState(null);
 
   const isHost = currentRoom?.host === socket.id;
   const isReady = readyPlayers.includes(socket.id);
 
   /*
-  PREPARE HOST — verifica y abre puerto al entrar como host
+  PREPARE HOST — verifica puerto y abre via UPnP
   */
   useEffect(() => {
     if (!isHost) return;
 
     const prepare = async () => {
-      setPortStatus(null); // checking
+      setPortStatus(null);
       const result = await window.retroLink?.prepareHost(27960);
       setPortStatus(result);
       console.log("[RetroLink] Host port status:", result);
@@ -37,11 +45,28 @@ function Room({ room, leaveRoom }) {
 
     prepare();
 
-    // Libera el puerto UPnP al desmontar
     return () => {
       window.retroLink?.closeHostPort(27960);
     };
   }, [isHost]);
+
+  /*
+  START RELAY — se conecta al relay al entrar a la sala
+  */
+  useEffect(() => {
+    const startRelay = async () => {
+      setRelayStatus(null); // conectando
+      const result = await window.retroLink?.startRelay(room.id, isHost);
+      setRelayStatus(result?.success ? "ok" : "error");
+      console.log("[RetroLink] Relay status:", result);
+    };
+
+    startRelay();
+
+    return () => {
+      window.retroLink?.stopRelay();
+    };
+  }, [room.id, isHost]);
 
   /*
   SOCKET EVENTS
@@ -67,31 +92,29 @@ function Room({ room, leaveRoom }) {
         return;
       }
 
-      const hostIp = isHost ? null : data?.hostPublicIp ?? null;
-      await window.retroLink?.launchGame(gamePath, hostIp);
+      /*
+      Con el relay activo, el cliente se conecta a 127.0.0.1
+      en vez de la IP pública del host — el bridge se encarga
+      de retransmitir via relay
+      */
+      const connectStr = isHost ? null : "127.0.0.1:27961";
+      await window.retroLink?.launchGame(gamePath, connectStr);
     };
 
     const handleMatchError = (error) => {
       alert(error.message);
     };
 
-    const handleP2PStatus = (data) => {
-      setPeerConnected(data.connected);
-      if (data.ping) setPing(data.ping);
-    };
-
     socket.on("rooms-list", handleRoomsList);
     socket.on("room-ready-state", handleReadyState);
     socket.on("match-started", handleMatchStarted);
     socket.on("match-error", handleMatchError);
-    socket.on("p2p-status", handleP2PStatus);
 
     return () => {
       socket.off("rooms-list", handleRoomsList);
       socket.off("room-ready-state", handleReadyState);
       socket.off("match-started", handleMatchStarted);
       socket.off("match-error", handleMatchError);
-      socket.off("p2p-status", handleP2PStatus);
     };
   }, [room.id, leaveRoom, gamePath, isHost]);
 
@@ -118,34 +141,61 @@ function Room({ room, leaveRoom }) {
   };
 
   /*
+  RELAY STATUS BANNER
+  */
+  const renderRelayStatus = () => {
+    if (relayStatus === null) {
+      return (
+        <div className="flex items-center gap-3 bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-3 mb-4 text-sm text-zinc-400">
+          <Radio size={15} className="animate-pulse" />
+          Connecting to relay...
+        </div>
+      );
+    }
+
+    if (relayStatus === "ok") {
+      return (
+        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3 mb-4 text-sm text-green-400">
+          <Radio size={15} />
+          Relay connected — no port forwarding needed
+        </div>
+      );
+    }
+
+    return (
+      <div className="flex items-center gap-3 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 mb-4 text-sm text-red-400">
+        <Radio size={15} />
+        Relay connection failed — check your internet connection
+      </div>
+    );
+  };
+
+  /*
   PORT STATUS BANNER — solo visible para el host
   */
   const renderPortStatus = () => {
     if (!isHost) return null;
 
-    // Checking
     if (portStatus === null) {
       return (
-        <div className="flex items-center gap-3 bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-3 mb-6 text-sm text-zinc-400">
+        <div className="flex items-center gap-3 bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-3 mb-4 text-sm text-zinc-400">
           <div className="w-2 h-2 rounded-full bg-zinc-400 animate-pulse" />
           Checking port 27960...
         </div>
       );
     }
 
-    // UPnP abrió el puerto — todo OK
     if (portStatus.upnpSuccess) {
       return (
-        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3 mb-6 text-sm text-green-400">
+        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3 mb-4 text-sm text-green-400">
           <ShieldCheck size={16} />
           Port 27960 opened automatically — ready to host
         </div>
       );
     }
 
-    // UPnP falló — aviso manual
     return (
-      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 mb-6 text-sm">
+      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 mb-4 text-sm">
         <div className="flex items-center gap-2 text-yellow-400 font-medium mb-1">
           <ShieldAlert size={16} />
           Port forwarding required
@@ -167,16 +217,7 @@ function Room({ room, leaveRoom }) {
         <div className="flex justify-between items-start mb-8">
           <div>
             <h1 className="text-3xl font-bold">{currentRoom?.name}</h1>
-
             <p className="text-zinc-400 mt-2">Waiting for players...</p>
-
-            <div className="flex items-center gap-3 mt-3">
-              <div className={`w-3 h-3 rounded-full ${peerConnected ? "bg-green-500" : "bg-red-500"}`} />
-              <span className="text-sm text-zinc-400">
-                {peerConnected ? "P2P Connected" : "P2P Not Connected"}
-              </span>
-              {ping && <span className="text-sm text-zinc-500">{ping} ms</span>}
-            </div>
           </div>
 
           <button
@@ -187,6 +228,9 @@ function Room({ room, leaveRoom }) {
             Leave
           </button>
         </div>
+
+        {/* RELAY STATUS BANNER */}
+        {renderRelayStatus()}
 
         {/* PORT STATUS BANNER */}
         {renderPortStatus()}
@@ -277,3 +321,5 @@ function Room({ room, leaveRoom }) {
 }
 
 export default Room;
+
+

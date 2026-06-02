@@ -9,6 +9,7 @@ const path = require("path");
 const { exec, execFile } = require("child_process");
 const dgram = require("dgram");
 const natUpnp = require("nat-upnp");
+const { io: socketClient } = require("socket.io-client");
 
 /*
 Detect environment
@@ -17,7 +18,6 @@ const isDev = !app.isPackaged;
 
 /*
 WINDOWS FIREWALL
-Adds app/game to firewall exceptions
 */
 function allowAppThroughFirewall(programPath, ruleName) {
   if (!programPath) return;
@@ -40,7 +40,6 @@ function allowAppThroughFirewall(programPath, ruleName) {
 
 /*
 CHECK PORT
-Verifica si el puerto UDP está disponible localmente
 */
 function checkPortAvailable(port) {
   return new Promise((resolve) => {
@@ -59,7 +58,6 @@ function checkPortAvailable(port) {
 
 /*
 UPNP PORT MAPPING
-Intenta abrir el puerto en el router via UPnP
 */
 function openPortUPnP(port) {
   return new Promise((resolve) => {
@@ -89,7 +87,6 @@ function openPortUPnP(port) {
 
 /*
 CLOSE UPNP PORT MAPPING
-Cierra el puerto UPnP al salir de la sala
 */
 function closePortUPnP(port) {
   return new Promise((resolve) => {
@@ -108,6 +105,68 @@ function closePortUPnP(port) {
       }
     );
   });
+}
+
+/*
+UDP ↔ WEBSOCKET BRIDGE
+*/
+let relaySocket = null;
+let udpSocket = null;
+let currentRoomId = null;
+
+function startUDPBridge(roomId, isHost) {
+  currentRoomId = roomId;
+
+  // Conectar al relay en Fly.io
+  relaySocket = socketClient("https://retrolink-relay.fly.dev");
+
+  relaySocket.on("connect", () => {
+    console.log("[Relay] Connected:", relaySocket.id);
+    relaySocket.emit("join-relay", roomId);
+  });
+
+  // Crear socket UDP local
+  udpSocket = dgram.createSocket("udp4");
+
+  const localPort = isHost ? 27960 : 27961;
+
+  udpSocket.bind(localPort, "127.0.0.1", () => {
+    console.log(`[UDP Bridge] Listening on 127.0.0.1:${localPort}`);
+  });
+
+  // UDP → WebSocket (paquetes del juego → relay)
+  udpSocket.on("message", (msg) => {
+    if (relaySocket?.connected) {
+      relaySocket.emit("game-packet", {
+        roomId,
+        data: msg.toString("base64"),
+      });
+    }
+  });
+
+  // WebSocket → UDP (paquetes del relay → juego local)
+  relaySocket.on("game-packet", ({ from, data }) => {
+    const buffer = Buffer.from(data, "base64");
+    const targetPort = isHost ? 27960 : 27961;
+    udpSocket.send(buffer, 0, buffer.length, targetPort, "127.0.0.1");
+  });
+
+  relaySocket.on("disconnect", () => {
+    console.log("[Relay] Disconnected");
+  });
+}
+
+function stopUDPBridge() {
+  if (relaySocket) {
+    relaySocket.disconnect();
+    relaySocket = null;
+  }
+  if (udpSocket) {
+    udpSocket.close();
+    udpSocket = null;
+  }
+  currentRoomId = null;
+  console.log("[UDP Bridge] Stopped");
 }
 
 /*
@@ -160,6 +219,7 @@ app.whenReady().then(() => {
 CLOSE APP
 */
 app.on("window-all-closed", () => {
+  stopUDPBridge(); // limpia el bridge al cerrar
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -180,22 +240,15 @@ ipcMain.handle("select-game-exe", async () => {
 
 /*
 PREPARE HOST
-1. Verifica si el puerto está disponible localmente
-2. Abre el puerto en el firewall de Windows
-3. Intenta abrir el puerto en el router via UPnP
-Retorna el estado para mostrarlo en la UI
 */
 ipcMain.handle("prepare-host", async (_, port = 27960) => {
   console.log(`[RetroLink] Preparing host on port ${port}...`);
 
-  // 1. Verificar puerto local
   const portAvailable = await checkPortAvailable(port);
   console.log(`[RetroLink] Port ${port} available locally:`, portAvailable);
 
-  // 2. Abrir en firewall de Windows
   allowAppThroughFirewall(process.execPath, "RetroLink Game Host");
 
-  // 3. Intentar UPnP
   const upnp = await openPortUPnP(port);
 
   return {
@@ -207,7 +260,6 @@ ipcMain.handle("prepare-host", async (_, port = 27960) => {
 
 /*
 CLOSE HOST PORT
-Libera el puerto UPnP al salir de la sala
 */
 ipcMain.handle("close-host-port", async (_, port = 27960) => {
   await closePortUPnP(port);
@@ -215,9 +267,32 @@ ipcMain.handle("close-host-port", async (_, port = 27960) => {
 });
 
 /*
+START RELAY BRIDGE
+Inicia el puente UDP ↔ WebSocket para el juego
+*/
+ipcMain.handle("start-relay", async (_, roomId, isHost) => {
+  try {
+    stopUDPBridge();
+    startUDPBridge(roomId, isHost);
+    return { success: true };
+  } catch (error) {
+    console.error("[Relay] Error starting bridge:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/*
+STOP RELAY BRIDGE
+*/
+ipcMain.handle("stop-relay", async () => {
+  stopUDPBridge();
+  return { success: true };
+});
+
+/*
 LAUNCH GAME
-- hostIp null  → es el host, abre el juego normal
-- hostIp string → es cliente, conecta con +connect IP:puerto
+- hostIp null   → host, abre el juego normal
+- hostIp string → cliente, conecta con +connect IP:puerto
 */
 ipcMain.handle("launch-game", async (_, gamePath, hostIp = null) => {
   if (!gamePath) {
@@ -229,7 +304,7 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null) => {
 
     allowAppThroughFirewall(gamePath, "RetroLink - Game");
 
-    const args = hostIp ? ["+connect", `${hostIp}:27960`] : [];
+    const args = hostIp ? ["+connect", hostIp] : [];
 
     console.log(
       hostIp
