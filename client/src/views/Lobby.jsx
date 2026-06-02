@@ -1,11 +1,6 @@
-import React, {
-  useEffect,
-  useState,
-} from "react";
-
+import React, { useEffect, useState } from "react";
 import socket, { connectSocket } from "../socket";
 import Room from "./Room";
-
 import {
   Users,
   Wifi,
@@ -13,27 +8,23 @@ import {
   Crown,
   Gamepad2,
   LogOut,
+  Camera,
 } from "lucide-react";
 
+const CLOUDINARY_CLOUD_NAME = "davmgvs7u";
+const CLOUDINARY_UPLOAD_PRESET = "retrolink_avatars";
+
 function Lobby() {
-  const [rooms, setRooms] =
-    useState([]);
-
-  const [onlineUsers, setOnlineUsers] =
-    useState([]);
-
-  const [currentUser, setCurrentUser] =
-    useState(null);
-
-  const [currentRoom, setCurrentRoom] =
-    useState(null);
+  const [rooms, setRooms] = useState([]);
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [currentRoom, setCurrentRoom] = useState(null);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   useEffect(() => {
-    // Reconecta el socket con las credenciales frescas del localStorage
     connectSocket();
 
     const savedUser = localStorage.getItem("user");
-
     if (savedUser) {
       try {
         const parsedUser = JSON.parse(savedUser);
@@ -45,21 +36,14 @@ function Lobby() {
 
     const handleRoomsList = (updatedRooms) => {
       setRooms(updatedRooms);
-
       setCurrentRoom((prevRoom) => {
         if (!prevRoom) return null;
-
-        const updatedRoom = updatedRooms.find(
-          (room) => room.id === prevRoom.id
-        );
-
+        const updatedRoom = updatedRooms.find((room) => room.id === prevRoom.id);
         return updatedRoom || null;
       });
     };
 
-    const handleUsersOnline = (users) => {
-      setOnlineUsers(users);
-    };
+    const handleUsersOnline = (users) => setOnlineUsers(users);
 
     socket.on("rooms-list", handleRoomsList);
     socket.on("users-online", handleUsersOnline);
@@ -96,9 +80,7 @@ function Lobby() {
   };
 
   const leaveRoom = () => {
-    if (currentRoom) {
-      socket.emit("leave-room", currentRoom.id);
-    }
+    if (currentRoom) socket.emit("leave-room", currentRoom.id);
     setCurrentRoom(null);
   };
 
@@ -107,6 +89,81 @@ function Lobby() {
     localStorage.removeItem("user");
     socket.disconnect();
     window.location.reload();
+  };
+
+  /*
+  UPLOAD AVATAR
+  1. Sube la imagen a Cloudinary
+  2. Guarda la URL en el servidor
+  3. Actualiza el localStorage y el estado
+  */
+  const handleAvatarUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setUploadingAvatar(true);
+
+    try {
+      // 1. Subir a Cloudinary
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
+
+      const cloudRes = await fetch(
+        `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+        { method: "POST", body: formData }
+      );
+
+      const cloudData = await cloudRes.json();
+      const avatarUrl = cloudData.secure_url;
+
+      // 2. Guardar URL en el servidor
+      const token = localStorage.getItem("token");
+      await fetch("https://retrolink-server.onrender.com/api/user/avatar", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ avatarUrl }),
+      });
+
+      // 3. Actualizar localStorage y estado
+      const updatedUser = { ...currentUser, avatar: avatarUrl };
+      localStorage.setItem("user", JSON.stringify(updatedUser));
+      setCurrentUser(updatedUser);
+    } catch (error) {
+      console.error("Error uploading avatar:", error);
+      alert("Error al subir el avatar");
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  /*
+  AVATAR — muestra imagen o inicial
+  */
+  const Avatar = ({ user, size = "md" }) => {
+    const dimensions = size === "md" ? "w-12 h-12 text-lg" : "w-10 h-10 text-sm";
+    const isAdmin = user.role === "ADMIN";
+
+    if (user.avatar) {
+      return (
+        <img
+          src={user.avatar}
+          alt={user.username}
+          className={`${dimensions} rounded-full object-cover`}
+        />
+      );
+    }
+
+    return (
+      <div className={`${dimensions} rounded-full flex items-center justify-center font-bold ${
+        isAdmin ? "bg-yellow-500/10 text-yellow-400" : "bg-green-500/10 text-green-400"
+      }`}>
+        {user.username?.charAt(0)?.toUpperCase()}
+      </div>
+    );
   };
 
   if (currentRoom) {
@@ -126,11 +183,9 @@ function Lobby() {
           <button className="w-full text-left px-4 py-3 rounded-xl bg-green-500/10 text-green-400">
             Lobby
           </button>
-
           <button className="w-full text-left px-4 py-3 rounded-xl hover:bg-zinc-800 transition">
             Library
           </button>
-
           <button className="w-full text-left px-4 py-3 rounded-xl hover:bg-zinc-800 transition">
             Friends
           </button>
@@ -152,10 +207,7 @@ function Lobby() {
       <main className="flex-1 p-8 overflow-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h2 className="text-3xl font-semibold">
-              Game Rooms
-            </h2>
-
+            <h2 className="text-3xl font-semibold">Game Rooms</h2>
             <p className="text-zinc-400 mt-1">
               Join or host retro multiplayer sessions
             </p>
@@ -188,9 +240,7 @@ function Lobby() {
                   </div>
 
                   <div>
-                    <h3 className="text-xl font-semibold">
-                      {room.name}
-                    </h3>
+                    <h3 className="text-xl font-semibold">{room.name}</h3>
 
                     <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
                       {room.game}
@@ -201,7 +251,6 @@ function Lobby() {
                         <Users size={16} />
                         {room.players} player(s)
                       </div>
-
                       <div className="flex items-center gap-2">
                         <Wifi size={16} />
                         P2P Ready
@@ -229,19 +278,34 @@ function Lobby() {
         {currentUser && (
           <div className="mb-8 bg-[#121821] rounded-2xl p-4 border border-zinc-800">
             <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center text-green-400 font-bold text-lg">
-                {currentUser.username?.charAt(0)?.toUpperCase()}
+
+              {/* AVATAR CON BOTON DE UPLOAD */}
+              <div className="relative group">
+                <Avatar user={currentUser} size="md" />
+
+                <label className={`absolute inset-0 rounded-full flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition cursor-pointer ${uploadingAvatar ? "opacity-100" : ""}`}>
+                  {uploadingAvatar ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Camera size={14} className="text-white" />
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleAvatarUpload}
+                    disabled={uploadingAvatar}
+                  />
+                </label>
               </div>
 
               <div>
                 <p className="font-semibold flex items-center gap-2">
                   {currentUser.username}
-
                   {currentUser.role === "ADMIN" && (
                     <Crown size={16} className="text-yellow-400" />
                   )}
                 </p>
-
                 <p className="text-sm text-zinc-400 capitalize">
                   {currentUser.role?.toLowerCase()}
                 </p>
@@ -256,9 +320,7 @@ function Lobby() {
 
         <div className="space-y-4">
           {onlineUsers.length === 0 ? (
-            <p className="text-zinc-500 text-sm">
-              No users online
-            </p>
+            <p className="text-zinc-500 text-sm">No users online</p>
           ) : (
             onlineUsers.map((user, index) => {
               const isAdmin = user.role === "ADMIN";
@@ -267,16 +329,13 @@ function Lobby() {
                   key={index}
                   className="flex items-center gap-3 bg-[#121821] rounded-xl px-4 py-3"
                 >
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${isAdmin ? "bg-yellow-500/10 text-yellow-400" : "bg-green-500/10 text-green-400"}`}>
-                    {user.username?.charAt(0)?.toUpperCase()}
-                  </div>
+                  <Avatar user={user} size="sm" />
 
                   <div className="flex-1">
                     <p className={`font-medium flex items-center gap-1 ${isAdmin ? "text-yellow-400" : "text-white"}`}>
                       {user.username}
                       {isAdmin && <Crown size={13} className="text-yellow-400" />}
                     </p>
-
                     <p className="text-xs text-zinc-400 capitalize">
                       {user.role?.toLowerCase()}
                     </p>
@@ -294,4 +353,5 @@ function Lobby() {
 }
 
 export default Lobby;
+
 
