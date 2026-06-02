@@ -15,7 +15,7 @@ export function AppProvider({ children }) {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const socketInstance = io("http://localhost:4000");
+    const socketInstance = io("https://retrolink-server.onrender.com");
 
     socketInstance.on("connect", () => {
       console.log("Socket conectado:", socketInstance.id);

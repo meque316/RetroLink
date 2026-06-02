@@ -27,7 +27,7 @@ function Register({ goToLogin }) {
     try {
       const response =
         await fetch(
-          "http://localhost:4000/api/auth/register",
+          "https://retrolink-server.onrender.com/api/auth/register",
           {
             method: "POST",
             headers: {
