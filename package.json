@@ -13,7 +13,8 @@
     "build": "npm run build:client && electron-builder"
   },
   "dependencies": {
-    "nat-upnp": "^1.1.1"
+    "nat-upnp": "^1.1.1",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "electron": "^42.3.0",

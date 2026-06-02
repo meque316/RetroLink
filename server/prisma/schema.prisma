@@ -13,5 +13,6 @@ model User {
   username  String   @unique
   password  String
   role      String   @default("USER")
+  avatar    String?  @default("")
   createdAt DateTime @default(now())
 }
