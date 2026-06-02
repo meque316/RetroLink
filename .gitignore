@@ -1,7 +1,26 @@
+# Dependencies
 node_modules/
+client/node_modules/
+server/node_modules/
+
+# Environment — IMPORTANTE: nunca subir credenciales
 .env
 .env.local
+server/.env
+client/.env
+
+# Build output
 dist/
-coverage/
+client/dist/
+
+# Logs
 npm-debug.log*
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+coverage/
 *.rar

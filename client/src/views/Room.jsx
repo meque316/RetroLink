@@ -1,21 +1,47 @@
 import React, { useEffect, useState } from "react";
 import socket from "../socket";
-import {
-  Crown,
-  Users,
-  Play,
-  LogOut,
-} from "lucide-react";
+import { Crown, Users, Play, LogOut, Wifi, WifiOff, ShieldCheck, ShieldAlert } from "lucide-react";
 
 function Room({ room, leaveRoom }) {
-  const [currentRoom, setCurrentRoom] =
-    useState(room);
+  const [currentRoom, setCurrentRoom] = useState(room);
+  const [readyPlayers, setReadyPlayers] = useState([]);
+  const [gamePath, setGamePath] = useState("");
 
-  const [readyPlayers, setReadyPlayers] =
-    useState([]);
+  /*
+  P2P STATE
+  */
+  const [peerConnected, setPeerConnected] = useState(false);
+  const [ping, setPing] = useState(null);
 
-  const [gamePath, setGamePath] =
-    useState("");
+  /*
+  PORT STATE
+  */
+  const [portStatus, setPortStatus] = useState(null);
+  // null = checking, { portAvailable, upnpSuccess, port } = result
+
+  const isHost = currentRoom?.host === socket.id;
+  const isReady = readyPlayers.includes(socket.id);
+
+  /*
+  PREPARE HOST — verifica y abre puerto al entrar como host
+  */
+  useEffect(() => {
+    if (!isHost) return;
+
+    const prepare = async () => {
+      setPortStatus(null); // checking
+      const result = await window.retroLink?.prepareHost(27960);
+      setPortStatus(result);
+      console.log("[RetroLink] Host port status:", result);
+    };
+
+    prepare();
+
+    // Libera el puerto UPnP al desmontar
+    return () => {
+      window.retroLink?.closeHostPort(27960);
+    };
+  }, [isHost]);
 
   /*
   SOCKET EVENTS
@@ -24,157 +50,133 @@ function Room({ room, leaveRoom }) {
     socket.emit("get-rooms");
 
     const handleRoomsList = (rooms) => {
-      const updatedRoom = rooms.find(
-        (r) => r.id === room.id
-      );
-
-      if (!updatedRoom) {
-        leaveRoom();
-        return;
-      }
-
+      const updatedRoom = rooms.find((r) => r.id === room.id);
+      if (!updatedRoom) { leaveRoom(); return; }
       setCurrentRoom(updatedRoom);
     };
 
-    const handleReadyState = (
-      playersReady
-    ) => {
+    const handleReadyState = (playersReady) => {
       setReadyPlayers(playersReady);
     };
 
-    const handleMatchStarted =
-  async () => {
-    console.log(
-      "La partida comenzó 🚀"
-    );
+    const handleMatchStarted = async (data) => {
+      console.log("La partida comenzó 🚀", data);
 
-    if (!gamePath) return;
+      if (!gamePath) {
+        console.warn("No game path selected");
+        return;
+      }
 
-    try {
-      await window.retroLink.launchGame(
-        gamePath
-      );
-    } catch (error) {
-      console.error(
-        "Error launching game:",
-        error
-      );
-    }
-  };
+      const hostIp = isHost ? null : data?.hostPublicIp ?? null;
+      await window.retroLink?.launchGame(gamePath, hostIp);
+    };
 
-    const handleMatchError = (
-      error
-    ) => {
+    const handleMatchError = (error) => {
       alert(error.message);
     };
 
-    socket.on(
-      "rooms-list",
-      handleRoomsList
-    );
+    const handleP2PStatus = (data) => {
+      setPeerConnected(data.connected);
+      if (data.ping) setPing(data.ping);
+    };
 
-    socket.on(
-      "room-ready-state",
-      handleReadyState
-    );
-
-    socket.on(
-      "match-started",
-      handleMatchStarted
-    );
-
-    socket.on(
-      "match-error",
-      handleMatchError
-    );
+    socket.on("rooms-list", handleRoomsList);
+    socket.on("room-ready-state", handleReadyState);
+    socket.on("match-started", handleMatchStarted);
+    socket.on("match-error", handleMatchError);
+    socket.on("p2p-status", handleP2PStatus);
 
     return () => {
-      socket.off(
-        "rooms-list",
-        handleRoomsList
-      );
-
-      socket.off(
-        "room-ready-state",
-        handleReadyState
-      );
-
-      socket.off(
-        "match-started",
-        handleMatchStarted
-      );
-
-      socket.off(
-        "match-error",
-        handleMatchError
-      );
+      socket.off("rooms-list", handleRoomsList);
+      socket.off("room-ready-state", handleReadyState);
+      socket.off("match-started", handleMatchStarted);
+      socket.off("match-error", handleMatchError);
+      socket.off("p2p-status", handleP2PStatus);
     };
-  }, [room.id, leaveRoom]);
+  }, [room.id, leaveRoom, gamePath, isHost]);
 
-  /*
-  BROWSE GAME EXE
-  */
-  const handleBrowseGame =
-    async () => {
-      try {
-        const selectedPath =
-          await window.retroLink?.selectGameExe();
-
-        if (selectedPath) {
-          setGamePath(
-            selectedPath
-          );
-        }
-      } catch (error) {
-        console.error(
-          "Error selecting exe:",
-          error
-        );
-      }
-    };
+  const handleBrowseGame = async () => {
+    try {
+      const selectedPath = await window.retroLink?.selectGameExe();
+      if (selectedPath) setGamePath(selectedPath);
+    } catch (error) {
+      console.error("Error selecting exe:", error);
+    }
+  };
 
   const handleLeave = () => {
-    socket.emit(
-      "leave-room",
-      room.id
-    );
-
+    socket.emit("leave-room", room.id);
     leaveRoom();
   };
 
   const toggleReady = () => {
-    socket.emit(
-      "toggle-ready",
-      room.id
-    );
+    socket.emit("toggle-ready", room.id);
   };
 
   const startMatch = () => {
-    socket.emit(
-      "start-match",
-      room.id
-    );
+    socket.emit("start-match", room.id);
   };
 
-  const isHost =
-    currentRoom?.host === socket.id;
+  /*
+  PORT STATUS BANNER — solo visible para el host
+  */
+  const renderPortStatus = () => {
+    if (!isHost) return null;
 
-  const isReady =
-    readyPlayers.includes(socket.id);
+    // Checking
+    if (portStatus === null) {
+      return (
+        <div className="flex items-center gap-3 bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-3 mb-6 text-sm text-zinc-400">
+          <div className="w-2 h-2 rounded-full bg-zinc-400 animate-pulse" />
+          Checking port 27960...
+        </div>
+      );
+    }
+
+    // UPnP abrió el puerto — todo OK
+    if (portStatus.upnpSuccess) {
+      return (
+        <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3 mb-6 text-sm text-green-400">
+          <ShieldCheck size={16} />
+          Port 27960 opened automatically — ready to host
+        </div>
+      );
+    }
+
+    // UPnP falló — aviso manual
+    return (
+      <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3 mb-6 text-sm">
+        <div className="flex items-center gap-2 text-yellow-400 font-medium mb-1">
+          <ShieldAlert size={16} />
+          Port forwarding required
+        </div>
+        <p className="text-zinc-400 text-xs leading-relaxed">
+          Your router doesn't support UPnP. To host, open port{" "}
+          <span className="text-yellow-400 font-mono">27960 UDP</span> in your
+          router settings manually, or ask your network admin.
+        </p>
+      </div>
+    );
+  };
 
   return (
     <div className="h-full bg-[#0b0f14] text-white flex items-center justify-center p-8">
       <div className="w-full max-w-3xl bg-[#121821] rounded-3xl border border-zinc-800 p-8">
 
+        {/* HEADER */}
         <div className="flex justify-between items-start mb-8">
           <div>
-            <h1 className="text-3xl font-bold">
-              {currentRoom?.name}
-            </h1>
+            <h1 className="text-3xl font-bold">{currentRoom?.name}</h1>
 
-            <p className="text-zinc-400 mt-2">
-              Waiting for players...
-            </p>
+            <p className="text-zinc-400 mt-2">Waiting for players...</p>
+
+            <div className="flex items-center gap-3 mt-3">
+              <div className={`w-3 h-3 rounded-full ${peerConnected ? "bg-green-500" : "bg-red-500"}`} />
+              <span className="text-sm text-zinc-400">
+                {peerConnected ? "P2P Connected" : "P2P Not Connected"}
+              </span>
+              {ping && <span className="text-sm text-zinc-500">{ping} ms</span>}
+            </div>
           </div>
 
           <button
@@ -186,73 +188,50 @@ function Room({ room, leaveRoom }) {
           </button>
         </div>
 
+        {/* PORT STATUS BANNER */}
+        {renderPortStatus()}
+
+        {/* PLAYERS LIST */}
         <div className="space-y-4 mb-8">
-          {currentRoom?.members?.map(
-            (memberId, index) => {
-              const ready =
-                readyPlayers.includes(
-                  memberId
-                );
+          {currentRoom?.members?.map((member, index) => {
+            const memberId = member.id ?? member;
+            const ready = readyPlayers.includes(memberId);
+            const host = memberId === currentRoom.host;
 
-              const host =
-                memberId ===
-                currentRoom.host;
-
-              return (
-                <div
-                  key={memberId}
-                  className="bg-[#0d1117] rounded-2xl px-5 py-4 flex justify-between items-center"
-                >
-                  <div className="flex items-center gap-3">
-                    <Users size={18} />
-
-                    <span>
-                      Player {index + 1}
-                    </span>
-
-                    {host && (
-                      <Crown
-                        size={16}
-                        className="text-yellow-400"
-                      />
-                    )}
+            return (
+              <div
+                key={memberId}
+                className="bg-[#0d1117] rounded-2xl px-5 py-4 flex justify-between items-center"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-green-500/10 flex items-center justify-center text-green-400 font-bold text-sm">
+                    {member.username?.charAt(0)?.toUpperCase() ?? index + 1}
                   </div>
 
-                  <span
-                    className={`text-sm font-medium ${
-                      ready
-                        ? "text-green-400"
-                        : "text-zinc-500"
-                    }`}
-                  >
-                    {ready
-                      ? "Ready"
-                      : "Not Ready"}
+                  <span className="font-medium">
+                    {member.username ?? `Player ${index + 1}`}
                   </span>
+
+                  {host && <Crown size={15} className="text-yellow-400" />}
                 </div>
-              );
-            }
-          )}
+
+                <span className={`text-sm font-medium ${ready ? "text-green-400" : "text-zinc-500"}`}>
+                  {ready ? "Ready ✓" : "Not Ready"}
+                </span>
+              </div>
+            );
+          })}
         </div>
 
+        {/* GAME PATH */}
         <div className="bg-[#0d1117] rounded-2xl p-5 mb-8 border border-zinc-800">
-          <h2 className="text-lg font-semibold mb-2">
-            Quake III Arena
-          </h2>
-
-          <p className="text-sm text-zinc-400 mb-3">
-            Executable Path
-          </p>
+          <h2 className="text-lg font-semibold mb-2">Quake III Arena</h2>
+          <p className="text-sm text-zinc-400 mb-3">Executable Path</p>
 
           {gamePath ? (
             <>
-              <p className="text-green-400 text-sm break-all mb-2">
-                {gamePath}
-              </p>
-
-              <p className="text-xs text-green-500">
-                ✓ Ready to launch
-              </p>
+              <p className="text-green-400 text-sm break-all mb-2">{gamePath}</p>
+              <p className="text-xs text-green-500">✓ Ready to launch</p>
             </>
           ) : (
             <p className="text-yellow-400 text-sm mb-3">
@@ -268,6 +247,7 @@ function Room({ room, leaveRoom }) {
           </button>
         </div>
 
+        {/* ACTIONS */}
         <div className="flex gap-4">
           <button
             onClick={toggleReady}
@@ -277,9 +257,7 @@ function Room({ room, leaveRoom }) {
                 : "bg-zinc-800 hover:bg-zinc-700"
             }`}
           >
-            {isReady
-              ? "Ready ✓"
-              : "Ready Up"}
+            {isReady ? "Ready ✓" : "Ready Up"}
           </button>
 
           {isHost && (
