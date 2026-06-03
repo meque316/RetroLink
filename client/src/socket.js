@@ -1,7 +1,7 @@
 import { io } from "socket.io-client";
 
 const socket = io("https://retrolink-server.onrender.com", {
-  autoConnect: false, 
+  autoConnect: false,
 });
 
 export const connectSocket = () => {
@@ -12,9 +12,10 @@ export const connectSocket = () => {
     token,
     username: user?.username || "Guest",
     role: user?.role || "USER",
+    avatar: user?.avatar || "", 
   };
 
-  socket.connect(); // ✅ conecta con credenciales frescas
+  socket.connect();
 };
 
 export default socket;

@@ -17,6 +17,8 @@ export default function roomsSocket(io) {
         `Player-${socket.id.slice(0, 5)}`,
       role:
         socket.handshake.auth?.role || "USER",
+      avatar:
+        socket.handshake.auth?.avatar || "",
     };
 
     onlineUsers[socket.id] = user;
