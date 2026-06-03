@@ -9,10 +9,22 @@ import {
   Gamepad2,
   LogOut,
   Camera,
+  X,
 } from "lucide-react";
 
 const CLOUDINARY_CLOUD_NAME = "davmgvs7u";
 const CLOUDINARY_UPLOAD_PRESET = "retrolink_avatars";
+
+const GAMES = [
+  { id: "quake3",   name: "Quake III Arena",        year: "1999" },
+  { id: "quake2",   name: "Quake II",                year: "1997" },
+  { id: "quake1",   name: "Quake",                   year: "1996" },
+  { id: "ut99",     name: "Unreal Tournament",       year: "1999" },
+  { id: "ut2004",   name: "Unreal Tournament 2004",  year: "2004" },
+  { id: "cs16",     name: "Counter-Strike 1.6",      year: "2000" },
+  { id: "hl1",      name: "Half-Life",               year: "1998" },
+  { id: "doom2",    name: "Doom II",                 year: "1994" },
+];
 
 function Lobby() {
   const [rooms, setRooms] = useState([]);
@@ -20,6 +32,13 @@ function Lobby() {
   const [currentUser, setCurrentUser] = useState(null);
   const [currentRoom, setCurrentRoom] = useState(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+
+  /*
+  MODAL STATE
+  */
+  const [showModal, setShowModal] = useState(false);
+  const [roomName, setRoomName] = useState("");
+  const [selectedGame, setSelectedGame] = useState(GAMES[0]);
 
   useEffect(() => {
     connectSocket();
@@ -62,21 +81,29 @@ function Lobby() {
   };
 
   const createRoom = async () => {
+    const name = roomName.trim() || `${currentUser?.username}'s Room`;
+
     try {
       const response = await fetch("https://api.ipify.org?format=json");
       const data = await response.json();
       socket.emit("create-room", {
-        name: "Quake Lobby",
-        game: "Quake 3 Arena",
+        name,
+        game: selectedGame.name,
+        gameId: selectedGame.id,
         hostPublicIp: data.ip,
       });
     } catch {
       socket.emit("create-room", {
-        name: "Quake Lobby",
-        game: "Quake 3 Arena",
+        name,
+        game: selectedGame.name,
+        gameId: selectedGame.id,
         hostPublicIp: null,
       });
     }
+
+    setShowModal(false);
+    setRoomName("");
+    setSelectedGame(GAMES[0]);
   };
 
   const leaveRoom = () => {
@@ -91,12 +118,6 @@ function Lobby() {
     window.location.reload();
   };
 
-  /*
-  UPLOAD AVATAR
-  1. Sube la imagen a Cloudinary
-  2. Guarda la URL en el servidor
-  3. Actualiza el localStorage y el estado
-  */
   const handleAvatarUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -104,7 +125,6 @@ function Lobby() {
     setUploadingAvatar(true);
 
     try {
-      // 1. Subir a Cloudinary
       const formData = new FormData();
       formData.append("file", file);
       formData.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
@@ -117,7 +137,6 @@ function Lobby() {
       const cloudData = await cloudRes.json();
       const avatarUrl = cloudData.secure_url;
 
-      // 2. Guardar URL en el servidor
       const token = localStorage.getItem("token");
       await fetch("https://retrolink-server.onrender.com/api/user/avatar", {
         method: "PUT",
@@ -128,7 +147,6 @@ function Lobby() {
         body: JSON.stringify({ avatarUrl }),
       });
 
-      // 3. Actualizar localStorage y estado
       const updatedUser = { ...currentUser, avatar: avatarUrl };
       localStorage.setItem("user", JSON.stringify(updatedUser));
       setCurrentUser(updatedUser);
@@ -140,9 +158,6 @@ function Lobby() {
     }
   };
 
-  /*
-  AVATAR — muestra imagen o inicial
-  */
   const Avatar = ({ user, size = "md" }) => {
     const dimensions = size === "md" ? "w-12 h-12 text-lg" : "w-10 h-10 text-sm";
     const isAdmin = user.role === "ADMIN";
@@ -173,6 +188,72 @@ function Lobby() {
   return (
     <div className="h-full bg-[#0b0f14] text-white flex">
 
+      {/* MODAL CREAR ROOM */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#121821] border border-zinc-800 rounded-3xl p-8 w-full max-w-lg">
+
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold">Host a Match</h2>
+              <button
+                onClick={() => setShowModal(false)}
+                className="text-zinc-500 hover:text-white transition"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            {/* ROOM NAME */}
+            <div className="mb-6">
+              <label className="text-sm text-zinc-400 mb-2 block">
+                Room name
+              </label>
+              <input
+                type="text"
+                placeholder={`${currentUser?.username}'s Room`}
+                value={roomName}
+                onChange={(e) => setRoomName(e.target.value)}
+                className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-green-500"
+              />
+            </div>
+
+            {/* GAME SELECTOR */}
+            <div className="mb-8">
+              <label className="text-sm text-zinc-400 mb-2 block">
+                Select game
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {GAMES.map((game) => (
+                  <button
+                    key={game.id}
+                    onClick={() => setSelectedGame(game)}
+                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition text-left ${
+                      selectedGame.id === game.id
+                        ? "border-green-500 bg-green-500/10 text-green-400"
+                        : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
+                    }`}
+                  >
+                    <Gamepad2 size={16} className="shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium leading-tight">{game.name}</p>
+                      <p className="text-xs text-zinc-500">{game.year}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* CREAR */}
+            <button
+              onClick={createRoom}
+              className="w-full bg-green-500 hover:bg-green-400 text-black py-3 rounded-xl font-semibold transition"
+            >
+              Create Room
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* SIDEBAR */}
       <aside className="w-64 border-r border-zinc-800 bg-[#0d1117] p-6 flex flex-col">
         <h1 className="text-2xl font-bold text-green-400 mb-10 tracking-wide">
@@ -191,7 +272,6 @@ function Lobby() {
           </button>
         </nav>
 
-        {/* LOGOUT */}
         <div className="mt-auto">
           <button
             onClick={logout}
@@ -214,7 +294,7 @@ function Lobby() {
           </div>
 
           <button
-            onClick={createRoom}
+            onClick={() => setShowModal(true)}
             className="flex items-center gap-2 bg-green-500 hover:bg-green-400 text-black px-5 py-3 rounded-xl font-semibold transition"
           >
             <Plus size={18} />
@@ -274,15 +354,11 @@ function Lobby() {
       {/* RIGHT PANEL */}
       <aside className="w-72 border-l border-zinc-800 bg-[#0d1117] p-6">
 
-        {/* CURRENT USER */}
         {currentUser && (
           <div className="mb-8 bg-[#121821] rounded-2xl p-4 border border-zinc-800">
             <div className="flex items-center gap-3">
-
-              {/* AVATAR CON BOTON DE UPLOAD */}
               <div className="relative group">
                 <Avatar user={currentUser} size="md" />
-
                 <label className={`absolute inset-0 rounded-full flex items-center justify-center bg-black/60 opacity-0 group-hover:opacity-100 transition cursor-pointer ${uploadingAvatar ? "opacity-100" : ""}`}>
                   {uploadingAvatar ? (
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -353,5 +429,6 @@ function Lobby() {
 }
 
 export default Lobby;
+
 
 

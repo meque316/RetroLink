@@ -139,6 +139,18 @@ export default function roomsSocket(io) {
     });
 
     /*
+    RENAME ROOM
+    */
+    socket.on("rename-room", ({ roomId, name }) => {
+      const room = rooms.find((r) => r.id === roomId);
+      if (!room) return;
+      if (room.host !== socket.id) return;
+
+      room.name = name.trim();
+      io.emit("rooms-list", rooms);
+    });
+
+    /*
     LEAVE ROOM
     */
     socket.on("leave-room", (roomId) => {

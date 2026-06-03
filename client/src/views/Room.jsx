@@ -5,6 +5,9 @@ import {
   Play,
   LogOut,
   Radio,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 
 function Room({ room, leaveRoom }) {
@@ -20,15 +23,18 @@ function Room({ room, leaveRoom }) {
   */
   const [relayStatus, setRelayStatus] = useState(null);
 
+  const [editingName, setEditingName] = useState(false);
+  const [newRoomName, setNewRoomName] = useState("");
+
   const isHost = currentRoom?.host === socket.id;
   const isReady = readyPlayers.includes(socket.id);
 
   /*
-  START RELAY — se conecta al relay al entrar a la sala
+  START RELAY
   */
   useEffect(() => {
     const startRelay = async () => {
-      setRelayStatus(null); // conectando
+      setRelayStatus(null);
       const result = await window.retroLink?.startRelay(room.id, isHost);
       setRelayStatus(result?.success ? "ok" : "error");
       console.log("[RetroLink] Relay status:", result);
@@ -65,11 +71,6 @@ function Room({ room, leaveRoom }) {
         return;
       }
 
-      /*
-      Con el relay activo, el cliente se conecta a 127.0.0.1
-      en vez de la IP pública del host — el bridge se encarga
-      de retransmitir via relay
-      */
       const connectStr = isHost ? null : "127.0.0.1:27961";
       await window.retroLink?.launchGame(gamePath, connectStr);
     };
@@ -98,6 +99,14 @@ function Room({ room, leaveRoom }) {
     } catch (error) {
       console.error("Error selecting exe:", error);
     }
+  };
+
+  const saveRoomName = () => {
+    const name = newRoomName.trim();
+    if (!name) { setEditingName(false); return; }
+    socket.emit("rename-room", { roomId: room.id, name });
+    setEditingName(false);
+    setNewRoomName("");
   };
 
   const handleLeave = () => {
@@ -150,7 +159,43 @@ function Room({ room, leaveRoom }) {
         {/* HEADER */}
         <div className="flex justify-between items-start mb-8">
           <div>
-            <h1 className="text-3xl font-bold">{currentRoom?.name}</h1>
+            <div className="flex items-center gap-3">
+              {editingName ? (
+                <>
+                  <input
+                    autoFocus
+                    value={newRoomName}
+                    onChange={(e) => setNewRoomName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveRoomName(); if (e.key === "Escape") setEditingName(false); }}
+                    className="text-2xl font-bold bg-zinc-800 px-3 py-1 rounded-xl focus:outline-none focus:ring-1 focus:ring-green-500 text-white w-64"
+                  />
+                  <button onClick={saveRoomName} className="text-green-400 hover:text-green-300 transition">
+                    <Check size={18} />
+                  </button>
+                  <button onClick={() => setEditingName(false)} className="text-zinc-500 hover:text-white transition">
+                    <X size={18} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h1 className="text-3xl font-bold">{currentRoom?.name}</h1>
+                  {isHost && (
+                    <button
+                      onClick={() => { setNewRoomName(currentRoom?.name); setEditingName(true); }}
+                      className="text-zinc-500 hover:text-white transition mt-1"
+                    >
+                      <Pencil size={16} />
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* GAME BADGE */}
+            <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
+              {currentRoom?.game}
+            </span>
+
             <p className="text-zinc-400 mt-2">Waiting for players...</p>
           </div>
 
@@ -200,7 +245,7 @@ function Room({ room, leaveRoom }) {
 
         {/* GAME PATH */}
         <div className="bg-[#0d1117] rounded-2xl p-5 mb-8 border border-zinc-800">
-          <h2 className="text-lg font-semibold mb-2">Quake III Arena</h2>
+          <h2 className="text-lg font-semibold mb-2">{currentRoom?.game}</h2>
           <p className="text-sm text-zinc-400 mb-3">Executable Path</p>
 
           {gamePath ? (
@@ -252,6 +297,3 @@ function Room({ room, leaveRoom }) {
 }
 
 export default Room;
-
-
-
