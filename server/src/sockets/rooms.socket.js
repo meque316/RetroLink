@@ -141,6 +141,19 @@ export default function roomsSocket(io) {
     });
 
     /*
+    WEBRTC SIGNALING
+    Reenvía señales entre peers para establecer la conexión P2P
+    */
+    socket.on("webrtc-join", ({ roomId, isHost }) => {
+      socket.join(`webrtc-${roomId}`);
+      console.log(`[WebRTC] ${socket.id} joined signaling room ${roomId} as ${isHost ? "host" : "client"}`);
+    });
+
+    socket.on("webrtc-signal", ({ roomId, ...signal }) => {
+      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", signal);
+    });
+
+    /*
     RENAME ROOM
     */
     socket.on("rename-room", ({ roomId, name }) => {
@@ -226,3 +239,4 @@ export default function roomsSocket(io) {
     });
   });
 }
+
