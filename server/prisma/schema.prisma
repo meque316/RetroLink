@@ -8,11 +8,25 @@ datasource db {
 }
 
 model User {
+  id          String       @id @default(uuid())
+  email       String       @unique
+  username    String       @unique
+  password    String
+  role        String       @default("USER")
+  avatar      String?      @default("")
+  createdAt   DateTime     @default(now())
+
+  friendships Friendship[] @relation("UserFriendships")
+  friendOf    Friendship[] @relation("FriendOf")
+}
+
+model Friendship {
   id        String   @id @default(uuid())
-  email     String   @unique
-  username  String   @unique
-  password  String
-  role      String   @default("USER")
-  avatar    String?  @default("")
+  userId    String
+  friendId  String
+  status    String   @default("pending")
   createdAt DateTime @default(now())
+
+  user      User     @relation("UserFriendships", fields: [userId], references: [id])
+  friend    User     @relation("FriendOf", fields: [friendId], references: [id])
 }

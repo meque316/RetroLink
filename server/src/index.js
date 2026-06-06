@@ -7,6 +7,7 @@ import dotenv from "dotenv";
 import authRoutes from "./routes/auth.routes.js";
 import roomsRoutes from "./routes/rooms.routes.js";
 import userRoutes from "./routes/user.routes.js";
+import friendsRoutes from "./routes/friends.routes.js";
 import { authenticate } from "./middlewares/auth.middleware.js";
 
 import roomsSocket from "./sockets/rooms.socket.js";
@@ -31,6 +32,7 @@ Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/rooms", roomsRoutes);
 app.use("/api/user", userRoutes);
+app.use("/api/friends", friendsRoutes);
 
 /*
 Protected test route

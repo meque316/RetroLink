@@ -13,7 +13,21 @@ import {
 function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
   const [readyPlayers, setReadyPlayers] = useState([]);
-  const [gamePath, setGamePath] = useState("");
+
+  /*
+  Auto-load exe from Library if available
+  */
+  const getGamePathFromLibrary = () => {
+    try {
+      const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
+      const saved = library.find((g) => g.name === room.game);
+      return saved?.exePath || "";
+    } catch {
+      return "";
+    }
+  };
+
+  const [gamePath, setGamePath] = useState(getGamePathFromLibrary);
 
   /*
   RELAY STATE
