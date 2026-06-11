@@ -141,6 +141,17 @@ export default function roomsSocket(io) {
     });
 
     /*
+    ROOM CHAT
+    */
+    socket.on("room-chat", ({ roomId, message, username }) => {
+      io.to(roomId).emit("room-chat", {
+        username,
+        message,
+        timestamp: Date.now(),
+      });
+    });
+
+    /*
     WEBRTC SIGNALING
     Reenvía señales entre peers para establecer la conexión P2P
     */

@@ -90,6 +90,10 @@ let udpSocket = null;
 let currentRoomId = null;
 let bridgeIsHost = false;
 
+let gameProcess = null; // referencia al proceso del juego
+let gameRoomId = null;  // sala activa cuando se lanzó el juego
+let gameIsHost = false; // si este usuario es el host
+
 const STUN_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -332,7 +336,7 @@ ipcMain.handle("stop-relay", async () => {
 /*
 LAUNCH GAME
 */
-ipcMain.handle("launch-game", async (_, gamePath, hostIp = null) => {
+ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false) => {
   if (!gamePath) return { success: false, error: "No game path provided" };
 
   try {
@@ -347,14 +351,59 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null) => {
         : `[RetroLink] Launching as HOST`
     );
 
-    execFile(gamePath, args, { cwd: gameDir }, (error) => {
-      if (error) console.error("Error launching game:", error);
+    gameRoomId = roomId;
+    gameIsHost = isHost;
+
+    gameProcess = execFile(gamePath, args, { cwd: gameDir }, (error) => {
+      if (error && error.code !== null) {
+        console.error("Error launching game:", error);
+      }
     });
+
+    /*
+    Solo el host notifica cuando cierra el juego
+    El servidor avisará a los clientes para que cierren también
+    */
+    if (isHost && roomId) {
+      gameProcess.on("close", () => {
+        console.log("[RetroLink] Host closed the game — notifying clients...");
+
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win) {
+          win.webContents.send("host-game-closed", { roomId });
+        }
+
+        gameProcess = null;
+        gameRoomId = null;
+      });
+    } else {
+      gameProcess.on("close", () => {
+        gameProcess = null;
+        gameRoomId = null;
+      });
+    }
 
     return { success: true };
   } catch (error) {
     console.error("Error launching game:", error);
     return { success: false, error: error.message };
   }
+});
+
+/*
+KILL GAME
+Cierra el proceso del juego en el cliente cuando el host cerró
+*/
+ipcMain.handle("kill-game", async () => {
+  if (gameProcess) {
+    try {
+      gameProcess.kill();
+      gameProcess = null;
+      console.log("[RetroLink] Game process killed");
+    } catch (e) {
+      console.error("[RetroLink] Error killing game:", e.message);
+    }
+  }
+  return { success: true };
 });
 
