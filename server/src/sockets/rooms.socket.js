@@ -158,6 +158,12 @@ export default function roomsSocket(io) {
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       socket.join(`webrtc-${roomId}`);
       console.log(`[WebRTC] ${socket.id} joined signaling room ${roomId} as ${isHost ? "host" : "client"}`);
+
+      if (!isHost) {
+        // Notifica al host que el cliente está listo para conectar
+        socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
+        console.log(`[WebRTC] Notified host that client is ready in room ${roomId}`);
+      }
     });
 
     socket.on("webrtc-signal", ({ roomId, ...signal }) => {
@@ -250,4 +256,3 @@ export default function roomsSocket(io) {
     });
   });
 }
-

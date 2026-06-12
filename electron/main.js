@@ -104,53 +104,57 @@ async function startWebRTCBridge(roomId, isHost) {
   currentRoomId = roomId;
   bridgeIsHost = isHost;
 
-  // Importar node-datachannel dinámicamente
   const NodeDataChannel = require("node-datachannel");
 
   console.log(`[WebRTC] Starting bridge — roomId: ${roomId}, isHost: ${isHost}`);
 
-  // Conectar al servidor de signaling (Render)
   signalingSocket = socketClient("https://retrolink-server.onrender.com");
 
-  signalingSocket.on("connect", async () => {
+  const createHostPeer = () => {
+    console.log("[WebRTC] Creating host peer connection...");
+
+    peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
+      iceServers: STUN_SERVERS.map(s => s.urls),
+    });
+
+    dataChannel = peerConnection.createDataChannel("game", {
+      ordered: false,
+      maxRetransmits: 0,
+    });
+
+    setupDataChannel();
+
+    peerConnection.onLocalDescription((sdp, type) => {
+      console.log("[WebRTC] Host SDP offer ready, sending...");
+      signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
+    });
+
+    peerConnection.onLocalCandidate((candidate, mid) => {
+      signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
+    });
+
+    peerConnection.setLocalDescription();
+  };
+
+  signalingSocket.on("connect", () => {
     console.log("[WebRTC] Signaling connected:", signalingSocket.id);
     signalingSocket.emit("webrtc-join", { roomId, isHost });
+  });
 
-    if (isHost) {
-      // Host crea el peer y el DataChannel
-      peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
-        iceServers: STUN_SERVERS.map(s => s.urls),
-      });
-
-      dataChannel = peerConnection.createDataChannel("game", {
-        ordered: false,      // UDP-like, sin orden
-        maxRetransmits: 0,   // UDP-like, sin reenvíos
-      });
-
-      setupDataChannel();
-
-      peerConnection.onLocalDescription((sdp, type) => {
-        console.log("[WebRTC] Host SDP offer ready, sending to signaling...");
-        signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
-      });
-
-      peerConnection.onLocalCandidate((candidate, mid) => {
-        signalingSocket.emit("webrtc-signal", {
-          roomId,
-          type: "candidate",
-          candidate,
-          mid,
-        });
-      });
-
-      peerConnection.setLocalDescription();
+  // Host espera a que el cliente esté listo antes de crear el peer
+  signalingSocket.on("webrtc-peer-ready", () => {
+    console.log("[WebRTC] Client is ready — creating peer connection...");
+    if (isHost && !peerConnection) {
+      createHostPeer();
     }
   });
 
   // Recibir señales del otro peer
   signalingSocket.on("webrtc-signal", async ({ type, sdp, candidate, mid }) => {
-    if (!peerConnection) {
-      // Cliente recibe la oferta y crea su peer
+    if (!peerConnection && !isHost) {
+      // Cliente crea su peer al recibir la oferta
+      console.log("[WebRTC] Client creating peer connection...");
+
       peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
         iceServers: STUN_SERVERS.map(s => s.urls),
       });
@@ -166,12 +170,7 @@ async function startWebRTCBridge(roomId, isHost) {
       });
 
       peerConnection.onLocalCandidate((candidate, mid) => {
-        signalingSocket.emit("webrtc-signal", {
-          roomId,
-          type: "candidate",
-          candidate,
-          mid,
-        });
+        signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
       });
     }
 
@@ -180,21 +179,25 @@ async function startWebRTCBridge(roomId, isHost) {
       peerConnection.setLocalDescription();
     } else if (type === "answer") {
       peerConnection.setRemoteDescription(sdp, type);
-    } else if (type === "candidate") {
+    } else if (type === "candidate" && peerConnection) {
       peerConnection.addRemoteCandidate(candidate, mid);
     }
   });
 
   // Crear socket UDP local para interceptar tráfico de Quake 3
+  // Host escucha en 27962 (evita conflicto con Quake 3 en 27960)
+  // Cliente escucha en 27961 (Quake 3 conecta aquí)
   udpSocket = dgram.createSocket("udp4");
-  const localPort = isHost ? 27960 : 27961;
+  const localPort = isHost ? 27962 : 27961;
 
   udpSocket.bind(localPort, "127.0.0.1", () => {
     console.log(`[UDP Bridge] Listening on 127.0.0.1:${localPort}`);
   });
 
   // UDP → WebRTC DataChannel
-  udpSocket.on("message", (msg) => {
+  // Host: recibe respuestas de Quake 3 (27960) y las manda al cliente via WebRTC
+  // Cliente: recibe paquetes del juego y los manda al host via WebRTC
+  udpSocket.on("message", (msg, rinfo) => {
     if (dataChannel && dataChannel.isOpen()) {
       try {
         dataChannel.sendMessageBinary(msg);
@@ -217,6 +220,8 @@ function setupDataChannel() {
   });
 
   // WebRTC DataChannel → UDP local (reinyecta al juego)
+  // Host: reenvía paquetes del cliente a Quake 3 en 27960
+  // Cliente: reenvía paquetes del host a sí mismo en 27961
   dataChannel.onMessage((msg) => {
     if (!udpSocket) return;
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
@@ -336,14 +341,14 @@ ipcMain.handle("stop-relay", async () => {
 /*
 LAUNCH GAME
 */
-ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false) => {
+ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) => {
   if (!gamePath) return { success: false, error: "No game path provided" };
 
   try {
     const gameDir = path.dirname(gamePath);
     allowAppThroughFirewall(gamePath, "RetroLink - Game");
 
-    const args = hostIp ? ["+connect", hostIp] : [];
+    const args = [...(extraArgs || []), ...(hostIp ? ["+connect", hostIp] : [])];
 
     console.log(
       hostIp

@@ -92,8 +92,16 @@ function Room({ room, leaveRoom }) {
 
     const handleMatchStarted = async (data) => {
       if (!gamePath) { console.warn("No game path selected"); return; }
-      const connectStr = isHost ? null : "127.0.0.1:27961";
-      await window.retroLink?.launchGame(gamePath, connectStr, room.id, isHost);
+
+      if (isHost) {
+        // Host lanza Quake 3 normal — crea la partida desde el menú del juego
+        // El bridge escucha en 27962 y reenvía los paquetes a Quake 3 en 27960
+        await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
+      } else {
+        // Cliente conecta al bridge local en 27961
+        // El bridge recibe y reenvía via WebRTC al host
+        await window.retroLink?.launchGame(gamePath, "127.0.0.1:27961", room.id, false, []);
+      }
     };
 
     const handleMatchError = (error) => alert(error.message);
@@ -432,5 +440,6 @@ function Room({ room, leaveRoom }) {
 }
 
 export default Room;
+
 
 

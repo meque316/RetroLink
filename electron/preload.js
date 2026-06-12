@@ -9,8 +9,8 @@ contextBridge.exposeInMainWorld(
     selectGameExe: () =>
       ipcRenderer.invoke("select-game-exe"),
 
-    launchGame: (gamePath, hostIp = null, roomId = null, isHost = false) =>
-      ipcRenderer.invoke("launch-game", gamePath, hostIp, roomId, isHost),
+    launchGame: (gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) =>
+      ipcRenderer.invoke("launch-game", gamePath, hostIp, roomId, isHost, extraArgs),
 
     prepareHost: (port = 27960) =>
       ipcRenderer.invoke("prepare-host", port),
@@ -37,4 +37,5 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.removeAllListeners("host-game-closed"),
   }
 );
+
 
