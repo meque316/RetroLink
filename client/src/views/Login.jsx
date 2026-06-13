@@ -5,27 +5,49 @@ function Login({ onLoginSuccess, goToRegister }) {
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [serverStatus, setServerStatus] = useState(null);
-  // null = checking, "online" = ok, "offline" = error
+  const [serverStatus, setServerStatus] = useState(null); 
+  const [error, setError] = useState(null); // <-- NUEVO: Estado para el mensaje de error
 
   useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
     const checkServer = async () => {
       try {
         const res = await fetch(
           "https://retrolink-server.onrender.com/api/health",
-          { signal: AbortSignal.timeout(5000) }
+          { signal: controller.signal }
         );
-        setServerStatus(res.ok ? "online" : "offline");
-      } catch {
-        setServerStatus("offline");
+        
+        if (isMounted) {
+          setServerStatus(res.ok ? "online" : "offline");
+        }
+      } catch (err) {
+        if (isMounted && err.name !== "AbortError") {
+          setServerStatus("offline");
+        }
       }
     };
 
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     checkServer();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError(null); // Limpiar errores previos al intentar de nuevo
+
+    if (serverStatus === "offline") {
+      setError("El servidor no está disponible en este momento.");
+      return;
+    }
+    
     setLoading(true);
 
     try {
@@ -41,12 +63,15 @@ function Login({ onLoginSuccess, goToRegister }) {
       const data = await response.json();
 
       if (!response.ok) {
-        alert(data.message || "Error al iniciar sesión");
+        // <-- CORREGIDO: En vez de alert(), guardamos el error en el estado
+        setError(data.message || "Error al iniciar sesión");
         return;
       }
 
-      localStorage.setItem("token", data.token);
-      localStorage.setItem(
+      const storage = rememberMe ? localStorage : sessionStorage;
+
+      storage.setItem("token", data.token);
+      storage.setItem(
         "user",
         JSON.stringify({
           id: data.user.id,
@@ -60,73 +85,91 @@ function Login({ onLoginSuccess, goToRegister }) {
       onLoginSuccess(data.user);
     } catch (error) {
       console.error(error);
-      alert("Error de conexión");
+      setError("Error de conexión con el servicio"); // <-- CORREGIDO: Evita el alert()
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#0b0f14] flex items-center justify-center text-white">
+    <div className="min-h-screen bg-[#0b0f14] flex items-center justify-center text-white select-none">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-md bg-[#121821] p-8 rounded-3xl border border-zinc-800"
+        className="w-full max-w-md bg-[#121821] p-8 rounded-3xl border border-zinc-800 shadow-2xl"
       >
         {/* SERVER STATUS */}
         <div className="flex items-center gap-2 mb-6">
           {serverStatus === null && (
             <div className="flex items-center gap-2 text-zinc-500 text-xs">
               <div className="w-2 h-2 rounded-full bg-zinc-500 animate-pulse" />
-              Checking server...
+              Comprobando servidor...
             </div>
           )}
           {serverStatus === "online" && (
             <div className="flex items-center gap-2 text-green-400 text-xs">
               <div className="w-2 h-2 rounded-full bg-green-400" />
-              Server online
+              Servidor conectado
             </div>
           )}
           {serverStatus === "offline" && (
             <div className="flex items-center gap-2 text-red-400 text-xs">
               <div className="w-2 h-2 rounded-full bg-red-400" />
-              Server offline
+              Servidor desconectado (Instancia en Render dormida)
             </div>
           )}
         </div>
 
-        <h1 className="text-3xl font-bold mb-6">Iniciar sesión</h1>
+        <h1 className="text-3xl font-bold mb-2">Iniciar sesión</h1>
+        <p className="text-zinc-400 text-sm mb-6">Ingresa tus credenciales para acceder a RetroLink.</p>
+
+        {/* MENSAJE DE ERROR INCUSTADO EN LA UI */}
+        {error && (
+          <div className="mb-4 p-3.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium flex items-center gap-2 animate-fadeIn">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+            {error}
+          </div>
+        )}
 
         <div className="space-y-4">
           <input
             type="email"
             placeholder="Email"
+            required
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            className="w-full bg-zinc-900 px-4 py-3 rounded-xl"
+            className="w-full bg-zinc-900 px-4 py-3 rounded-xl border border-transparent focus:border-indigo-500 focus:outline-none transition-colors"
           />
 
           <input
             type="password"
             placeholder="Contraseña"
+            required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full bg-zinc-900 px-4 py-3 rounded-xl"
+            className="w-full bg-zinc-900 px-4 py-3 rounded-xl border border-transparent focus:border-indigo-500 focus:outline-none transition-colors"
           />
         </div>
 
-        <label className="flex items-center gap-2 mt-4 text-sm text-zinc-300">
+        <label className="flex items-center gap-2 mt-4 text-sm text-zinc-300 cursor-pointer">
           <input
             type="checkbox"
             checked={rememberMe}
             onChange={(e) => setRememberMe(e.target.checked)}
+            className="rounded bg-zinc-900 border-zinc-700 text-indigo-600 focus:ring-0 cursor-pointer"
           />
           Mantener sesión iniciada
         </label>
 
         <button
           type="submit"
-          disabled={loading}
-          className="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 py-3 rounded-2xl font-semibold"
+          disabled={loading || serverStatus === null}
+          className={`w-full mt-6 py-3 rounded-2xl font-semibold transition-all ${
+            serverStatus === "offline"
+              ? "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+              : "bg-indigo-600 hover:bg-indigo-700 text-white active:scale-[0.98]"
+          }`}
         >
           {loading ? "Entrando..." : "Entrar"}
         </button>
@@ -134,9 +177,9 @@ function Login({ onLoginSuccess, goToRegister }) {
         <button
           type="button"
           onClick={goToRegister}
-          className="w-full mt-4 text-zinc-400 hover:text-white"
+          className="w-full mt-4 text-zinc-400 hover:text-white text-sm transition-colors"
         >
-          Crear cuenta
+          ¿No tienes cuenta? <span className="text-indigo-400 underline">Crear cuenta</span>
         </button>
       </form>
     </div>

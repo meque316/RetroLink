@@ -153,21 +153,26 @@ export default function roomsSocket(io) {
 
     /*
     WEBRTC SIGNALING
-    Reenvía señales entre peers para establecer la conexión P2P
+    Arreglado: Mantiene la estructura intacta para el receptor de Electron
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       socket.join(`webrtc-${roomId}`);
-      console.log(`[WebRTC] ${socket.id} joined signaling room ${roomId} as ${isHost ? "host" : "client"}`);
+      console.log(`[WebRTC] ${socket.id} se unió a la sala de señales webrtc-${roomId} como ${isHost ? "HOST" : "CLIENTE"}`);
 
       if (!isHost) {
-        // Notifica al host que el cliente está listo para conectar
+        // Notifica de forma directa al host que está en la misma sub-sala de señales
         socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
-        console.log(`[WebRTC] Notified host that client is ready in room ${roomId}`);
+        console.log(`[WebRTC] Host notificado en sala webrtc-${roomId}. Cliente listo.`);
       }
     });
 
-    socket.on("webrtc-signal", ({ roomId, ...signal }) => {
-      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", signal);
+    socket.on("webrtc-signal", (data) => {
+      const { roomId } = data;
+      if (!roomId) return;
+      
+      // FIX CRÍTICO: Reenviamos el objeto 'data' COMPLETO (incluyendo el roomId)
+      // de lo contrario el main.js de Electron no puede validar la procedencia de la señal
+      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", data);
     });
 
     /*
@@ -199,6 +204,7 @@ export default function roomsSocket(io) {
       }
 
       socket.leave(roomId);
+      socket.leave(`webrtc-${roomId}`); // Limpiar también la sala de WebRTC
 
       if (room.members.length === 0) {
         const index = rooms.findIndex((r) => r.id === roomId);

@@ -17,6 +17,17 @@ Detect environment
 const isDev = !app.isPackaged;
 
 /*
+MESSAGING TO FRONTEND
+Envía estados legibles al banner de Room.jsx
+*/
+function sendStatusToFrontend(statusMessage) {
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win) {
+    win.webContents.send("bridge-status-update", statusMessage);
+  }
+}
+
+/*
 WINDOWS FIREWALL
 */
 function allowAppThroughFirewall(programPath, ruleName) {
@@ -80,8 +91,6 @@ function closePortUPnP(port) {
 
 /*
 UDP ↔ WebRTC BRIDGE
-Usa WebRTC DataChannel para P2P directo con NAT traversal.
-El signaling va por el servidor Socket.io en Render.
 */
 let signalingSocket = null;
 let peerConnection = null;
@@ -90,9 +99,9 @@ let udpSocket = null;
 let currentRoomId = null;
 let bridgeIsHost = false;
 
-let gameProcess = null; // referencia al proceso del juego
-let gameRoomId = null;  // sala activa cuando se lanzó el juego
-let gameIsHost = false; // si este usuario es el host
+let gameProcess = null; 
+let gameRoomId = null;  
+let gameIsHost = false; 
 
 const STUN_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -107,11 +116,13 @@ async function startWebRTCBridge(roomId, isHost) {
   const NodeDataChannel = require("node-datachannel");
 
   console.log(`[WebRTC] Starting bridge — roomId: ${roomId}, isHost: ${isHost}`);
+  sendStatusToFrontend("Conectando al servidor de señales...");
 
   signalingSocket = socketClient("https://retrolink-server.onrender.com");
 
   const createHostPeer = () => {
     console.log("[WebRTC] Creating host peer connection...");
+    sendStatusToFrontend("Creando canal de conexión (Host)...");
 
     peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
       iceServers: STUN_SERVERS.map(s => s.urls),
@@ -125,23 +136,26 @@ async function startWebRTCBridge(roomId, isHost) {
     setupDataChannel();
 
     peerConnection.onLocalDescription((sdp, type) => {
-      console.log("[WebRTC] Host SDP offer ready, sending...");
+      console.log(`[WebRTC] Host local description ready (${type}), sending...`);
       signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
     });
 
     peerConnection.onLocalCandidate((candidate, mid) => {
+      console.log("[WebRTC] Host ICE candidate ready, sending...");
       signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
     });
 
-    peerConnection.setLocalDescription();
+    console.log("[WebRTC] Calling setLocalDescription('offer')...");
+    sendStatusToFrontend("Enviando oferta de red al rival...");
+    peerConnection.setLocalDescription("offer"); 
   };
 
   signalingSocket.on("connect", () => {
     console.log("[WebRTC] Signaling connected:", signalingSocket.id);
+    sendStatusToFrontend("Buscando emparejamiento en la sala...");
     signalingSocket.emit("webrtc-join", { roomId, isHost });
   });
 
-  // Host espera a que el cliente esté listo antes de crear el peer
   signalingSocket.on("webrtc-peer-ready", () => {
     console.log("[WebRTC] Client is ready — creating peer connection...");
     if (isHost && !peerConnection) {
@@ -149,11 +163,21 @@ async function startWebRTCBridge(roomId, isHost) {
     }
   });
 
-  // Recibir señales del otro peer
+  let pendingCandidates = [];
+  let remoteDescriptionSet = false;
+
+  const flushPendingCandidates = () => {
+    pendingCandidates.forEach(({ candidate, mid }) => {
+      try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {}
+    });
+    pendingCandidates = [];
+  };
+
   signalingSocket.on("webrtc-signal", async ({ type, sdp, candidate, mid }) => {
-    if (!peerConnection && !isHost) {
-      // Cliente crea su peer al recibir la oferta
-      console.log("[WebRTC] Client creating peer connection...");
+    // El cliente construye su estructura SOLO al recibir la oferta inicial del Host
+    if (!peerConnection && !isHost && type === "offer") {
+      console.log("[WebRTC] Client receiving offer — creating peer connection...");
+      sendStatusToFrontend("Procesando oferta de conexión del Host...");
 
       peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
         iceServers: STUN_SERVERS.map(s => s.urls),
@@ -165,7 +189,7 @@ async function startWebRTCBridge(roomId, isHost) {
       });
 
       peerConnection.onLocalDescription((sdp, type) => {
-        console.log("[WebRTC] Client SDP answer ready, sending...");
+        console.log(`[WebRTC] Client local description ready (${type}), sending...`);
         signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
       });
 
@@ -175,18 +199,32 @@ async function startWebRTCBridge(roomId, isHost) {
     }
 
     if (type === "offer") {
+      console.log("[WebRTC] Client setting remote description (offer)...");
       peerConnection.setRemoteDescription(sdp, type);
-      peerConnection.setLocalDescription();
+      
+      console.log("[WebRTC] Client generating local description (answer)...");
+      sendStatusToFrontend("Respondiendo saludo de red (Answer)...");
+      peerConnection.setLocalDescription("answer"); 
+      
+      remoteDescriptionSet = true;
+      flushPendingCandidates();
     } else if (type === "answer") {
+      console.log("[WebRTC] Host setting remote description (answer)...");
+      sendStatusToFrontend("Conectando túneles P2P...");
       peerConnection.setRemoteDescription(sdp, type);
-    } else if (type === "candidate" && peerConnection) {
-      peerConnection.addRemoteCandidate(candidate, mid);
+      remoteDescriptionSet = true;
+      flushPendingCandidates();
+    } else if (type === "candidate") {
+      if (peerConnection && remoteDescriptionSet) {
+        try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {
+          console.warn("[WebRTC] Failed to add candidate:", e.message);
+        }
+      } else {
+        pendingCandidates.push({ candidate, mid });
+      }
     }
   });
 
-  // Crear socket UDP local para interceptar tráfico de Quake 3
-  // Host escucha en 27962 (evita conflicto con Quake 3 en 27960)
-  // Cliente escucha en 27961 (Quake 3 conecta aquí)
   udpSocket = dgram.createSocket("udp4");
   const localPort = isHost ? 27962 : 27961;
 
@@ -194,9 +232,6 @@ async function startWebRTCBridge(roomId, isHost) {
     console.log(`[UDP Bridge] Listening on 127.0.0.1:${localPort}`);
   });
 
-  // UDP → WebRTC DataChannel
-  // Host: recibe respuestas de Quake 3 (27960) y las manda al cliente via WebRTC
-  // Cliente: recibe paquetes del juego y los manda al host via WebRTC
   udpSocket.on("message", (msg, rinfo) => {
     if (dataChannel && dataChannel.isOpen()) {
       try {
@@ -213,15 +248,14 @@ function setupDataChannel() {
 
   dataChannel.onOpen(() => {
     console.log("[WebRTC] DataChannel open — P2P connection established!");
+    sendStatusToFrontend("¡Conexión establecida! Listos para jugar.");
   });
 
   dataChannel.onClosed(() => {
     console.log("[WebRTC] DataChannel closed");
+    sendStatusToFrontend("Conexión privada cerrada.");
   });
 
-  // WebRTC DataChannel → UDP local (reinyecta al juego)
-  // Host: reenvía paquetes del cliente a Quake 3 en 27960
-  // Cliente: reenvía paquetes del host a sí mismo en 27961
   dataChannel.onMessage((msg) => {
     if (!udpSocket) return;
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
@@ -237,6 +271,7 @@ function stopWebRTCBridge() {
   if (udpSocket) { try { udpSocket.close(); } catch(e) {} udpSocket = null; }
   currentRoomId = null;
   console.log("[WebRTC] Bridge stopped");
+  sendStatusToFrontend("Puente de red detenido.");
 }
 
 /*
@@ -365,10 +400,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
       }
     });
 
-    /*
-    Solo el host notifica cuando cierra el juego
-    El servidor avisará a los clientes para que cierren también
-    */
     if (isHost && roomId) {
       gameProcess.on("close", () => {
         console.log("[RetroLink] Host closed the game — notifying clients...");
@@ -397,7 +428,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
 
 /*
 KILL GAME
-Cierra el proceso del juego en el cliente cuando el host cerró
 */
 ipcMain.handle("kill-game", async () => {
   if (gameProcess) {
@@ -411,4 +441,3 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
-

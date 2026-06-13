@@ -28,11 +28,19 @@ contextBridge.exposeInMainWorld(
     killGame: () =>
       ipcRenderer.invoke("kill-game"),
 
+    // Escucha las actualizaciones de estado en tiempo real del puente WebRTC
+    onBridgeStatusUpdate: (callback) =>
+      ipcRenderer.on("bridge-status-update", (_, message) => callback(message)),
+
+    // Limpia el listener del estado del puente
+    offBridgeStatusUpdate: () =>
+      ipcRenderer.removeAllListeners("bridge-status-update"),
+
     // Escucha cuando el host cierra el juego
     onHostGameClosed: (callback) =>
       ipcRenderer.on("host-game-closed", (_, data) => callback(data)),
 
-    // Limpia el listener
+    // Limpia el listener del juego cerrado
     offHostGameClosed: () =>
       ipcRenderer.removeAllListeners("host-game-closed"),
   }
