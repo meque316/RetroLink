@@ -10,6 +10,7 @@ const { exec, execFile } = require("child_process");
 const dgram = require("dgram");
 const natUpnp = require("nat-upnp");
 const { io: socketClient } = require("socket.io-client");
+const os = require("os");
 
 /*
 Detect environment
@@ -25,6 +26,44 @@ function sendStatusToFrontend(statusMessage) {
   if (win) {
     win.webContents.send("bridge-status-update", statusMessage);
   }
+}
+
+/*
+DETECT LOCAL NETWORK INFO AUTOMATICALLY (Versión Nativa)
+Obtiene la IP local del PC y la IP del Router (Gateway) usando la consola de Windows.
+Evita bugs de compatibilidad con librerías antiguas de Node.
+*/
+function getLocalNetworkDetails() {
+  return new Promise((resolve) => {
+    // WMIC consulta directo al sistema el Gateway del router de la interfaz activa
+    exec("wmic nicconfig where IPEnabled=True get DefaultIPGateway", (err, stdout) => {
+      let routerIp = "192.168.1.1"; // IP por defecto si falla la lectura
+
+      if (!err && stdout) {
+        // Limpiamos la salida del comando que Windows entrega en formato de array conteniendo strings: {"192.168.x.x"}
+        const match = stdout.match(/\{"([^"]+)"\}/);
+        if (match && match[1]) {
+          routerIp = match[1].trim();
+        }
+      }
+
+      // Obtener la IP local buscando en las interfaces de red del sistema
+      const interfaces = os.networkInterfaces();
+      let localIp = "127.0.0.1";
+
+      for (const interfaceName in interfaces) {
+        for (const iface of interfaces[interfaceName]) {
+          if (iface.family === "IPv4" && !iface.internal) {
+            localIp = iface.address;
+            break;
+          }
+        }
+        if (localIp !== "127.0.0.1") break;
+      }
+
+      resolve({ localIp, routerIp });
+    });
+  });
 }
 
 /*
@@ -145,9 +184,11 @@ async function startWebRTCBridge(roomId, isHost) {
       signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
     });
 
-    console.log("[WebRTC] Calling setLocalDescription('offer')...");
-    sendStatusToFrontend("Enviando oferta de red al rival...");
-    peerConnection.setLocalDescription("offer"); 
+    setTimeout(() => {
+      console.log("[WebRTC] Calling setLocalDescription('offer')...");
+      sendStatusToFrontend("Enviando oferta de red al rival...");
+      peerConnection.setLocalDescription("offer"); 
+    }, 150);
   };
 
   signalingSocket.on("connect", () => {
@@ -166,15 +207,21 @@ async function startWebRTCBridge(roomId, isHost) {
   let pendingCandidates = [];
   let remoteDescriptionSet = false;
 
+  // CORRECCIÓN SATELLITE: El vaciado diferido previene que la librería nativa descarte los candidatos iniciales
   const flushPendingCandidates = () => {
-    pendingCandidates.forEach(({ candidate, mid }) => {
-      try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {}
-    });
-    pendingCandidates = [];
+    setTimeout(() => {
+      console.log(`[WebRTC] Vaciando ${pendingCandidates.length} candidatos ICE acumulados...`);
+      pendingCandidates.forEach(({ candidate, mid }) => {
+        try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {}
+      });
+      pendingCandidates = [];
+    }, 50);
   };
 
-  signalingSocket.on("webrtc-signal", async ({ type, sdp, candidate, mid }) => {
-    // El cliente construye su estructura SOLO al recibir la oferta inicial del Host
+  signalingSocket.on("webrtc-signal", async (data) => {
+    if (!data) return;
+    const { type, sdp, candidate, mid } = data;
+
     if (!peerConnection && !isHost && type === "offer") {
       console.log("[WebRTC] Client receiving offer — creating peer connection...");
       sendStatusToFrontend("Procesando oferta de conexión del Host...");
@@ -259,7 +306,9 @@ function setupDataChannel() {
   dataChannel.onMessage((msg) => {
     if (!udpSocket) return;
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-    const targetPort = bridgeIsHost ? 27960 : 27961;
+    
+    // CORRECCIÓN RUTEO: Los dos lados inyectan los paquetes UDP limpios al puerto base del juego ejecutable
+    const targetPort = 27960; 
     udpSocket.send(buffer, 0, buffer.length, targetPort, "127.0.0.1");
   });
 }
@@ -334,13 +383,26 @@ ipcMain.handle("select-game-exe", async () => {
 
 /*
 PREPARE HOST
+Averigua automáticamente la red y le avisa de forma inteligente al tester si UPnP falla
 */
 ipcMain.handle("prepare-host", async (_, port = 27960) => {
   console.log(`[RetroLink] Preparing host on port ${port}...`);
   const portAvailable = await checkPortAvailable(port);
   allowAppThroughFirewall(process.execPath, "RetroLink Game Host");
+  
   const upnp = await openPortUPnP(port);
-  return { portAvailable, upnpSuccess: upnp.success, port };
+  const netDetails = await getLocalNetworkDetails();
+
+  console.log(`[Network Detect] IP Local: ${netDetails.localIp}, Router: ${netDetails.routerIp}`);
+
+  // Si falla el UPnP por culpa del router, pintamos las instrucciones precisas y personalizadas en el banner
+  if (!upnp.success) {
+    sendStatusToFrontend(
+      `⚠️ UPnP fallido. En tu router (${netDetails.routerIp}), mapea el puerto UDP 27962 hacia la IP de tu PC: ${netDetails.localIp}`
+    );
+  }
+
+  return { portAvailable, upnpSuccess: upnp.success, port, ...netDetails };
 });
 
 /*

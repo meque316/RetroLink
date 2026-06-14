@@ -115,7 +115,7 @@ export default function roomsSocket(io) {
     });
 
     /*
-    START MATCH
+    START MATCH (Sincronizado con el puente WebRTC de Electron)
     */
     socket.on("start-match", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
@@ -134,6 +134,7 @@ export default function roomsSocket(io) {
         return;
       }
 
+      // CORRECCIÓN DE FLUJO: Avisamos primero a la sala que la partida inicia
       io.to(roomId).emit("match-started", {
         roomId,
         hostPublicIp: room.hostPublicIp,
@@ -152,17 +153,19 @@ export default function roomsSocket(io) {
     });
 
     /*
-    WEBRTC SIGNALING
-    Arreglado: Mantiene la estructura intacta para el receptor de Electron
+    WEBRTC SIGNALING (Estructura Unificada y Segura)
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       socket.join(`webrtc-${roomId}`);
       console.log(`[WebRTC] ${socket.id} se unió a la sala de señales webrtc-${roomId} como ${isHost ? "HOST" : "CLIENTE"}`);
 
       if (!isHost) {
-        // Notifica de forma directa al host que está en la misma sub-sala de señales
-        socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
-        console.log(`[WebRTC] Host notificado en sala webrtc-${roomId}. Cliente listo.`);
+        // En lugar de emitir a ciegas, agregamos un pequeño delay de 100ms 
+        // para asegurar que el socket del cliente completó el protocolo de handshake en la sub-sala de Render
+        setTimeout(() => {
+          socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
+          console.log(`[WebRTC] Confirmación diferida enviada al Host en sala webrtc-${roomId}.`);
+        }, 100);
       }
     });
 
@@ -170,8 +173,7 @@ export default function roomsSocket(io) {
       const { roomId } = data;
       if (!roomId) return;
       
-      // FIX CRÍTICO: Reenviamos el objeto 'data' COMPLETO (incluyendo el roomId)
-      // de lo contrario el main.js de Electron no puede validar la procedencia de la señal
+      // Reenvío directo de descriptores SDP y candidatos ICE al rival de la sub-sala
       socket.to(`webrtc-${roomId}`).emit("webrtc-signal", data);
     });
 
@@ -204,7 +206,7 @@ export default function roomsSocket(io) {
       }
 
       socket.leave(roomId);
-      socket.leave(`webrtc-${roomId}`); // Limpiar también la sala de WebRTC
+      socket.leave(`webrtc-${roomId}`); 
 
       if (room.members.length === 0) {
         const index = rooms.findIndex((r) => r.id === roomId);
