@@ -115,7 +115,7 @@ export default function roomsSocket(io) {
     });
 
     /*
-    START MATCH (Sincronizado con el puente WebRTC de Electron)
+    START MATCH
     */
     socket.on("start-match", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
@@ -134,7 +134,6 @@ export default function roomsSocket(io) {
         return;
       }
 
-      // CORRECCIÓN DE FLUJO: Avisamos primero a la sala que la partida inicia
       io.to(roomId).emit("match-started", {
         roomId,
         hostPublicIp: room.hostPublicIp,
@@ -153,28 +152,22 @@ export default function roomsSocket(io) {
     });
 
     /*
-    WEBRTC SIGNALING (Estructura Unificada y Segura)
+    WEBRTC SIGNALING
+    Reenvía señales entre peers para establecer la conexión P2P
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       socket.join(`webrtc-${roomId}`);
-      console.log(`[WebRTC] ${socket.id} se unió a la sala de señales webrtc-${roomId} como ${isHost ? "HOST" : "CLIENTE"}`);
+      console.log(`[WebRTC] ${socket.id} joined signaling room ${roomId} as ${isHost ? "host" : "client"}`);
 
       if (!isHost) {
-        // En lugar de emitir a ciegas, agregamos un pequeño delay de 100ms 
-        // para asegurar que el socket del cliente completó el protocolo de handshake en la sub-sala de Render
-        setTimeout(() => {
-          socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
-          console.log(`[WebRTC] Confirmación diferida enviada al Host en sala webrtc-${roomId}.`);
-        }, 100);
+        // Notifica al host que el cliente está listo para conectar
+        socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
+        console.log(`[WebRTC] Notified host that client is ready in room ${roomId}`);
       }
     });
 
-    socket.on("webrtc-signal", (data) => {
-      const { roomId } = data;
-      if (!roomId) return;
-      
-      // Reenvío directo de descriptores SDP y candidatos ICE al rival de la sub-sala
-      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", data);
+    socket.on("webrtc-signal", ({ roomId, ...signal }) => {
+      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", signal);
     });
 
     /*
@@ -206,7 +199,6 @@ export default function roomsSocket(io) {
       }
 
       socket.leave(roomId);
-      socket.leave(`webrtc-${roomId}`); 
 
       if (room.members.length === 0) {
         const index = rooms.findIndex((r) => r.id === roomId);
