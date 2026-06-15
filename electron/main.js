@@ -11,6 +11,7 @@ const dgram = require("dgram");
 const natUpnp = require("nat-upnp");
 const { io: socketClient } = require("socket.io-client");
 const os = require("os");
+const fs = require("fs"); // Añadido para validar rutas de juegos de forma segura
 
 /*
 Detect environment
@@ -35,19 +36,16 @@ Evita bugs de compatibilidad con librerías antiguas de Node.
 */
 function getLocalNetworkDetails() {
   return new Promise((resolve) => {
-    // WMIC consulta directo al sistema el Gateway del router de la interfaz activa
     exec("wmic nicconfig where IPEnabled=True get DefaultIPGateway", (err, stdout) => {
-      let routerIp = "192.168.1.1"; // IP por defecto si falla la lectura
+      let routerIp = "192.168.1.1"; 
 
       if (!err && stdout) {
-        // Limpiamos la salida del comando que Windows entrega en formato de array conteniendo strings: {"192.168.x.x"}
         const match = stdout.match(/\{"([^"]+)"\}/);
         if (match && match[1]) {
           routerIp = match[1].trim();
         }
       }
 
-      // Obtener la IP local buscando en las interfaces de red del sistema
       const interfaces = os.networkInterfaces();
       let localIp = "127.0.0.1";
 
@@ -142,15 +140,27 @@ let gameProcess = null;
 let gameRoomId = null;  
 let gameIsHost = false; 
 
-const STUN_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-];
+// Variables de estado de señalización reubicadas y controladas
+let pendingCandidates = [];
+let remoteDescriptionSet = false;
+
+const ICE_CONFIG = {
+  iceServers: [
+    "stun:stun.l.google.com:19302",
+    "stun:stun1.l.google.com:19302",
+    "stun:stun2.l.google.com:19302",
+    "turn:openrelayproject:openrelayproject@openrelay.metered.ca:443",
+    "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80"
+  ]
+};
 
 async function startWebRTCBridge(roomId, isHost) {
   currentRoomId = roomId;
   bridgeIsHost = isHost;
+  
+  // CORRECCIÓN: Resetear el pool de candidatos transitorios para evitar colisiones de re-conexión
+  pendingCandidates = [];
+  remoteDescriptionSet = false;
 
   const NodeDataChannel = require("node-datachannel");
 
@@ -163,9 +173,7 @@ async function startWebRTCBridge(roomId, isHost) {
     console.log("[WebRTC] Creating host peer connection...");
     sendStatusToFrontend("Creando canal de conexión (Host)...");
 
-    peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
-      iceServers: STUN_SERVERS.map(s => s.urls),
-    });
+    peerConnection = new NodeDataChannel.PeerConnection("RetroLink", ICE_CONFIG);
 
     dataChannel = peerConnection.createDataChannel("game", {
       ordered: false,
@@ -204,10 +212,6 @@ async function startWebRTCBridge(roomId, isHost) {
     }
   });
 
-  let pendingCandidates = [];
-  let remoteDescriptionSet = false;
-
-  // CORRECCIÓN SATELLITE: El vaciado diferido previene que la librería nativa descarte los candidatos iniciales
   const flushPendingCandidates = () => {
     setTimeout(() => {
       console.log(`[WebRTC] Vaciando ${pendingCandidates.length} candidatos ICE acumulados...`);
@@ -226,9 +230,7 @@ async function startWebRTCBridge(roomId, isHost) {
       console.log("[WebRTC] Client receiving offer — creating peer connection...");
       sendStatusToFrontend("Procesando oferta de conexión del Host...");
 
-      peerConnection = new NodeDataChannel.PeerConnection("RetroLink", {
-        iceServers: STUN_SERVERS.map(s => s.urls),
-      });
+      peerConnection = new NodeDataChannel.PeerConnection("RetroLink", ICE_CONFIG);
 
       peerConnection.onDataChannel((channel) => {
         dataChannel = channel;
@@ -307,7 +309,6 @@ function setupDataChannel() {
     if (!udpSocket) return;
     const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
     
-    // CORRECCIÓN RUTEO: Los dos lados inyectan los paquetes UDP limpios al puerto base del juego ejecutable
     const targetPort = 27960; 
     udpSocket.send(buffer, 0, buffer.length, targetPort, "127.0.0.1");
   });
@@ -383,7 +384,6 @@ ipcMain.handle("select-game-exe", async () => {
 
 /*
 PREPARE HOST
-Averigua automáticamente la red y le avisa de forma inteligente al tester si UPnP falla
 */
 ipcMain.handle("prepare-host", async (_, port = 27960) => {
   console.log(`[RetroLink] Preparing host on port ${port}...`);
@@ -395,7 +395,6 @@ ipcMain.handle("prepare-host", async (_, port = 27960) => {
 
   console.log(`[Network Detect] IP Local: ${netDetails.localIp}, Router: ${netDetails.routerIp}`);
 
-  // Si falla el UPnP por culpa del router, pintamos las instrucciones precisas y personalizadas en el banner
   if (!upnp.success) {
     sendStatusToFrontend(
       `⚠️ UPnP fallido. En tu router (${netDetails.routerIp}), mapea el puerto UDP 27962 hacia la IP de tu PC: ${netDetails.localIp}`
@@ -414,7 +413,7 @@ ipcMain.handle("close-host-port", async (_, port = 27960) => {
 });
 
 /*
-START RELAY (ahora usa WebRTC)
+START RELAY
 */
 ipcMain.handle("start-relay", async (_, roomId, isHost) => {
   try {
@@ -442,8 +441,25 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
   if (!gamePath) return { success: false, error: "No game path provided" };
 
   try {
-    const gameDir = path.dirname(gamePath);
-    allowAppThroughFirewall(gamePath, "RetroLink - Game");
+    let finalGamePath = gamePath;
+
+    // CORRECCIÓN DE PORTABILIDAD: Validar si la ruta enviada existe en el PC actual.
+    // Si la ruta contiene "Capitan Meque" y no existe en este PC, intenta resolverla de forma relativa.
+    if (!fs.existsSync(finalGamePath)) {
+      console.warn(`[RetroLink] La ruta original no existe: ${finalGamePath}. Intentando recuperación...`);
+      const baseName = path.basename(gamePath);
+      
+      // Intenta buscar el ejecutable en la raíz de la app descompresa por si viene integrado en el build
+      const fallbackPath = path.join(path.dirname(process.execPath), baseName);
+      if (fs.existsSync(fallbackPath)) {
+        finalGamePath = fallbackPath;
+      } else {
+        return { success: false, error: `El juego no se encuentra en la ruta especificada: ${gamePath}` };
+      }
+    }
+
+    const gameDir = path.dirname(finalGamePath);
+    allowAppThroughFirewall(finalGamePath, "RetroLink - Game");
 
     const args = [...(extraArgs || []), ...(hostIp ? ["+connect", hostIp] : [])];
 
@@ -456,7 +472,7 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     gameRoomId = roomId;
     gameIsHost = isHost;
 
-    gameProcess = execFile(gamePath, args, { cwd: gameDir }, (error) => {
+    gameProcess = execFile(finalGamePath, args, { cwd: gameDir }, (error) => {
       if (error && error.code !== null) {
         console.error("Error launching game:", error);
       }

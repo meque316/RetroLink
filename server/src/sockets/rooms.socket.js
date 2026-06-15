@@ -23,10 +23,9 @@ export default function roomsSocket(io) {
 
     onlineUsers[socket.id] = user;
 
+    // Notificar a todos (incluyendo al nuevo) el listado actualizado de usuarios
     io.emit("users-online", Object.values(onlineUsers));
-
     socket.emit("rooms-list", rooms);
-    socket.emit("users-online", Object.values(onlineUsers));
 
     /*
     GET ROOMS
@@ -39,7 +38,7 @@ export default function roomsSocket(io) {
     GET ONLINE USERS
     */
     socket.on("get-users-online", () => {
-      io.emit("users-online", Object.values(onlineUsers));
+      socket.emit("users-online", Object.values(onlineUsers));
     });
 
     /*
@@ -153,21 +152,18 @@ export default function roomsSocket(io) {
 
     /*
     WEBRTC SIGNALING
-    Reenvía señales entre peers para establecer la conexión P2P
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
-      socket.join(`webrtc-${roomId}`);
-      console.log(`[WebRTC] ${socket.id} joined signaling room ${roomId} as ${isHost ? "host" : "client"}`);
+      console.log(`[WebRTC] ${socket.id} sincronizando señales en la sala principal ${roomId} como ${isHost ? "HOST" : "CLIENT"}`);
 
       if (!isHost) {
-        // Notifica al host que el cliente está listo para conectar
-        socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
-        console.log(`[WebRTC] Notified host that client is ready in room ${roomId}`);
+        socket.to(roomId).emit("webrtc-peer-ready");
+        console.log(`[WebRTC] Notificado host de que el cliente está listo en la sala principal: ${roomId}`);
       }
     });
 
     socket.on("webrtc-signal", ({ roomId, ...signal }) => {
-      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", signal);
+      socket.to(roomId).emit("webrtc-signal", signal);
     });
 
     /*
@@ -208,51 +204,7 @@ export default function roomsSocket(io) {
         return;
       }
 
+      // CORRECCIÓN: Si el host se va, asignamos el nuevo y enviamos la info actualizada de inmediato
       if (room.host === socket.id) {
         room.host = room.members[0]?.id;
-      }
-
-      io.emit("rooms-list", rooms);
-      io.to(roomId).emit("room-ready-state", readyStates[roomId] || []);
-    });
-
-    /*
-    DISCONNECT
-    */
-    socket.on("disconnect", () => {
-      console.log("Usuario desconectado:", socket.id);
-
-      delete onlineUsers[socket.id];
-      io.emit("users-online", Object.values(onlineUsers));
-
-      for (let i = rooms.length - 1; i >= 0; i--) {
-        const room = rooms[i];
-
-        room.members = room.members.filter((m) => m.id !== socket.id);
-        room.players = room.members.length;
-
-        if (readyStates[room.id]) {
-          readyStates[room.id] = readyStates[room.id].filter(
-            (id) => id !== socket.id
-          );
-        }
-
-        if (room.host === socket.id && room.members.length > 0) {
-          room.host = room.members[0]?.id;
-        }
-
-        if (room.players <= 0) {
-          delete readyStates[room.id];
-          rooms.splice(i, 1);
-        } else {
-          io.to(room.id).emit(
-            "room-ready-state",
-            readyStates[room.id] || []
-          );
-        }
-      }
-
-      io.emit("rooms-list", rooms);
-    });
-  });
-}
+        // Forzamos el re-envío de la información de red del nuevo host asignado
