@@ -10,6 +10,7 @@ import {
   X,
   Send,
   Smile,
+  FolderOpen, // Añadido para el botón de buscar ejecutable
 } from "lucide-react";
 
 const EMOTES = [
@@ -24,10 +25,8 @@ function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
   const [readyPlayers, setReadyPlayers] = useState([]);
 
-  // Guardamos el rol inicial en un useRef permanente para que los re-renders 
-  // de las listas de usuarios no destruyan ni reinicien el puente WebRTC.
-  const isHostRef = useRef(room.host === socket.id);
-  const isHost = isHostRef.current;
+  // CORRECCIÓN: El rol de host debe ser dinámico para reaccionar si el host original se va
+  const isHost = currentRoom?.host === socket.id;
 
   const getGamePathFromLibrary = () => {
     try {
@@ -86,8 +85,6 @@ function Room({ room, leaveRoom }) {
         return;
       }
 
-      // Una vez que el proceso local de Electron se levanta, nos registramos 
-      // de inmediato en la sala de señales unificada del servidor de Render.
       if (isMounted) {
         console.log(`[Room] Bridge local OK. Uniéndose a señalización del servidor...`);
         socket.emit("webrtc-join", { roomId: room.id, isHost });
@@ -96,7 +93,6 @@ function Room({ room, leaveRoom }) {
 
     startRelay();
 
-    // Escuchar mensajes de estado legibles desde main.js
     window.retroLink?.onBridgeStatus?.((message) => {
       if (!isMounted) return;
       console.log("[Room] Bridge status del sistema:", message);
@@ -113,9 +109,8 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.stopRelay();
       window.retroLink?.offBridgeStatus?.();
     };
-    // Quitamos 'isHost' de las dependencias. Al usar la referencia del useRef,
-    // este efecto corre ÚNICAMENTE una sola vez cuando entras a la sala.
-  }, [room.id]);
+    // Agregamos isHost para reiniciar correctamente el flujo si cambia el liderazgo P2P de la sala
+  }, [room.id, isHost]);
 
   /*
   ===================================================================
@@ -137,10 +132,8 @@ function Room({ room, leaveRoom }) {
       if (!gamePath) { console.warn("No game path selected"); return; }
 
       if (isHost) {
-        // Host lanza el juego y crea la partida local
         await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
       } else {
-        // Cliente conecta mediante el proxy/bridge local de red
         await window.retroLink?.launchGame(gamePath, "127.0.0.1:27961", room.id, false, []);
       }
     };
@@ -171,6 +164,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
+    // CORRECCIÓN: Dependencias actualizadas para evitar cierres de estado obsoletos (stale closures)
   }, [room.id, leaveRoom, gamePath, isHost]);
 
   const handleBrowseGame = async () => {
@@ -348,11 +342,13 @@ function Room({ room, leaveRoom }) {
               <p className="text-yellow-400 text-sm mb-3">Executable not configured</p>
             )}
 
+            {/* CORRECCIÓN: Botón cerrado de manera correcta con un icono descriptivo */}
             <button
               onClick={handleBrowseGame}
-              className="mt-4 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 transition"
+              className="mt-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-sm transition"
             >
-              <Browse
+              <FolderOpen size={16} />
+              Browse Executable
             </button>
           </div>
 
@@ -417,8 +413,9 @@ function Room({ room, leaveRoom }) {
                   <button
                     key={i}
                     onClick={() => setEmoteCategory(i)}
+                    // CORRECCIÓN: 'emoteCategory' en vez del inexistente 'emotionCategory'
                     className={`text-xs px-2 py-1 rounded-lg whitespace-nowrap transition ${
-                      emotionCategory === i ? "bg-green-500/20 text-green-400" : "text-zinc-500 hover:text-white"
+                      emoteCategory === i ? "bg-green-500/20 text-green-400" : "text-zinc-500 hover:text-white"
                     }`}
                   >
                     {cat.category}
