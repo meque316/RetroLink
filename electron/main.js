@@ -178,6 +178,12 @@ function onChannelOpen() {
   if (state.isHost) {
     // Host: crear socket UDP para hablar con Quake 3 en 27960
     state.udpProxy = dgram.createSocket("udp4");
+
+    state.udpProxy.on("error", (err) => {
+      console.error("[Bridge] UDP proxy error:", err.message);
+      sendStatus("Error de red en el proxy del host: " + err.message);
+    });
+
     state.udpProxy.bind(0, "127.0.0.1", () => {
       console.log(`[Bridge] Host UDP proxy bound on port ${state.udpProxy.address().port}`);
     });
@@ -310,6 +316,18 @@ async function startBridge(roomId, isHost) {
   // ── UDP LOCAL (solo cliente) ──────────────────────────────────
   if (!isHost) {
     state.udpLocal = dgram.createSocket("udp4");
+
+    state.udpLocal.on("error", (err) => {
+      console.error("[Bridge] UDP bind error:", err.message);
+      if (err.code === "EADDRINUSE") {
+        sendStatus("Puerto 27961 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
+      } else {
+        sendStatus("Error de red: " + err.message);
+      }
+      try { state.udpLocal.close(); } catch(e) {}
+      state.udpLocal = null;
+    });
+
     state.udpLocal.bind(27961, "127.0.0.1", () => {
       console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
     });
