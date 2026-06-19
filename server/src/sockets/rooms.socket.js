@@ -204,7 +204,61 @@ export default function roomsSocket(io) {
         return;
       }
 
-      // CORRECCIÓN: Si el host se va, asignamos el nuevo y enviamos la info actualizada de inmediato
       if (room.host === socket.id) {
         room.host = room.members[0]?.id;
-        // Forzamos el re-envío de la información de red del nuevo host asignado
+        io.to(roomId).emit("host-peer-info", {
+          roomId: room.id,
+          hostSocketId: room.host,
+          hostPublicIp: room.hostPublicIp,
+        });
+      }
+
+      io.emit("rooms-list", rooms);
+      io.to(roomId).emit("room-ready-state", readyStates[roomId] || []);
+    });
+
+    /*
+    DISCONNECT
+    */
+    socket.on("disconnect", () => {
+      console.log("Usuario desconectado:", socket.id);
+
+      delete onlineUsers[socket.id];
+      io.emit("users-online", Object.values(onlineUsers));
+
+      for (let i = rooms.length - 1; i >= 0; i--) {
+        const room = rooms[i];
+
+        room.members = room.members.filter((m) => m.id !== socket.id);
+        room.players = room.members.length;
+
+        if (readyStates[room.id]) {
+          readyStates[room.id] = readyStates[room.id].filter(
+            (id) => id !== socket.id
+          );
+        }
+
+        if (room.players <= 0) {
+          delete readyStates[room.id];
+          rooms.splice(i, 1);
+        } else {
+          if (room.host === socket.id && room.members.length > 0) {
+            room.host = room.members[0]?.id;
+            io.to(room.id).emit("host-peer-info", {
+              roomId: room.id,
+              hostSocketId: room.host,
+              hostPublicIp: room.hostPublicIp,
+            });
+          }
+          
+          io.to(room.id).emit(
+            "room-ready-state",
+            readyStates[room.id] || []
+          );
+        }
+      }
+
+      io.emit("rooms-list", rooms);
+    });
+  });
+}
