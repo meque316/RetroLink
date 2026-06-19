@@ -78,36 +78,13 @@ const closeUPnP = (port) => new Promise((resolve) => {
 ================================================================
 WebRTC P2P BRIDGE
 ================================================================
-
-Arquitectura:
-  HOST:
-    - signalingSocket conecta a Render (socket.io-client)
-    - PeerConnection con DataChannel (offerer)
-    - udpProxy: socket UDP que habla con Quake 3 en 27960
-      * Paquetes entrantes del DataChannel → udpProxy → Q3:27960
-      * Respuestas de Q3:27960 → udpProxy → DataChannel
-
-  CLIENTE:
-    - signalingSocket conecta a Render (socket.io-client)
-    - PeerConnection (answerer)
-    - udpLocal en 27961
-      * Q3 cliente conecta a 127.0.0.1:27961
-      * Paquetes de Q3 → udpLocal → DataChannel
-      * Respuestas del DataChannel → udpLocal → Q3:27961
-
-Reglas clave:
-  1. Solo signalingSocket maneja el WebRTC signaling (NUNCA el socket del frontend)
-  2. El host espera webrtc-peer-ready antes de crear el PeerConnection
-  3. ICE candidates se encolan hasta que remote description esté lista
-  4. setLocalDescription siempre con tipo explícito ("offer" o "answer")
-================================================================
 */
 
 let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,   // cliente: 27961 / host: no usado para escucha
+  udpLocal: null,   // cliente: 27961
   udpProxy: null,   // host: habla con Q3 en 27960
   roomId: null,
   isHost: false,
@@ -121,12 +98,11 @@ const STUN = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
   "stun:stun2.l.google.com:19302",
-  "stun:openrelay.metered.ca:80",   // fallback adicional
+  "stun:openrelay.metered.ca:80",
 ];
 
 const SIGNALING_URL = "https://retrolink-server.onrender.com";
 
-// Limpiar todo el estado del bridge
 function resetBridge() {
   try { state.channel?.close(); }         catch(e) {}
   try { state.peer?.close(); }            catch(e) {}
@@ -146,19 +122,16 @@ function resetBridge() {
   console.log("[Bridge] Reset complete");
 }
 
-// Configurar DataChannel una vez abierto
 function onChannelOpen() {
   console.log("[Bridge] DataChannel open — P2P established!");
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
 
   if (state.isHost) {
-    // Host: crear socket UDP para hablar con Quake 3 en 27960
     state.udpProxy = dgram.createSocket("udp4");
     state.udpProxy.bind(0, "127.0.0.1", () => {
       console.log(`[Bridge] Host UDP proxy bound on port ${state.udpProxy.address().port}`);
     });
 
-    // Respuestas de Q3 → DataChannel → cliente
     state.udpProxy.on("message", (msg) => {
       if (state.channel?.isOpen()) {
         try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
@@ -167,16 +140,13 @@ function onChannelOpen() {
   }
 }
 
-// Cuando llegan datos por el DataChannel
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
 
   if (state.isHost) {
-    // Host: reenviar paquete del cliente a Q3 local
     if (!state.udpProxy) return;
     state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1");
   } else {
-    // Cliente: reenviar respuesta del host a Q3 local en 27961
     if (!state.udpLocal) return;
     state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1");
   }
@@ -184,16 +154,12 @@ function onChannelMessage(msg) {
 
 function setupChannel(channel) {
   state.channel = channel;
-
   channel.onOpen(onChannelOpen);
-
   channel.onClosed(() => {
     console.log("[Bridge] DataChannel closed");
     sendStatus("Conexión P2P cerrada.");
   });
-
   channel.onMessage(onChannelMessage);
-
   channel.onError((e) => {
     console.error("[Bridge] DataChannel error:", e);
   });
@@ -202,7 +168,12 @@ function setupChannel(channel) {
 function flushCandidates() {
   if (!state.peer || !state.remoteDescSet) return;
   state.pendingCandidates.forEach(({ candidate, mid }) => {
-    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+    try { 
+      state.peer.addRemoteCandidate(candidate, mid); 
+      console.log("[Bridge] Flushed remote candidate successfully");
+    } catch(e) {
+      console.warn("[Bridge] Error flushing pending candidate:", e.message);
+    }
   });
   state.pendingCandidates = [];
 }
@@ -218,9 +189,6 @@ async function startBridge(roomId, isHost) {
   console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
   sendStatus("Conectando al servidor de señales...");
 
-  // ── SIGNALING SOCKET ──────────────────────────────────────────
-  // Este socket es EXCLUSIVO para WebRTC signaling.
-  // NO es el mismo socket que usa el frontend React.
   const sig = socketClient(SIGNALING_URL, {
     transports: ["websocket"],
     reconnection: false,
@@ -235,12 +203,9 @@ async function startBridge(roomId, isHost) {
   sig.on("connect", () => {
     console.log("[Bridge] Signaling connected:", sig.id);
     sendStatus("Buscando rival en la sala...");
-
-    // Unirse a la sala WebRTC (SOLO este socket, nunca el del frontend)
     sig.emit("webrtc-join", { roomId, isHost });
   });
 
-  // ── HOST: esperar al cliente antes de crear peer ──────────────
   sig.on("webrtc-peer-ready", () => {
     if (!isHost || state.peer) return;
     console.log("[Bridge] Client ready — creating host peer...");
@@ -248,46 +213,64 @@ async function startBridge(roomId, isHost) {
     createHostPeer(NDC, sig, roomId);
   });
 
-  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
-  sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
+  // ── SEÑALES WebRTC ENTRANTES (CORREGIDO) ──────────────────────
+  sig.on("webrtc-signal", (data) => {
+    const type = data.type;
+    const sdp = data.sdp;
+    const candidate = data.candidate;
+    const mid = data.mid;
+
     if (type === "offer" && !isHost) {
-      // Cliente crea su peer al recibir el offer
       if (!state.peer) createClientPeer(NDC, sig, roomId);
 
       console.log("[Bridge] Client received offer — setting remote description...");
       sendStatus("Procesando oferta de conexión...");
-      state.peer.setRemoteDescription(sdp, "offer");
-      state.remoteDescSet = true;
-      flushCandidates();
-
-      console.log("[Bridge] Client sending answer...");
-      sendStatus("Respondiendo conexión...");
-      state.peer.setLocalDescription("answer");
+      
+      try {
+        state.peer.setRemoteDescription(sdp, "offer");
+        state.remoteDescSet = true;
+        
+        console.log("[Bridge] Client sending answer...");
+        sendStatus("Respondiendo conexión...");
+        state.peer.setLocalDescription("answer");
+        
+        flushCandidates();
+      } catch (err) {
+        console.error("[Bridge] Error setting remote offer / local answer:", err);
+      }
 
     } else if (type === "answer" && isHost) {
       console.log("[Bridge] Host received answer — setting remote description...");
       sendStatus("Conectando túnel P2P...");
-      state.peer.setRemoteDescription(sdp, "answer");
-      state.remoteDescSet = true;
-      flushCandidates();
+      
+      try {
+        state.peer.setRemoteDescription(sdp, "answer");
+        state.remoteDescSet = true;
+        flushCandidates();
+      } catch (err) {
+        console.error("[Bridge] Error setting remote answer:", err);
+      }
 
-    } else if (type === "candidate") {
+    } else if (type === "candidate" || candidate) {
       if (state.peer && state.remoteDescSet) {
-        try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+        try { 
+          state.peer.addRemoteCandidate(candidate, mid); 
+          console.log("[Bridge] Remote candidate added successfully");
+        } catch(e) {
+          console.warn("[Bridge] Failed to add immediate remote candidate:", e.message);
+        }
       } else {
         state.pendingCandidates.push({ candidate, mid });
       }
     }
   });
 
-  // ── UDP LOCAL (solo cliente) ──────────────────────────────────
   if (!isHost) {
     state.udpLocal = dgram.createSocket("udp4");
     state.udpLocal.bind(27961, "127.0.0.1", () => {
       console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
     });
 
-    // Q3 cliente → DataChannel → host
     state.udpLocal.on("message", (msg) => {
       if (state.channel?.isOpen()) {
         try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
@@ -315,19 +298,22 @@ function createHostPeer(NDC, sig, roomId) {
   peer.onStateChange((s) => console.log("[Bridge] Host peer state:", s));
   peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
 
-  // Crear DataChannel
   const channel = peer.createDataChannel("game", {
     ordered: false,
     maxRetransmits: 0,
   });
   setupChannel(channel);
 
-  // Delay mínimo para asegurar que el socket del cliente está listo en Render
+  // Ajustado a 500ms para asegurar recolección óptima en redes WAN externas
   setTimeout(() => {
     console.log("[Bridge] Host creating offer...");
     sendStatus("Enviando oferta de conexión al rival...");
-    peer.setLocalDescription("offer");
-  }, 200);
+    try {
+      peer.setLocalDescription("offer");
+    } catch(e) {
+      console.error("[Bridge] Error setting host local description:", e.message);
+    }
+  }, 500);
 }
 
 function createClientPeer(NDC, sig, roomId) {
