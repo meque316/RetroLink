@@ -118,29 +118,16 @@ let state = {
 };
 
 // STUN — descubre la IP pública (gratis, sin límite)
-// TURN — relay cuando STUN no alcanza por NAT restrictivo (Open Relay Project, 20GB/mes gratis)
+// TEMPORALMENTE solo STUN para descartar que el TURN cause el crash nativo.
+// TODO: reactivar TURN una vez confirmado que el crash no es por esto.
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
   "stun:stun2.l.google.com:19302",
-  "turn:openrelay.metered.ca:80",
-  "turn:openrelay.metered.ca:443",
-  "turn:openrelay.metered.ca:443?transport=tcp",
 ];
 
-const TURN_USERNAME = "openrelayproject";
-const TURN_CREDENTIAL = "openrelayproject";
-
-// node-datachannel acepta iceServers como array de strings con credenciales embebidas
-// formato: "turn:user:pass@host:port"
 function buildIceServers() {
-  return ICE_SERVERS.map((url) => {
-    if (url.startsWith("turn:")) {
-      // Insertar credenciales en la URL: turn:user:pass@host:port
-      return url.replace("turn:", `turn:${TURN_USERNAME}:${TURN_CREDENTIAL}@`);
-    }
-    return url;
-  });
+  return ICE_SERVERS;
 }
 
 const SIGNALING_URL = "https://retrolink-server.onrender.com";
