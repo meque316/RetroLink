@@ -270,6 +270,14 @@ async function startBridge(roomId, isHost) {
     // Usamos ack para confirmar que el join() se completó antes de continuar
     sig.emit("webrtc-join", { roomId, isHost }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
+
+      // CASO CLAVE: si somos el host y el cliente YA estaba esperando en la sala
+      // (llegó antes que nosotros), no podemos depender de recibir webrtc-peer-ready
+      // porque ya se emitió y se perdió. Creamos el peer inmediatamente.
+      if (isHost && response?.otherPeerPresent && !state.peer) {
+        console.log("[Bridge] Client was already waiting — creating peer immediately...");
+        createHostPeer(NDC, sig, roomId);
+      }
     });
   });
 
