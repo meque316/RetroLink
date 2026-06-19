@@ -10,7 +10,6 @@ import {
   X,
   Send,
   Smile,
-  FolderOpen, // Añadido para el botón de buscar ejecutable
 } from "lucide-react";
 
 const EMOTES = [
@@ -25,9 +24,6 @@ function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
   const [readyPlayers, setReadyPlayers] = useState([]);
 
-  // CORRECCIÓN: El rol de host debe ser dinámico para reaccionar si el host original se va
-  const isHost = currentRoom?.host === socket.id;
-
   const getGamePathFromLibrary = () => {
     try {
       const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
@@ -40,6 +36,7 @@ function Room({ room, leaveRoom }) {
 
   const [gamePath, setGamePath] = useState(getGamePathFromLibrary);
   const [relayStatus, setRelayStatus] = useState(null);
+  // null = conectando, "signaling" = signaling OK, "ok" = DataChannel abierto, "error" = falló
   const [relayStep, setRelayStep] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
@@ -54,6 +51,7 @@ function Room({ room, leaveRoom }) {
   const chatEndRef = useRef(null);
   const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
+  const isHost = currentRoom?.host === socket.id;
   const isReady = readyPlayers.includes(socket.id);
 
   /*
@@ -64,58 +62,41 @@ function Room({ room, leaveRoom }) {
   }, [messages]);
 
   /*
-  ===================================================================
-  1. EFFECT: CONTROL DEL BRIDGE LOCAL (ELECTRON)
-  ===================================================================
+  START RELAY
   */
   useEffect(() => {
-    let isMounted = true;
-
     const startRelay = async () => {
-      if (!isMounted) return;
       setRelayStatus(null);
       setRelayStep("Iniciando conexión...");
-      
-      console.log(`[Room] Solicitando startRelay para sala: ${room.id} como ${isHost ? "HOST" : "CLIENT"}`);
       const result = await window.retroLink?.startRelay(room.id, isHost);
-      
-      if (!result?.success && isMounted) {
+      if (!result?.success) {
         setRelayStatus("error");
-        setRelayStep("No se pudo iniciar el bridge local");
-        return;
-      }
-
-      if (isMounted) {
-        console.log(`[Room] Bridge local OK. Uniéndose a señalización del servidor...`);
-        socket.emit("webrtc-join", { roomId: room.id, isHost });
+        setRelayStep("No se pudo iniciar el bridge");
       }
     };
 
     startRelay();
 
+    // Escuchar mensajes de estado legibles desde main.js
     window.retroLink?.onBridgeStatus?.((message) => {
-      if (!isMounted) return;
-      console.log("[Room] Bridge status del sistema:", message);
+      console.log("[Room] Bridge status:", message);
       setRelayStep(message);
 
       if (message.includes("Conexión establecida")) {
         setRelayStatus("ok");
+      } else if (message.includes("cerrada") || message.includes("detenido")) {
+        // No marcar error si simplemente se detuvo al desmontar
       }
     });
 
     return () => {
-      isMounted = false;
-      console.log("[Room] Desmontando componente. Deteniendo bridge...");
       window.retroLink?.stopRelay();
       window.retroLink?.offBridgeStatus?.();
     };
-    // Agregamos isHost para reiniciar correctamente el flujo si cambia el liderazgo P2P de la sala
   }, [room.id, isHost]);
 
   /*
-  ===================================================================
-  2. EFFECT: EVENTOS GLOBALES DE SOCKET.IO
-  ===================================================================
+  SOCKET EVENTS
   */
   useEffect(() => {
     socket.emit("get-rooms");
@@ -132,8 +113,12 @@ function Room({ room, leaveRoom }) {
       if (!gamePath) { console.warn("No game path selected"); return; }
 
       if (isHost) {
+        // Host lanza Quake 3 normal — crea la partida desde el menú del juego
+        // El bridge escucha en 27962 y reenvía los paquetes a Quake 3 en 27960
         await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
       } else {
+        // Cliente conecta al bridge local en 27961
+        // El bridge recibe y reenvía via WebRTC al host
         await window.retroLink?.launchGame(gamePath, "127.0.0.1:27961", room.id, false, []);
       }
     };
@@ -164,7 +149,6 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
-    // CORRECCIÓN: Dependencias actualizadas para evitar cierres de estado obsoletos (stale closures)
   }, [room.id, leaveRoom, gamePath, isHost]);
 
   const handleBrowseGame = async () => {
@@ -342,13 +326,11 @@ function Room({ room, leaveRoom }) {
               <p className="text-yellow-400 text-sm mb-3">Executable not configured</p>
             )}
 
-            {/* CORRECCIÓN: Botón cerrado de manera correcta con un icono descriptivo */}
             <button
               onClick={handleBrowseGame}
-              className="mt-4 flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-sm transition"
+              className="mt-4 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 transition"
             >
-              <FolderOpen size={16} />
-              Browse Executable
+              Browse
             </button>
           </div>
 
@@ -377,10 +359,12 @@ function Room({ room, leaveRoom }) {
 
         {/* RIGHT — CHAT */}
         <div className="w-80 bg-[#121821] rounded-3xl border border-zinc-800 flex flex-col">
+
           <div className="p-5 border-b border-zinc-800">
             <h3 className="font-semibold">Room Chat</h3>
           </div>
 
+          {/* MESSAGES */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
             {messages.length === 0 ? (
               <p className="text-zinc-600 text-sm text-center mt-4">No messages yet 👾</p>
@@ -406,16 +390,19 @@ function Room({ room, leaveRoom }) {
             <div ref={chatEndRef} />
           </div>
 
+          {/* EMOTE PICKER */}
           {showEmotes && (
             <div className="border-t border-zinc-800 bg-[#0d1117] p-3">
+              {/* CATEGORY TABS */}
               <div className="flex gap-1 mb-2 overflow-x-auto">
                 {EMOTES.map((cat, i) => (
                   <button
                     key={i}
                     onClick={() => setEmoteCategory(i)}
-                    // CORRECCIÓN: 'emoteCategory' en vez del inexistente 'emotionCategory'
                     className={`text-xs px-2 py-1 rounded-lg whitespace-nowrap transition ${
-                      emoteCategory === i ? "bg-green-500/20 text-green-400" : "text-zinc-500 hover:text-white"
+                      emoteCategory === i
+                        ? "bg-green-500/20 text-green-400"
+                        : "text-zinc-500 hover:text-white"
                     }`}
                   >
                     {cat.category}
@@ -423,6 +410,7 @@ function Room({ room, leaveRoom }) {
                 ))}
               </div>
 
+              {/* EMOTES GRID */}
               <div className="grid grid-cols-5 gap-1">
                 {EMOTES[emoteCategory].emotes.map((emote, i) => (
                   <button
@@ -437,6 +425,7 @@ function Room({ room, leaveRoom }) {
             </div>
           )}
 
+          {/* INPUT */}
           <div className="p-4 border-t border-zinc-800">
             <div className="flex gap-2 items-center">
               <button

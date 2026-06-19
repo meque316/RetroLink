@@ -6,326 +6,357 @@ const {
 } = require("electron");
 
 const path = require("path");
+const fs = require("fs");
 const { exec, execFile } = require("child_process");
 const dgram = require("dgram");
 const natUpnp = require("nat-upnp");
 const { io: socketClient } = require("socket.io-client");
-const os = require("os");
-const fs = require("fs"); // Añadido para validar rutas de juegos de forma segura
 
-/*
-Detect environment
-*/
 const isDev = !app.isPackaged;
 
 /*
-MESSAGING TO FRONTEND
-Envía estados legibles al banner de Room.jsx
+FILE LOGGING
 */
-function sendStatusToFrontend(statusMessage) {
-  const win = BrowserWindow.getAllWindows()[0];
-  if (win) {
-    win.webContents.send("bridge-status-update", statusMessage);
+const setupLogging = () => {
+  const logPath = path.join(app.getPath("userData"), "retrolink.log");
+  const orig = { log: console.log, error: console.error, warn: console.warn };
+  const write = (lvl, args) => {
+    try { fs.appendFileSync(logPath, `[${new Date().toISOString()}][${lvl}] ${args.join(" ")}\n`); } catch(e) {}
+  };
+  console.log   = (...a) => { orig.log(...a);   write("LOG",  a); };
+  console.error = (...a) => { orig.error(...a); write("ERR",  a); };
+  console.warn  = (...a) => { orig.warn(...a);  write("WARN", a); };
+  try { fs.writeFileSync(logPath, `=== RetroLink ${new Date().toISOString()} ===\n`); } catch(e) {}
+  console.log("[Log] File:", logPath);
+};
+
+/*
+UI STATUS
+*/
+const sendStatus = (msg) => {
+  const wins = BrowserWindow.getAllWindows();
+  if (wins[0]) wins[0].webContents.send("bridge-status-update", msg);
+};
+
+/*
+FIREWALL
+*/
+const allowFirewall = (programPath, ruleName) => {
+  if (!programPath) return;
+  exec(`netsh advfirewall firewall add rule name="${ruleName}" dir=in action=allow program="${programPath}" enable=yes`,
+    (err) => console.log(err ? `[FW] Already exists: ${ruleName}` : `[FW] Allowed: ${ruleName}`)
+  );
+};
+
+/*
+PORT CHECK
+*/
+const checkPort = (port) => new Promise((resolve) => {
+  const s = dgram.createSocket("udp4");
+  s.bind(port, () => { s.close(); resolve(true); });
+  s.on("error", () => resolve(false));
+});
+
+/*
+UPNP
+*/
+const openUPnP = (port) => new Promise((resolve) => {
+  const c = natUpnp.createClient();
+  c.portMapping({ public: port, private: port, protocol: "UDP", description: "RetroLink", ttl: 0 }, (err) => {
+    c.close();
+    resolve({ success: !err });
+    if (!err) console.log(`[UPnP] Port ${port} opened`);
+  });
+});
+
+const closeUPnP = (port) => new Promise((resolve) => {
+  const c = natUpnp.createClient();
+  c.portUnmapping({ public: port, protocol: "UDP" }, () => { c.close(); resolve(); });
+});
+
+/*
+================================================================
+WebRTC P2P BRIDGE
+================================================================
+
+Arquitectura:
+  HOST:
+    - signalingSocket conecta a Render (socket.io-client)
+    - PeerConnection con DataChannel (offerer)
+    - udpProxy: socket UDP que habla con Quake 3 en 27960
+      * Paquetes entrantes del DataChannel → udpProxy → Q3:27960
+      * Respuestas de Q3:27960 → udpProxy → DataChannel
+
+  CLIENTE:
+    - signalingSocket conecta a Render (socket.io-client)
+    - PeerConnection (answerer)
+    - udpLocal en 27961
+      * Q3 cliente conecta a 127.0.0.1:27961
+      * Paquetes de Q3 → udpLocal → DataChannel
+      * Respuestas del DataChannel → udpLocal → Q3:27961
+
+Reglas clave:
+  1. Solo signalingSocket maneja el WebRTC signaling (NUNCA el socket del frontend)
+  2. El host espera webrtc-peer-ready antes de crear el PeerConnection
+  3. ICE candidates se encolan hasta que remote description esté lista
+  4. setLocalDescription siempre con tipo explícito ("offer" o "answer")
+================================================================
+*/
+
+let state = {
+  signalingSocket: null,
+  peer: null,
+  channel: null,
+  udpLocal: null,   // cliente: 27961 / host: no usado para escucha
+  udpProxy: null,   // host: habla con Q3 en 27960
+  roomId: null,
+  isHost: false,
+  pendingCandidates: [],
+  remoteDescSet: false,
+  gameProcess: null,
+  gameRoomId: null,
+};
+
+const STUN = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun2.l.google.com:19302",
+  "stun:openrelay.metered.ca:80",   // fallback adicional
+];
+
+const SIGNALING_URL = "https://retrolink-server.onrender.com";
+
+// Limpiar todo el estado del bridge
+function resetBridge() {
+  try { state.channel?.close(); }         catch(e) {}
+  try { state.peer?.close(); }            catch(e) {}
+  try { state.signalingSocket?.disconnect(); } catch(e) {}
+  try { state.udpLocal?.close(); }        catch(e) {}
+  try { state.udpProxy?.close(); }        catch(e) {}
+
+  state.signalingSocket = null;
+  state.peer = null;
+  state.channel = null;
+  state.udpLocal = null;
+  state.udpProxy = null;
+  state.roomId = null;
+  state.pendingCandidates = [];
+  state.remoteDescSet = false;
+
+  console.log("[Bridge] Reset complete");
+}
+
+// Configurar DataChannel una vez abierto
+function onChannelOpen() {
+  console.log("[Bridge] DataChannel open — P2P established!");
+  sendStatus("¡Conexión P2P establecida! Listos para jugar.");
+
+  if (state.isHost) {
+    // Host: crear socket UDP para hablar con Quake 3 en 27960
+    state.udpProxy = dgram.createSocket("udp4");
+    state.udpProxy.bind(0, "127.0.0.1", () => {
+      console.log(`[Bridge] Host UDP proxy bound on port ${state.udpProxy.address().port}`);
+    });
+
+    // Respuestas de Q3 → DataChannel → cliente
+    state.udpProxy.on("message", (msg) => {
+      if (state.channel?.isOpen()) {
+        try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+      }
+    });
   }
 }
 
-/*
-DETECT LOCAL NETWORK INFO AUTOMATICALLY (Versión Nativa)
-Obtiene la IP local del PC y la IP del Router (Gateway) usando la consola de Windows.
-Evita bugs de compatibilidad con librerías antiguas de Node.
-*/
-function getLocalNetworkDetails() {
-  return new Promise((resolve) => {
-    exec("wmic nicconfig where IPEnabled=True get DefaultIPGateway", (err, stdout) => {
-      let routerIp = "192.168.1.1"; 
+// Cuando llegan datos por el DataChannel
+function onChannelMessage(msg) {
+  const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
 
-      if (!err && stdout) {
-        const match = stdout.match(/\{"([^"]+)"\}/);
-        if (match && match[1]) {
-          routerIp = match[1].trim();
-        }
-      }
+  if (state.isHost) {
+    // Host: reenviar paquete del cliente a Q3 local
+    if (!state.udpProxy) return;
+    state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1");
+  } else {
+    // Cliente: reenviar respuesta del host a Q3 local en 27961
+    if (!state.udpLocal) return;
+    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1");
+  }
+}
 
-      const interfaces = os.networkInterfaces();
-      let localIp = "127.0.0.1";
+function setupChannel(channel) {
+  state.channel = channel;
 
-      for (const interfaceName in interfaces) {
-        for (const iface of interfaces[interfaceName]) {
-          if (iface.family === "IPv4" && !iface.internal) {
-            localIp = iface.address;
-            break;
-          }
-        }
-        if (localIp !== "127.0.0.1") break;
-      }
+  channel.onOpen(onChannelOpen);
 
-      resolve({ localIp, routerIp });
-    });
+  channel.onClosed(() => {
+    console.log("[Bridge] DataChannel closed");
+    sendStatus("Conexión P2P cerrada.");
+  });
+
+  channel.onMessage(onChannelMessage);
+
+  channel.onError((e) => {
+    console.error("[Bridge] DataChannel error:", e);
   });
 }
 
-/*
-WINDOWS FIREWALL
-*/
-function allowAppThroughFirewall(programPath, ruleName) {
-  if (!programPath) return;
-
-  const command =
-    `netsh advfirewall firewall add rule ` +
-    `name="${ruleName}" ` +
-    `dir=in action=allow ` +
-    `program="${programPath}" ` +
-    `enable=yes`;
-
-  exec(command, (error) => {
-    if (error) {
-      console.log(`[Firewall] Rule may already exist for ${ruleName}`);
-      return;
-    }
-    console.log(`[Firewall] ${ruleName} allowed`);
+function flushCandidates() {
+  if (!state.peer || !state.remoteDescSet) return;
+  state.pendingCandidates.forEach(({ candidate, mid }) => {
+    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
   });
+  state.pendingCandidates = [];
 }
 
-/*
-CHECK PORT
-*/
-function checkPortAvailable(port) {
-  return new Promise((resolve) => {
-    const socket = dgram.createSocket("udp4");
-    socket.bind(port, () => { socket.close(); resolve(true); });
-    socket.on("error", () => resolve(false));
+async function startBridge(roomId, isHost) {
+  resetBridge();
+
+  state.roomId = roomId;
+  state.isHost = isHost;
+
+  const NDC = require("node-datachannel");
+
+  console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
+  sendStatus("Conectando al servidor de señales...");
+
+  // ── SIGNALING SOCKET ──────────────────────────────────────────
+  // Este socket es EXCLUSIVO para WebRTC signaling.
+  // NO es el mismo socket que usa el frontend React.
+  const sig = socketClient(SIGNALING_URL, {
+    transports: ["websocket"],
+    reconnection: false,
   });
-}
+  state.signalingSocket = sig;
 
-/*
-UPNP PORT MAPPING
-*/
-function openPortUPnP(port) {
-  return new Promise((resolve) => {
-    const client = natUpnp.createClient();
-    client.portMapping(
-      { public: port, private: port, protocol: "UDP", description: "RetroLink Game", ttl: 0 },
-      (err) => {
-        client.close();
-        if (err) { console.log("[UPnP] Failed:", err.message); resolve({ success: false }); }
-        else { console.log(`[UPnP] Port ${port} opened`); resolve({ success: true }); }
-      }
-    );
-  });
-}
-
-function closePortUPnP(port) {
-  return new Promise((resolve) => {
-    const client = natUpnp.createClient();
-    client.portUnmapping({ public: port, protocol: "UDP" }, (err) => {
-      client.close();
-      if (err) console.log("[UPnP] Failed to close port:", err.message);
-      else console.log(`[UPnP] Port ${port} closed`);
-      resolve();
-    });
-  });
-}
-
-/*
-UDP ↔ WebRTC BRIDGE
-*/
-let signalingSocket = null;
-let peerConnection = null;
-let dataChannel = null;
-let udpSocket = null;
-let currentRoomId = null;
-let bridgeIsHost = false;
-
-let gameProcess = null; 
-let gameRoomId = null;  
-let gameIsHost = false; 
-
-// Variables de estado de señalización reubicadas y controladas
-let pendingCandidates = [];
-let remoteDescriptionSet = false;
-
-const ICE_CONFIG = {
-  iceServers: [
-    "stun:stun.l.google.com:19302",
-    "stun:stun1.l.google.com:19302",
-    "stun:stun2.l.google.com:19302",
-    "turn:openrelayproject:openrelayproject@openrelay.metered.ca:443",
-    "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80"
-  ]
-};
-
-async function startWebRTCBridge(roomId, isHost) {
-  currentRoomId = roomId;
-  bridgeIsHost = isHost;
-  
-  // CORRECCIÓN: Resetear el pool de candidatos transitorios para evitar colisiones de re-conexión
-  pendingCandidates = [];
-  remoteDescriptionSet = false;
-
-  const NodeDataChannel = require("node-datachannel");
-
-  console.log(`[WebRTC] Starting bridge — roomId: ${roomId}, isHost: ${isHost}`);
-  sendStatusToFrontend("Conectando al servidor de señales...");
-
-  signalingSocket = socketClient("https://retrolink-server.onrender.com");
-
-  const createHostPeer = () => {
-    console.log("[WebRTC] Creating host peer connection...");
-    sendStatusToFrontend("Creando canal de conexión (Host)...");
-
-    peerConnection = new NodeDataChannel.PeerConnection("RetroLink", ICE_CONFIG);
-
-    dataChannel = peerConnection.createDataChannel("game", {
-      ordered: false,
-      maxRetransmits: 0,
-    });
-
-    setupDataChannel();
-
-    peerConnection.onLocalDescription((sdp, type) => {
-      console.log(`[WebRTC] Host local description ready (${type}), sending...`);
-      signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
-    });
-
-    peerConnection.onLocalCandidate((candidate, mid) => {
-      console.log("[WebRTC] Host ICE candidate ready, sending...");
-      signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
-    });
-
-    setTimeout(() => {
-      console.log("[WebRTC] Calling setLocalDescription('offer')...");
-      sendStatusToFrontend("Enviando oferta de red al rival...");
-      peerConnection.setLocalDescription("offer"); 
-    }, 150);
-  };
-
-  signalingSocket.on("connect", () => {
-    console.log("[WebRTC] Signaling connected:", signalingSocket.id);
-    sendStatusToFrontend("Buscando emparejamiento en la sala...");
-    signalingSocket.emit("webrtc-join", { roomId, isHost });
+  sig.on("connect_error", (err) => {
+    console.error("[Bridge] Signaling connection error:", err.message);
+    sendStatus("Error al conectar al servidor de señales.");
   });
 
-  signalingSocket.on("webrtc-peer-ready", () => {
-    console.log("[WebRTC] Client is ready — creating peer connection...");
-    if (isHost && !peerConnection) {
-      createHostPeer();
-    }
+  sig.on("connect", () => {
+    console.log("[Bridge] Signaling connected:", sig.id);
+    sendStatus("Buscando rival en la sala...");
+
+    // Unirse a la sala WebRTC (SOLO este socket, nunca el del frontend)
+    sig.emit("webrtc-join", { roomId, isHost });
   });
 
-  const flushPendingCandidates = () => {
-    setTimeout(() => {
-      console.log(`[WebRTC] Vaciando ${pendingCandidates.length} candidatos ICE acumulados...`);
-      pendingCandidates.forEach(({ candidate, mid }) => {
-        try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {}
-      });
-      pendingCandidates = [];
-    }, 50);
-  };
+  // ── HOST: esperar al cliente antes de crear peer ──────────────
+  sig.on("webrtc-peer-ready", () => {
+    if (!isHost || state.peer) return;
+    console.log("[Bridge] Client ready — creating host peer...");
+    sendStatus("Rival encontrado — creando conexión P2P...");
+    createHostPeer(NDC, sig, roomId);
+  });
 
-  signalingSocket.on("webrtc-signal", async (data) => {
-    if (!data) return;
-    const { type, sdp, candidate, mid } = data;
+  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
+  sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
+    if (type === "offer" && !isHost) {
+      // Cliente crea su peer al recibir el offer
+      if (!state.peer) createClientPeer(NDC, sig, roomId);
 
-    if (!peerConnection && !isHost && type === "offer") {
-      console.log("[WebRTC] Client receiving offer — creating peer connection...");
-      sendStatusToFrontend("Procesando oferta de conexión del Host...");
+      console.log("[Bridge] Client received offer — setting remote description...");
+      sendStatus("Procesando oferta de conexión...");
+      state.peer.setRemoteDescription(sdp, "offer");
+      state.remoteDescSet = true;
+      flushCandidates();
 
-      peerConnection = new NodeDataChannel.PeerConnection("RetroLink", ICE_CONFIG);
+      console.log("[Bridge] Client sending answer...");
+      sendStatus("Respondiendo conexión...");
+      state.peer.setLocalDescription("answer");
 
-      peerConnection.onDataChannel((channel) => {
-        dataChannel = channel;
-        setupDataChannel();
-      });
+    } else if (type === "answer" && isHost) {
+      console.log("[Bridge] Host received answer — setting remote description...");
+      sendStatus("Conectando túnel P2P...");
+      state.peer.setRemoteDescription(sdp, "answer");
+      state.remoteDescSet = true;
+      flushCandidates();
 
-      peerConnection.onLocalDescription((sdp, type) => {
-        console.log(`[WebRTC] Client local description ready (${type}), sending...`);
-        signalingSocket.emit("webrtc-signal", { roomId, type, sdp });
-      });
-
-      peerConnection.onLocalCandidate((candidate, mid) => {
-        signalingSocket.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
-      });
-    }
-
-    if (type === "offer") {
-      console.log("[WebRTC] Client setting remote description (offer)...");
-      peerConnection.setRemoteDescription(sdp, type);
-      
-      console.log("[WebRTC] Client generating local description (answer)...");
-      sendStatusToFrontend("Respondiendo saludo de red (Answer)...");
-      peerConnection.setLocalDescription("answer"); 
-      
-      remoteDescriptionSet = true;
-      flushPendingCandidates();
-    } else if (type === "answer") {
-      console.log("[WebRTC] Host setting remote description (answer)...");
-      sendStatusToFrontend("Conectando túneles P2P...");
-      peerConnection.setRemoteDescription(sdp, type);
-      remoteDescriptionSet = true;
-      flushPendingCandidates();
     } else if (type === "candidate") {
-      if (peerConnection && remoteDescriptionSet) {
-        try { peerConnection.addRemoteCandidate(candidate, mid); } catch(e) {
-          console.warn("[WebRTC] Failed to add candidate:", e.message);
-        }
+      if (state.peer && state.remoteDescSet) {
+        try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
       } else {
-        pendingCandidates.push({ candidate, mid });
+        state.pendingCandidates.push({ candidate, mid });
       }
     }
   });
 
-  udpSocket = dgram.createSocket("udp4");
-  const localPort = isHost ? 27962 : 27961;
+  // ── UDP LOCAL (solo cliente) ──────────────────────────────────
+  if (!isHost) {
+    state.udpLocal = dgram.createSocket("udp4");
+    state.udpLocal.bind(27961, "127.0.0.1", () => {
+      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
+    });
 
-  udpSocket.bind(localPort, "127.0.0.1", () => {
-    console.log(`[UDP Bridge] Listening on 127.0.0.1:${localPort}`);
-  });
-
-  udpSocket.on("message", (msg, rinfo) => {
-    if (dataChannel && dataChannel.isOpen()) {
-      try {
-        dataChannel.sendMessageBinary(msg);
-      } catch (e) {
-        console.error("[WebRTC] Send error:", e.message);
+    // Q3 cliente → DataChannel → host
+    state.udpLocal.on("message", (msg) => {
+      if (state.channel?.isOpen()) {
+        try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
       }
-    }
-  });
+    });
+  }
 }
 
-function setupDataChannel() {
-  if (!dataChannel) return;
+function createHostPeer(NDC, sig, roomId) {
+  const peer = new NDC.PeerConnection("RetroLink-Host", {
+    iceServers: STUN,
+    iceTransportPolicy: "all",
+  });
+  state.peer = peer;
 
-  dataChannel.onOpen(() => {
-    console.log("[WebRTC] DataChannel open — P2P connection established!");
-    sendStatusToFrontend("¡Conexión establecida! Listos para jugar.");
+  peer.onLocalDescription((sdp, type) => {
+    console.log(`[Bridge] Host local description ready (${type})`);
+    sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
-  dataChannel.onClosed(() => {
-    console.log("[WebRTC] DataChannel closed");
-    sendStatusToFrontend("Conexión privada cerrada.");
+  peer.onLocalCandidate((candidate, mid) => {
+    sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
-  dataChannel.onMessage((msg) => {
-    if (!udpSocket) return;
-    const buffer = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-    
-    const targetPort = 27960; 
-    udpSocket.send(buffer, 0, buffer.length, targetPort, "127.0.0.1");
+  peer.onStateChange((s) => console.log("[Bridge] Host peer state:", s));
+  peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
+
+  // Crear DataChannel
+  const channel = peer.createDataChannel("game", {
+    ordered: false,
+    maxRetransmits: 0,
   });
+  setupChannel(channel);
+
+  // Delay mínimo para asegurar que el socket del cliente está listo en Render
+  setTimeout(() => {
+    console.log("[Bridge] Host creating offer...");
+    sendStatus("Enviando oferta de conexión al rival...");
+    peer.setLocalDescription("offer");
+  }, 200);
 }
 
-function stopWebRTCBridge() {
-  if (dataChannel) { try { dataChannel.close(); } catch(e) {} dataChannel = null; }
-  if (peerConnection) { try { peerConnection.close(); } catch(e) {} peerConnection = null; }
-  if (signalingSocket) { signalingSocket.disconnect(); signalingSocket = null; }
-  if (udpSocket) { try { udpSocket.close(); } catch(e) {} udpSocket = null; }
-  currentRoomId = null;
-  console.log("[WebRTC] Bridge stopped");
-  sendStatusToFrontend("Puente de red detenido.");
+function createClientPeer(NDC, sig, roomId) {
+  const peer = new NDC.PeerConnection("RetroLink-Client", {
+    iceServers: STUN,
+    iceTransportPolicy: "all",
+  });
+  state.peer = peer;
+
+  peer.onLocalDescription((sdp, type) => {
+    console.log(`[Bridge] Client local description ready (${type})`);
+    sig.emit("webrtc-signal", { roomId, type, sdp });
+  });
+
+  peer.onLocalCandidate((candidate, mid) => {
+    sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
+  });
+
+  peer.onDataChannel((channel) => {
+    console.log("[Bridge] Client received DataChannel");
+    setupChannel(channel);
+  });
+
+  peer.onStateChange((s) => console.log("[Bridge] Client peer state:", s));
+  peer.onGatheringStateChange((s) => console.log("[Bridge] Client gathering:", s));
 }
 
 /*
-CREATE WINDOW
+WINDOW
 */
 function createWindow() {
   const win = new BrowserWindow({
@@ -342,180 +373,107 @@ function createWindow() {
   if (isDev) {
     win.loadURL("http://localhost:5173");
   } else {
-    const indexPath = path.join(app.getAppPath(), "client", "dist", "index.html");
-    win.loadFile(indexPath);
+    win.loadFile(path.join(app.getAppPath(), "client", "dist", "index.html"));
   }
 }
 
-/*
-APP READY
-*/
 app.whenReady().then(() => {
-  if (app.isPackaged) {
-    allowAppThroughFirewall(process.execPath, "RetroLink");
-  }
-
+  setupLogging();
+  if (app.isPackaged) allowFirewall(process.execPath, "RetroLink");
   createWindow();
-
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-/*
-CLOSE APP
-*/
 app.on("window-all-closed", () => {
-  stopWebRTCBridge();
+  resetBridge();
   if (process.platform !== "darwin") app.quit();
 });
 
 /*
-SELECT GAME EXE
+IPC HANDLERS
 */
 ipcMain.handle("select-game-exe", async () => {
   const result = await dialog.showOpenDialog({
     properties: ["openFile"],
     filters: [{ name: "Executable Files", extensions: ["exe"] }],
   });
-  if (result.canceled || result.filePaths.length === 0) return null;
-  return result.filePaths[0];
+  return result.canceled ? null : result.filePaths[0];
 });
 
-/*
-PREPARE HOST
-*/
 ipcMain.handle("prepare-host", async (_, port = 27960) => {
-  console.log(`[RetroLink] Preparing host on port ${port}...`);
-  const portAvailable = await checkPortAvailable(port);
-  allowAppThroughFirewall(process.execPath, "RetroLink Game Host");
-  
-  const upnp = await openPortUPnP(port);
-  const netDetails = await getLocalNetworkDetails();
-
-  console.log(`[Network Detect] IP Local: ${netDetails.localIp}, Router: ${netDetails.routerIp}`);
-
-  if (!upnp.success) {
-    sendStatusToFrontend(
-      `⚠️ UPnP fallido. En tu router (${netDetails.routerIp}), mapea el puerto UDP 27962 hacia la IP de tu PC: ${netDetails.localIp}`
-    );
-  }
-
-  return { portAvailable, upnpSuccess: upnp.success, port, ...netDetails };
+  const portAvailable = await checkPort(port);
+  allowFirewall(process.execPath, "RetroLink Game Host");
+  const upnp = await openUPnP(port);
+  return { portAvailable, upnpSuccess: upnp.success, port };
 });
 
-/*
-CLOSE HOST PORT
-*/
 ipcMain.handle("close-host-port", async (_, port = 27960) => {
-  await closePortUPnP(port);
+  await closeUPnP(port);
   return { success: true };
 });
 
-/*
-START RELAY
-*/
 ipcMain.handle("start-relay", async (_, roomId, isHost) => {
   try {
-    stopWebRTCBridge();
-    await startWebRTCBridge(roomId, isHost);
+    await startBridge(roomId, isHost);
     return { success: true };
-  } catch (error) {
-    console.error("[WebRTC] Error starting bridge:", error);
-    return { success: false, error: error.message };
+  } catch (err) {
+    console.error("[Bridge] Start error:", err);
+    sendStatus("Error al iniciar el bridge: " + err.message);
+    return { success: false, error: err.message };
   }
 });
 
-/*
-STOP RELAY
-*/
 ipcMain.handle("stop-relay", async () => {
-  stopWebRTCBridge();
+  resetBridge();
   return { success: true };
 });
 
-/*
-LAUNCH GAME
-*/
 ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) => {
   if (!gamePath) return { success: false, error: "No game path provided" };
 
   try {
-    let finalGamePath = gamePath;
-
-    // CORRECCIÓN DE PORTABILIDAD: Validar si la ruta enviada existe en el PC actual.
-    // Si la ruta contiene "Capitan Meque" y no existe en este PC, intenta resolverla de forma relativa.
-    if (!fs.existsSync(finalGamePath)) {
-      console.warn(`[RetroLink] La ruta original no existe: ${finalGamePath}. Intentando recuperación...`);
-      const baseName = path.basename(gamePath);
-      
-      // Intenta buscar el ejecutable en la raíz de la app descompresa por si viene integrado en el build
-      const fallbackPath = path.join(path.dirname(process.execPath), baseName);
-      if (fs.existsSync(fallbackPath)) {
-        finalGamePath = fallbackPath;
-      } else {
-        return { success: false, error: `El juego no se encuentra en la ruta especificada: ${gamePath}` };
-      }
-    }
-
-    const gameDir = path.dirname(finalGamePath);
-    allowAppThroughFirewall(finalGamePath, "RetroLink - Game");
+    const gameDir = path.dirname(gamePath);
+    allowFirewall(gamePath, "RetroLink Game");
 
     const args = [...(extraArgs || []), ...(hostIp ? ["+connect", hostIp] : [])];
+    console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
 
-    console.log(
-      hostIp
-        ? `[RetroLink] Launching as CLIENT → connecting to ${hostIp}`
-        : `[RetroLink] Launching as HOST`
-    );
+    state.gameRoomId = roomId;
 
-    gameRoomId = roomId;
-    gameIsHost = isHost;
-
-    gameProcess = execFile(finalGamePath, args, { cwd: gameDir }, (error) => {
-      if (error && error.code !== null) {
-        console.error("Error launching game:", error);
-      }
+    const proc = execFile(gamePath, args, { cwd: gameDir }, (err) => {
+      if (err && err.code !== null) console.error("[Game] Error:", err.message);
     });
 
+    state.gameProcess = proc;
+
     if (isHost && roomId) {
-      gameProcess.on("close", () => {
-        console.log("[RetroLink] Host closed the game — notifying clients...");
-
+      proc.on("close", () => {
+        console.log("[Game] Host closed game — notifying clients");
         const win = BrowserWindow.getAllWindows()[0];
-        if (win) {
-          win.webContents.send("host-game-closed", { roomId });
-        }
-
-        gameProcess = null;
-        gameRoomId = null;
+        if (win) win.webContents.send("host-game-closed", { roomId });
+        state.gameProcess = null;
+        state.gameRoomId = null;
       });
     } else {
-      gameProcess.on("close", () => {
-        gameProcess = null;
-        gameRoomId = null;
+      proc.on("close", () => {
+        state.gameProcess = null;
+        state.gameRoomId = null;
       });
     }
 
     return { success: true };
-  } catch (error) {
-    console.error("Error launching game:", error);
-    return { success: false, error: error.message };
+  } catch (err) {
+    console.error("[Game] Launch error:", err);
+    return { success: false, error: err.message };
   }
 });
 
-/*
-KILL GAME
-*/
 ipcMain.handle("kill-game", async () => {
-  if (gameProcess) {
-    try {
-      gameProcess.kill();
-      gameProcess = null;
-      console.log("[RetroLink] Game process killed");
-    } catch (e) {
-      console.error("[RetroLink] Error killing game:", e.message);
-    }
+  if (state.gameProcess) {
+    try { state.gameProcess.kill(); state.gameProcess = null; }
+    catch(e) { console.error("[Game] Kill error:", e.message); }
   }
   return { success: true };
 });
