@@ -76,7 +76,7 @@ const closeUPnP = (port) => new Promise((resolve) => {
 
 /*
 ================================================================
-WebRTC P2P BRIDGE
+WebRTC P2P BRIDGE (OPTIMIZED)
 ================================================================
 */
 
@@ -84,8 +84,8 @@ let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,   // cliente: 27961
-  udpProxy: null,   // host: habla con Q3 en 27960
+  udpLocal: null,
+  udpProxy: null,
   roomId: null,
   isHost: false,
   pendingCandidates: [],
@@ -167,13 +167,9 @@ function setupChannel(channel) {
 
 function flushCandidates() {
   if (!state.peer || !state.remoteDescSet) return;
+  console.log(`[Bridge] Flushing ${state.pendingCandidates.length} delayed candidates`);
   state.pendingCandidates.forEach(({ candidate, mid }) => {
-    try { 
-      state.peer.addRemoteCandidate(candidate, mid); 
-      console.log("[Bridge] Flushed remote candidate successfully");
-    } catch(e) {
-      console.warn("[Bridge] Error flushing pending candidate:", e.message);
-    }
+    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
   });
   state.pendingCandidates = [];
 }
@@ -186,7 +182,9 @@ async function startBridge(roomId, isHost) {
 
   const NDC = require("node-datachannel");
 
-  console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
+  // LOG DE CONTROL CRÍTICO: Verifica aquí si ambos reciben exactamente el mismo string de ID
+  console.log(`[DEBUG - CONTROL] ROOM ID ENVIADO DESDE REACT: "${roomId}"`);
+  console.log(`[Bridge] Starting — role: ${isHost ? "HOST" : "CLIENT"}`);
   sendStatus("Conectando al servidor de señales...");
 
   const sig = socketClient(SIGNALING_URL, {
@@ -213,8 +211,11 @@ async function startBridge(roomId, isHost) {
     createHostPeer(NDC, sig, roomId);
   });
 
-  // ── SEÑALES WebRTC ENTRANTES (CORREGIDO) ──────────────────────
+  // ── SEÑALES WebRTC entrantes (CORREGIDO PARSEO) ──────────────────
   sig.on("webrtc-signal", (data) => {
+    if (!data) return;
+
+    // Forzamos la extracción directa sin importar desestructuraciones del server
     const type = data.type;
     const sdp = data.sdp;
     const candidate = data.candidate;
@@ -304,14 +305,14 @@ function createHostPeer(NDC, sig, roomId) {
   });
   setupChannel(channel);
 
-  // Ajustado a 500ms para asegurar recolección óptima en redes WAN externas
+  // Subido a 500ms para asegurar la recolección de candidatos WAN estables
   setTimeout(() => {
     console.log("[Bridge] Host creating offer...");
     sendStatus("Enviando oferta de conexión al rival...");
     try {
       peer.setLocalDescription("offer");
     } catch(e) {
-      console.error("[Bridge] Error setting host local description:", e.message);
+      console.error("[Bridge] Error creating host offer:", e.message);
     }
   }, 500);
 }
