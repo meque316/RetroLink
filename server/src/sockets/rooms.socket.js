@@ -23,7 +23,6 @@ export default function roomsSocket(io) {
 
     onlineUsers[socket.id] = user;
 
-    // Notificar a todos (incluyendo al nuevo) el listado actualizado de usuarios
     io.emit("users-online", Object.values(onlineUsers));
     socket.emit("rooms-list", rooms);
 
@@ -151,23 +150,20 @@ export default function roomsSocket(io) {
     });
 
     /*
-    WEBRTC SIGNALING (CORREGIDO)
+    WEBRTC SIGNALING
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       console.log(`[WebRTC] ${socket.id} sincronizando señales en la sala principal ${roomId} como ${isHost ? "HOST" : "CLIENT"}`);
-      
-      // Forzar unión explícita al room para asegurar la recepción
-      socket.join(roomId);
+      socket.join(`webrtc-${roomId}`);
 
       if (!isHost) {
-        // CORRECCIÓN CRÍTICA: Cambiado de socket.to a io.to para un broadcast masivo en la sala
-        io.to(roomId).emit("webrtc-peer-ready");
-        console.log(`[WebRTC] Broadcast enviado: webrtc-peer-ready en la sala principal: ${roomId}`);
+        socket.to(`webrtc-${roomId}`).emit("webrtc-peer-ready");
+        console.log(`[WebRTC] Notificado host de que el cliente está listo en la sala: webrtc-${roomId}`);
       }
     });
 
     socket.on("webrtc-signal", ({ roomId, ...signal }) => {
-      socket.to(roomId).emit("webrtc-signal", signal);
+      socket.to(`webrtc-${roomId}`).emit("webrtc-signal", signal);
     });
 
     /*
@@ -199,6 +195,7 @@ export default function roomsSocket(io) {
       }
 
       socket.leave(roomId);
+      socket.leave(`webrtc-${roomId}`);
 
       if (room.members.length === 0) {
         const index = rooms.findIndex((r) => r.id === roomId);
@@ -210,11 +207,6 @@ export default function roomsSocket(io) {
 
       if (room.host === socket.id) {
         room.host = room.members[0]?.id;
-        io.to(roomId).emit("host-peer-info", {
-          roomId: room.id,
-          hostSocketId: room.host,
-          hostPublicIp: room.hostPublicIp,
-        });
       }
 
       io.emit("rooms-list", rooms);
@@ -242,19 +234,14 @@ export default function roomsSocket(io) {
           );
         }
 
+        if (room.host === socket.id && room.members.length > 0) {
+          room.host = room.members[0]?.id;
+        }
+
         if (room.players <= 0) {
           delete readyStates[room.id];
           rooms.splice(i, 1);
         } else {
-          if (room.host === socket.id && room.members.length > 0) {
-            room.host = room.members[0]?.id;
-            io.to(room.id).emit("host-peer-info", {
-              roomId: room.id,
-              hostSocketId: room.host,
-              hostPublicIp: room.hostPublicIp,
-            });
-          }
-          
           io.to(room.id).emit(
             "room-ready-state",
             readyStates[room.id] || []
