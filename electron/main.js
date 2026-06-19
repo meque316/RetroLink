@@ -283,33 +283,43 @@ async function startBridge(roomId, isHost) {
 
   // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
-    if (type === "offer" && !isHost) {
-      // Cliente crea su peer al recibir el offer
-      if (!state.peer) createClientPeer(NDC, sig, roomId);
+    try {
+      if (type === "offer" && !isHost) {
+        // Cliente crea su peer al recibir el offer
+        if (!state.peer) createClientPeer(NDC, sig, roomId);
 
-      console.log("[Bridge] Client received offer — setting remote description...");
-      sendStatus("Procesando oferta de conexión...");
-      state.peer.setRemoteDescription(sdp, "offer");
-      state.remoteDescSet = true;
-      flushCandidates();
+        console.log("[Bridge] Client received offer — setting remote description...");
+        sendStatus("Procesando oferta de conexión...");
+        state.peer.setRemoteDescription(sdp, "offer");
+        state.remoteDescSet = true;
+        flushCandidates();
 
-      console.log("[Bridge] Client sending answer...");
-      sendStatus("Respondiendo conexión...");
-      state.peer.setLocalDescription("answer");
+        console.log("[Bridge] Client sending answer...");
+        sendStatus("Respondiendo conexión...");
+        state.peer.setLocalDescription("answer");
+        console.log("[Bridge] Client answer call completed without throwing");
 
-    } else if (type === "answer" && isHost) {
-      console.log("[Bridge] Host received answer — setting remote description...");
-      sendStatus("Conectando túnel P2P...");
-      state.peer.setRemoteDescription(sdp, "answer");
-      state.remoteDescSet = true;
-      flushCandidates();
+      } else if (type === "answer" && isHost) {
+        console.log("[Bridge] Host received answer — setting remote description...");
+        sendStatus("Conectando túnel P2P...");
+        state.peer.setRemoteDescription(sdp, "answer");
+        state.remoteDescSet = true;
+        flushCandidates();
+        console.log("[Bridge] Host remote description set without throwing");
 
-    } else if (type === "candidate") {
-      if (state.peer && state.remoteDescSet) {
-        try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
-      } else {
-        state.pendingCandidates.push({ candidate, mid });
+      } else if (type === "candidate") {
+        if (state.peer && state.remoteDescSet) {
+          try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {
+            console.error("[Bridge] addRemoteCandidate error:", e.message);
+          }
+        } else {
+          state.pendingCandidates.push({ candidate, mid });
+        }
       }
+    } catch (err) {
+      console.error("[Bridge] FATAL error processing webrtc-signal:", err.message);
+      console.error("[Bridge] Stack:", err.stack);
+      sendStatus("Error procesando señal de conexión: " + err.message);
     }
   });
 
@@ -421,6 +431,15 @@ function createWindow() {
     win.loadFile(path.join(app.getAppPath(), "client", "dist", "index.html"));
   }
 }
+
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught exception:", err.message);
+  console.error("[FATAL] Stack:", err.stack);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled rejection:", reason);
+});
 
 app.whenReady().then(() => {
   setupLogging();
