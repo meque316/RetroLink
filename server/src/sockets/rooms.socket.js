@@ -151,14 +151,18 @@ export default function roomsSocket(io) {
     });
 
     /*
-    WEBRTC SIGNALING
+    WEBRTC SIGNALING (CORREGIDO)
     */
     socket.on("webrtc-join", ({ roomId, isHost }) => {
       console.log(`[WebRTC] ${socket.id} sincronizando señales en la sala principal ${roomId} como ${isHost ? "HOST" : "CLIENT"}`);
+      
+      // Forzar unión explícita al room para asegurar la recepción
+      socket.join(roomId);
 
       if (!isHost) {
-        socket.to(roomId).emit("webrtc-peer-ready");
-        console.log(`[WebRTC] Notificado host de que el cliente está listo en la sala principal: ${roomId}`);
+        // CORRECCIÓN CRÍTICA: Cambiado de socket.to a io.to para un broadcast masivo en la sala
+        io.to(roomId).emit("webrtc-peer-ready");
+        console.log(`[WebRTC] Broadcast enviado: webrtc-peer-ready en la sala principal: ${roomId}`);
       }
     });
 
