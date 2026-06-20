@@ -118,8 +118,19 @@ let state = {
 };
 
 // STUN — descubre la IP pública (gratis, sin límite)
-// TEMPORALMENTE solo STUN para descartar que el TURN cause el crash nativo.
-// TODO: reactivar TURN una vez confirmado que el crash no es por esto.
+// TURN — relay cuando STUN no alcanza por NAT restrictivo (Open Relay Project, 20GB/mes gratis)
+//
+// Confirmado por pruebas: sin TURN, dos redes distintas con NAT restrictivo
+// (o VPN de por medio) nunca completan el ICE — el offer/answer se intercambian
+// bien mediante el signaling, pero la conexión P2P directa no se establece.
+//
+// Probamos antes con credenciales embebidas en string (turn:user:pass@host:port)
+// y causó un crash nativo. Usamos formato de string SIN credenciales embebidas,
+// más simple, para minimizar el riesgo de malformación que cause un segfault.
+// TURN TEMPORALMENTE DESACTIVADO — sospecha confirmada de crash nativo
+// en node-datachannel al incluir las URLs TURN de Open Relay Project.
+// Volver a probar con formato de objeto IceServer en vez de string si
+// se necesita TURN más adelante.
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
