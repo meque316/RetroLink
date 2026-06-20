@@ -51,7 +51,14 @@ function Room({ room, leaveRoom }) {
   const chatEndRef = useRef(null);
   const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
-  const isHost = currentRoom?.host === socket.id;
+  // CRÍTICO: isHost se fija UNA SOLA VEZ al montar el componente, usando el
+  // socket.id actual y el room.host original. NO debe depender de currentRoom,
+  // porque currentRoom cambia con cada "rooms-list" recibido (toggle-ready, etc.)
+  // y eso causaría que el useEffect de START RELAY se reinicie, matando el
+  // bridge WebRTC en medio de la negociación P2P.
+  const isHostRef = useRef(room?.host === socket.id);
+  const isHost = isHostRef.current;
+
   const isReady = readyPlayers.includes(socket.id);
 
   /*
