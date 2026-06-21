@@ -26,7 +26,9 @@ const setupLogging = () => {
   console.log   = (...a) => { orig.log(...a);   write("LOG",  a); };
   console.error = (...a) => { orig.error(...a); write("ERR",  a); };
   console.warn  = (...a) => { orig.warn(...a);  write("WARN", a); };
-  try { fs.writeFileSync(logPath, `=== RetroLink ${new Date().toISOString()} ===\n`); } catch(e) {}
+  // NO sobrescribimos el log — usamos append para conservar el historial
+  // de sesiones anteriores, incluyendo crashes, a través de reinicios.
+  try { fs.appendFileSync(logPath, `\n=== RetroLink session started ${new Date().toISOString()} ===\n`); } catch(e) {}
   console.log("[Log] File:", logPath);
 };
 
@@ -601,3 +603,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
+
