@@ -300,15 +300,22 @@ async function startBridge(roomId, isHost) {
         state.remoteDescSet = true;
         flushCandidates();
 
-        console.log("[Bridge] Client sending answer...");
-        sendStatus("Respondiendo conexión...");
-        // IMPORTANTE: la API oficial de node-datachannel NO espera un string
-        // de tipo aquí — el tipo se infiere automáticamente del estado interno
-        // del peer (que ya tiene un remote offer). Pasar "answer" como string
-        // puede no coincidir con la firma esperada (sdp, init) y causar un
-        // crash nativo. Llamamos sin argumentos, como en el ejemplo oficial.
-        state.peer.setLocalDescription();
-        console.log("[Bridge] Client answer call completed without throwing");
+        // CRÍTICO: dejamos que el event loop respire entre setRemoteDescription
+        // y setLocalDescription. El crash nativo (crashpad "not connected")
+        // ocurre de forma intermitente justo en esta secuencia — sospecha de
+        // condición de carrera en el estado interno de libdatachannel cuando
+        // ambas llamadas se hacen de forma síncrona consecutiva.
+        setTimeout(() => {
+          try {
+            console.log("[Bridge] Client sending answer...");
+            sendStatus("Respondiendo conexión...");
+            state.peer.setLocalDescription();
+            console.log("[Bridge] Client answer call completed without throwing");
+          } catch (innerErr) {
+            console.error("[Bridge] Error in delayed setLocalDescription:", innerErr.message);
+            sendStatus("Error respondiendo conexión: " + innerErr.message);
+          }
+        }, 100);
 
       } else if (type === "answer" && isHost) {
         console.log("[Bridge] Host received answer — setting remote description...");
@@ -554,3 +561,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
+
