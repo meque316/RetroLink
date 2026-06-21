@@ -99,7 +99,7 @@ Reglas clave:
   1. Solo signalingSocket maneja el WebRTC signaling (NUNCA el socket del frontend)
   2. El host espera webrtc-peer-ready antes de crear el PeerConnection
   3. ICE candidates se encolan hasta que remote description esté lista
-  4. setLocalDescription siempre con tipo explícito ("offer" o "answer")
+  4. setLocalDescription SIN argumentos — la librería infiere el tipo
 ================================================================
 */
 
@@ -302,7 +302,12 @@ async function startBridge(roomId, isHost) {
 
         console.log("[Bridge] Client sending answer...");
         sendStatus("Respondiendo conexión...");
-        state.peer.setLocalDescription("answer");
+        // IMPORTANTE: la API oficial de node-datachannel NO espera un string
+        // de tipo aquí — el tipo se infiere automáticamente del estado interno
+        // del peer (que ya tiene un remote offer). Pasar "answer" como string
+        // puede no coincidir con la firma esperada (sdp, init) y causar un
+        // crash nativo. Llamamos sin argumentos, como en el ejemplo oficial.
+        state.peer.setLocalDescription();
         console.log("[Bridge] Client answer call completed without throwing");
 
       } else if (type === "answer" && isHost) {
@@ -387,7 +392,9 @@ function createHostPeer(NDC, sig, roomId) {
   setTimeout(() => {
     console.log("[Bridge] Host creating offer...");
     sendStatus("Enviando oferta de conexión al rival...");
-    peer.setLocalDescription("offer");
+    // Igual que en el cliente: sin argumento de tipo, dejamos que la
+    // librería nativa infiera "offer" automáticamente del estado del peer.
+    peer.setLocalDescription();
   }, 200);
 }
 
