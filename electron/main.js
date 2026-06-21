@@ -188,8 +188,16 @@ function onChannelOpen() {
 
     // Respuestas de Q3 → DataChannel → cliente
     state.udpProxy.on("message", (msg) => {
+      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
-        try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+        try {
+          state.channel.sendMessageBinary(Buffer.from(msg));
+          console.log(`[Bridge] Host sent ${msg.length} bytes via DataChannel to client`);
+        } catch(e) {
+          console.error("[Bridge] Host DataChannel send error:", e.message);
+        }
+      } else {
+        console.warn("[Bridge] Host udpProxy received Q3 msg but DataChannel not open!");
       }
     });
   }
@@ -198,15 +206,28 @@ function onChannelOpen() {
 // Cuando llegan datos por el DataChannel
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
     // Host: reenviar paquete del cliente a Q3 local
-    if (!state.udpProxy) return;
-    state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1");
+    if (!state.udpProxy) {
+      console.warn("[Bridge] Host received DataChannel msg but udpProxy is null!");
+      return;
+    }
+    state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Host udpProxy send error:", err.message);
+      else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
+    });
   } else {
     // Cliente: reenviar respuesta del host a Q3 local en 27961
-    if (!state.udpLocal) return;
-    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1");
+    if (!state.udpLocal) {
+      console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
+      return;
+    }
+    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Client udpLocal send error:", err.message);
+      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27961`);
+    });
   }
 }
 
@@ -362,8 +383,16 @@ async function startBridge(roomId, isHost) {
 
     // Q3 cliente → DataChannel → host
     state.udpLocal.on("message", (msg) => {
+      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
-        try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+        try {
+          state.channel.sendMessageBinary(Buffer.from(msg));
+          console.log(`[Bridge] Client sent ${msg.length} bytes via DataChannel`);
+        } catch(e) {
+          console.error("[Bridge] Client DataChannel send error:", e.message);
+        }
+      } else {
+        console.warn("[Bridge] Client received UDP but DataChannel is not open!");
       }
     });
   }
@@ -561,4 +590,5 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
+
 
