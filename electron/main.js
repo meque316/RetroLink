@@ -336,7 +336,7 @@ async function startBridge(roomId, isHost) {
             console.error("[Bridge] Error in delayed setLocalDescription:", innerErr.message);
             sendStatus("Error respondiendo conexión: " + innerErr.message);
           }
-        }, 100);
+        }, 500);
 
       } else if (type === "answer" && isHost) {
         console.log("[Bridge] Host received answer — setting remote description...");
@@ -479,6 +479,8 @@ function createWindow() {
   } else {
     win.loadFile(path.join(app.getAppPath(), "client", "dist", "index.html"));
   }
+
+  return win;
 }
 
 process.on("uncaughtException", (err) => {
@@ -493,9 +495,18 @@ process.on("unhandledRejection", (reason) => {
 app.whenReady().then(() => {
   setupLogging();
   if (app.isPackaged) allowFirewall(process.execPath, "RetroLink");
-  createWindow();
+  const win = createWindow();
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+
+  app.on("render-process-gone", (event, webContents, details) => {
+    console.error("[FATAL] Render process gone:", JSON.stringify(details));
+  });
+
+  app.on("child-process-gone", (event, details) => {
+    console.error("[FATAL] Child process gone:", JSON.stringify(details));
   });
 });
 
@@ -590,5 +601,3 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
-
-
