@@ -16,7 +16,7 @@
   "dependencies": {
     "nat-upnp": "^1.1.1",
     "network": "^0.7.0",
-    "node-datachannel": "^0.32.3",
+    "node-datachannel": "^0.25.0",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {

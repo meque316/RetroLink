@@ -235,19 +235,28 @@ function onChannelMessage(msg) {
 
 function setupChannel(channel) {
   state.channel = channel;
+  console.log(`[Bridge] setupChannel called, isHost=${state.isHost}, channel.isOpen()=${channel.isOpen?.()}`);
 
-  channel.onOpen(onChannelOpen);
+  channel.onOpen(() => {
+    console.log("[Bridge] channel.onOpen fired");
+    onChannelOpen();
+  });
 
   channel.onClosed(() => {
     console.log("[Bridge] DataChannel closed");
     sendStatus("Conexión P2P cerrada.");
   });
 
-  channel.onMessage(onChannelMessage);
+  channel.onMessage((msg) => {
+    console.log(`[Bridge] RAW onMessage fired, isHost=${state.isHost}, type=${typeof msg}, len=${msg?.length ?? msg?.byteLength ?? "unknown"}`);
+    onChannelMessage(msg);
+  });
 
   channel.onError((e) => {
     console.error("[Bridge] DataChannel error:", e);
   });
+
+  console.log(`[Bridge] setupChannel handlers registered, isHost=${state.isHost}`);
 }
 
 function flushCandidates() {
@@ -420,9 +429,11 @@ function createHostPeer(NDC, sig, roomId) {
   peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
 
   // Crear DataChannel
+  // TEMPORALMENTE reliable (ordered, sin límite de retransmisiones) para
+  // descartar pérdida de paquetes como causa de que el host no reciba nada.
+  // TODO: volver a unordered/maxRetransmits:0 una vez confirmado el flujo.
   const channel = peer.createDataChannel("game", {
-    ordered: false,
-    maxRetransmits: 0,
+    ordered: true,
   });
   setupChannel(channel);
 
