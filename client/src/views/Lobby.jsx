@@ -31,9 +31,6 @@ const GAMES = [
   { id: "doom2",   name: "Doom II",                year: "1994" },
 ];
 
-/*
-LIBRARY — carga y guarda juegos en localStorage
-*/
 function loadLibrary() {
   try {
     return JSON.parse(localStorage.getItem("retrolink_library") || "[]");
@@ -51,17 +48,18 @@ function Lobby() {
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentRoom, setCurrentRoom] = useState(null);
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
-  const [activeView, setActiveView] = useState("lobby"); // "lobby" | "library"
 
-  /*
-  LIBRARY STATE
-  */
+  // CRITICO: ID de la sala activa, separado del objeto currentRoom.
+  // Se usa como "key" estable para <Room>. Mientras no cambie, React NUNCA
+  // desmonta/remonta el componente, sin importar cuantas veces cambie la
+  // referencia del objeto currentRoom por nuevos eventos rooms-list.
+  const [activeRoomId, setActiveRoomId] = useState(null);
+
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [activeView, setActiveView] = useState("lobby");
+
   const [library, setLibrary] = useState(loadLibrary);
 
-  /*
-  FRIENDS STATE
-  */
   const [friends, setFriends] = useState([]);
   const [friendRequest, setFriendRequest] = useState("");
   const [friendLoading, setFriendLoading] = useState(false);
@@ -120,9 +118,6 @@ function Lobby() {
     fetchFriends();
   };
 
-  /*
-  MODAL STATE
-  */
   const [showModal, setShowModal] = useState(false);
   const [roomName, setRoomName] = useState("");
   const [selectedGame, setSelectedGame] = useState(GAMES[0]);
@@ -133,8 +128,7 @@ function Lobby() {
     const savedUser = localStorage.getItem("user");
     if (savedUser) {
       try {
-        const parsedUser = JSON.parse(savedUser);
-        setCurrentUser(parsedUser);
+        setCurrentUser(JSON.parse(savedUser));
       } catch (error) {
         console.error("Error parsing user:", error);
       }
@@ -142,10 +136,14 @@ function Lobby() {
 
     const handleRoomsList = (updatedRooms) => {
       setRooms(updatedRooms);
+
+      // Conservamos currentRoom si no se encuentra momentaneamente en vez
+      // de ponerlo en null, evitando un desmontaje accidental de <Room>
+      // por una actualizacion transitoria de la lista de salas.
       setCurrentRoom((prevRoom) => {
         if (!prevRoom) return null;
         const updatedRoom = updatedRooms.find((room) => room.id === prevRoom.id);
-        return updatedRoom || null;
+        return updatedRoom || prevRoom;
       });
     };
 
@@ -163,9 +161,6 @@ function Lobby() {
     };
   }, []);
 
-  /*
-  LIBRARY — agregar juego
-  */
   const handleAddGame = async (game) => {
     try {
       const exePath = await window.retroLink?.selectGameExe();
@@ -173,10 +168,7 @@ function Lobby() {
 
       const alreadyExists = library.some((g) => g.id === game.id);
       if (alreadyExists) {
-        // Actualiza el exe si ya existe
-        const updated = library.map((g) =>
-          g.id === game.id ? { ...g, exePath } : g
-        );
+        const updated = library.map((g) => (g.id === game.id ? { ...g, exePath } : g));
         setLibrary(updated);
         saveLibrary(updated);
       } else {
@@ -197,6 +189,7 @@ function Lobby() {
 
   const joinRoom = (room) => {
     socket.emit("join-room", room.id);
+    setActiveRoomId(room.id);
     setCurrentRoom(room);
   };
 
@@ -228,6 +221,7 @@ function Lobby() {
 
   const leaveRoom = () => {
     if (currentRoom) socket.emit("leave-room", currentRoom.id);
+    setActiveRoomId(null);
     setCurrentRoom(null);
   };
 
@@ -302,13 +296,12 @@ function Lobby() {
   };
 
   if (currentRoom) {
-    return <Room room={currentRoom} leaveRoom={leaveRoom} />;
+    return <Room key={activeRoomId} room={currentRoom} leaveRoom={leaveRoom} />;
   }
 
   return (
     <div className="h-full bg-[#0b0f14] text-white flex">
 
-      {/* MODAL CREAR ROOM */}
       {showModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-[#121821] border border-zinc-800 rounded-3xl p-8 w-full max-w-lg">
@@ -364,7 +357,6 @@ function Lobby() {
         </div>
       )}
 
-      {/* SIDEBAR */}
       <aside className="w-64 border-r border-zinc-800 bg-[#0d1117] p-6 flex flex-col">
         <h1 className="text-2xl font-bold text-green-400 mb-10 tracking-wide">
           RETROLINK
@@ -374,9 +366,7 @@ function Lobby() {
           <button
             onClick={() => setActiveView("lobby")}
             className={`w-full text-left px-4 py-3 rounded-xl transition ${
-              activeView === "lobby"
-                ? "bg-green-500/10 text-green-400"
-                : "hover:bg-zinc-800"
+              activeView === "lobby" ? "bg-green-500/10 text-green-400" : "hover:bg-zinc-800"
             }`}
           >
             Lobby
@@ -384,9 +374,7 @@ function Lobby() {
           <button
             onClick={() => setActiveView("library")}
             className={`w-full text-left px-4 py-3 rounded-xl transition ${
-              activeView === "library"
-                ? "bg-green-500/10 text-green-400"
-                : "hover:bg-zinc-800"
+              activeView === "library" ? "bg-green-500/10 text-green-400" : "hover:bg-zinc-800"
             }`}
           >
             Library
@@ -399,9 +387,7 @@ function Lobby() {
           <button
             onClick={() => { setActiveView("friends"); fetchFriends(); }}
             className={`w-full text-left px-4 py-3 rounded-xl transition ${
-              activeView === "friends"
-                ? "bg-green-500/10 text-green-400"
-                : "hover:bg-zinc-800"
+              activeView === "friends" ? "bg-green-500/10 text-green-400" : "hover:bg-zinc-800"
             }`}
           >
             Friends
@@ -424,10 +410,8 @@ function Lobby() {
         </div>
       </aside>
 
-      {/* MAIN */}
       <main className="flex-1 p-8 overflow-auto">
 
-        {/* LOBBY VIEW */}
         {activeView === "lobby" && (
           <>
             <div className="flex items-center justify-between mb-8">
@@ -492,7 +476,6 @@ function Lobby() {
           </>
         )}
 
-        {/* FRIENDS VIEW */}
         {activeView === "friends" && (
           <>
             <div className="mb-8">
@@ -500,7 +483,6 @@ function Lobby() {
               <p className="text-zinc-400 mt-1">Add and manage your friends</p>
             </div>
 
-            {/* ADD FRIEND */}
             <div className="bg-[#11161d] border border-zinc-800 rounded-2xl p-5 mb-6">
               <p className="text-sm text-zinc-400 mb-3">Add friend by username</p>
               <div className="flex gap-3">
@@ -524,7 +506,6 @@ function Lobby() {
               {friendError && <p className="text-red-400 text-sm mt-2">{friendError}</p>}
             </div>
 
-            {/* PENDING REQUESTS */}
             {friends.filter(f => f.status === "pending" && !f.isSender).length > 0 && (
               <div className="mb-6">
                 <h3 className="text-sm text-zinc-400 mb-3 uppercase tracking-wider">Pending Requests</h3>
@@ -554,7 +535,6 @@ function Lobby() {
               </div>
             )}
 
-            {/* SENT REQUESTS */}
             {friends.filter(f => f.status === "pending" && f.isSender).length > 0 && (
               <div className="mb-6">
                 <h3 className="text-sm text-zinc-400 mb-3 uppercase tracking-wider">Sent Requests</h3>
@@ -577,7 +557,6 @@ function Lobby() {
               </div>
             )}
 
-            {/* FRIENDS LIST */}
             <div>
               <h3 className="text-sm text-zinc-400 mb-3 uppercase tracking-wider">
                 Friends ({friends.filter(f => f.status === "accepted").length})
@@ -619,7 +598,6 @@ function Lobby() {
           </>
         )}
 
-        {/* LIBRARY VIEW */}
         {activeView === "library" && (
           <>
             <div className="mb-8">
@@ -686,7 +664,6 @@ function Lobby() {
         )}
       </main>
 
-      {/* RIGHT PANEL */}
       <aside className="w-72 border-l border-zinc-800 bg-[#0d1117] p-6">
 
         {currentUser && (
@@ -762,6 +739,3 @@ function Lobby() {
 }
 
 export default Lobby;
-
-
-
