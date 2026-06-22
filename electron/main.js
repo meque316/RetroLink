@@ -26,8 +26,6 @@ const setupLogging = () => {
   console.log   = (...a) => { orig.log(...a);   write("LOG",  a); };
   console.error = (...a) => { orig.error(...a); write("ERR",  a); };
   console.warn  = (...a) => { orig.warn(...a);  write("WARN", a); };
-  // NO sobrescribimos el log — usamos append para conservar el historial
-  // de sesiones anteriores, incluyendo crashes, a través de reinicios.
   try { fs.appendFileSync(logPath, `\n=== RetroLink session started ${new Date().toISOString()} ===\n`); } catch(e) {}
   console.log("[Log] File:", logPath);
 };
@@ -80,63 +78,34 @@ const closeUPnP = (port) => new Promise((resolve) => {
 ================================================================
 WebRTC P2P BRIDGE
 ================================================================
-
-Arquitectura:
-  HOST:
-    - signalingSocket conecta a Render (socket.io-client)
-    - PeerConnection con DataChannel (offerer)
-    - udpProxy: socket UDP que habla con Quake 3 en 27960
-      * Paquetes entrantes del DataChannel → udpProxy → Q3:27960
-      * Respuestas de Q3:27960 → udpProxy → DataChannel
-
-  CLIENTE:
-    - signalingSocket conecta a Render (socket.io-client)
-    - PeerConnection (answerer)
-    - udpLocal en 27960
-      * Q3 cliente conecta a 127.0.0.1:27960
-      * Paquetes de Q3 → udpLocal → DataChannel
-      * Respuestas del DataChannel → udpLocal → Q3:27960
-
-Reglas clave:
-  1. Solo signalingSocket maneja el WebRTC signaling (NUNCA el socket del frontend)
-  2. El host espera webrtc-peer-ready antes de crear el PeerConnection
-  3. ICE candidates se encolan hasta que remote description esté lista
-  4. setLocalDescription SIN argumentos — la librería infiere el tipo
-================================================================
 */
 
 let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,   // cliente: 27960 / host: no usado para escucha
-  udpProxy: null,   // host: habla con Q3 en 27960
+  udpLocal: null,
+  udpProxy: null,
   roomId: null,
   isHost: false,
   pendingCandidates: [],
   remoteDescSet: false,
   gameProcess: null,
   gameRoomId: null,
+  iceConnectionStart: null,
 };
 
-// STUN — descubre la IP pública (gratis, sin límite)
-// TURN — relay cuando STUN no alcanza por NAT restrictivo (Open Relay Project, 20GB/mes gratis)
-//
-// Confirmado por pruebas: sin TURN, dos redes distintas con NAT restrictivo
-// (o VPN de por medio) nunca completan el ICE — el offer/answer se intercambian
-// bien mediante el signaling, pero la conexión P2P directa no se establece.
-//
-// Probamos antes con credenciales embebidas en string (turn:user:pass@host:port)
-// y causó un crash nativo. Usamos formato de string SIN credenciales embebidas,
-// más simple, para minimizar el riesgo de malformación que cause un segfault.
-// TURN TEMPORALMENTE DESACTIVADO — sospecha confirmada de crash nativo
-// en node-datachannel al incluir las URLs TURN de Open Relay Project.
-// Volver a probar con formato de objeto IceServer en vez de string si
-// se necesita TURN más adelante.
+// STUN + TURN (rehabilitado con formato seguro)
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
   "stun:stun2.l.google.com:19302",
+  "stun:stun3.l.google.com:19302",
+  "stun:stun4.l.google.com:19302",
+  // TURN - Open Relay Project (sin autenticación, gratuito hasta 20GB/mes)
+  "turn:openrelay.metered.ca:80",
+  "turn:openrelay.metered.ca:443",
+  "turn:openrelay.metered.ca:5349",
 ];
 
 function buildIceServers() {
@@ -166,17 +135,17 @@ function resetBridge() {
   state.roomId = null;
   state.pendingCandidates = [];
   state.remoteDescSet = false;
+  state.iceConnectionStart = null;
 
   console.log("[Bridge] Reset complete");
 }
 
 // Configurar DataChannel una vez abierto
 function onChannelOpen() {
-  console.log("[Bridge] DataChannel open — P2P established!");
+  console.log("[Bridge] ✅ DataChannel open — P2P established!");
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
 
   if (state.isHost) {
-    // Host: crear socket UDP para hablar con Quake 3 en 27960
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
@@ -188,9 +157,8 @@ function onChannelOpen() {
       console.log(`[Bridge] Host UDP proxy bound on port ${state.udpProxy.address().port}`);
     });
 
-    // Respuestas de Q3 → DataChannel → cliente
     state.udpProxy.on("message", (msg, rinfo) => {
-      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes from ${rinfo.address}:${rinfo.port} | hex: ${msg.toString("hex")} | ascii: ${msg.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
+      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
@@ -208,10 +176,9 @@ function onChannelOpen() {
 // Cuando llegan datos por el DataChannel
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost}) | hex: ${buf.toString("hex")} | ascii: ${buf.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
+  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
-    // Host: reenviar paquete del cliente a Q3 local
     if (!state.udpProxy) {
       console.warn("[Bridge] Host received DataChannel msg but udpProxy is null!");
       return;
@@ -221,14 +188,13 @@ function onChannelMessage(msg) {
       else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
     });
   } else {
-    // Cliente: reenviar respuesta del host a Q3 local en 27960
     if (!state.udpLocal) {
       console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
       return;
     }
-    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1", (err) => {
       if (err) console.error("[Bridge] Client udpLocal send error:", err.message);
-      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27960`);
+      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27961`);
     });
   }
 }
@@ -262,7 +228,12 @@ function setupChannel(channel) {
 function flushCandidates() {
   if (!state.peer || !state.remoteDescSet) return;
   state.pendingCandidates.forEach(({ candidate, mid }) => {
-    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+    try { 
+      console.log(`[Bridge] Flushing candidate: ${candidate} (${mid})`);
+      state.peer.addRemoteCandidate(candidate, mid); 
+    } catch(e) {
+      console.error("[Bridge] Error adding remote candidate:", e.message);
+    }
   });
   state.pendingCandidates = [];
 }
@@ -272,15 +243,13 @@ async function startBridge(roomId, isHost) {
 
   state.roomId = roomId;
   state.isHost = isHost;
+  state.iceConnectionStart = Date.now();
 
   const NDC = require("node-datachannel");
 
   console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
   sendStatus("Conectando al servidor de señales...");
 
-  // ── SIGNALING SOCKET ──────────────────────────────────────────
-  // Este socket es EXCLUSIVO para WebRTC signaling.
-  // NO es el mismo socket que usa el frontend React.
   const sig = socketClient(SIGNALING_URL, {
     transports: ["websocket"],
     reconnection: false,
@@ -296,14 +265,9 @@ async function startBridge(roomId, isHost) {
     console.log("[Bridge] Signaling connected:", sig.id);
     sendStatus("Buscando rival en la sala...");
 
-    // Unirse a la sala WebRTC dedicada (SOLO este socket, nunca el del frontend)
-    // Usamos ack para confirmar que el join() se completó antes de continuar
     sig.emit("webrtc-join", { roomId, isHost }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
-      // CASO CLAVE: si somos el host y el cliente YA estaba esperando en la sala
-      // (llegó antes que nosotros), no podemos depender de recibir webrtc-peer-ready
-      // porque ya se emitió y se perdió. Creamos el peer inmediatamente.
       if (isHost && response?.otherPeerPresent && !state.peer) {
         console.log("[Bridge] Client was already waiting — creating peer immediately...");
         createHostPeer(NDC, sig, roomId);
@@ -311,7 +275,6 @@ async function startBridge(roomId, isHost) {
     });
   });
 
-  // ── HOST: esperar al cliente antes de crear peer ──────────────
   sig.on("webrtc-peer-ready", () => {
     if (!isHost || state.peer) return;
     console.log("[Bridge] Client ready — creating host peer...");
@@ -319,11 +282,9 @@ async function startBridge(roomId, isHost) {
     createHostPeer(NDC, sig, roomId);
   });
 
-  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
     try {
       if (type === "offer" && !isHost) {
-        // Cliente crea su peer al recibir el offer
         if (!state.peer) createClientPeer(NDC, sig, roomId);
 
         console.log("[Bridge] Client received offer — setting remote description...");
@@ -332,11 +293,6 @@ async function startBridge(roomId, isHost) {
         state.remoteDescSet = true;
         flushCandidates();
 
-        // CRÍTICO: dejamos que el event loop respire entre setRemoteDescription
-        // y setLocalDescription. El crash nativo (crashpad "not connected")
-        // ocurre de forma intermitente justo en esta secuencia — sospecha de
-        // condición de carrera en el estado interno de libdatachannel cuando
-        // ambas llamadas se hacen de forma síncrona consecutiva.
         setTimeout(() => {
           try {
             console.log("[Bridge] Client sending answer...");
@@ -358,11 +314,16 @@ async function startBridge(roomId, isHost) {
         console.log("[Bridge] Host remote description set without throwing");
 
       } else if (type === "candidate") {
+        console.log(`[Bridge] Received candidate: ${candidate} (${mid})`);
         if (state.peer && state.remoteDescSet) {
-          try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {
+          try { 
+            state.peer.addRemoteCandidate(candidate, mid); 
+            console.log("[Bridge] Candidate added successfully");
+          } catch(e) {
             console.error("[Bridge] addRemoteCandidate error:", e.message);
           }
         } else {
+          console.log("[Bridge] Candidate queued (remote desc not set yet)");
           state.pendingCandidates.push({ candidate, mid });
         }
       }
@@ -373,14 +334,13 @@ async function startBridge(roomId, isHost) {
     }
   });
 
-  // ── UDP LOCAL (solo cliente) ──────────────────────────────────
   if (!isHost) {
     state.udpLocal = dgram.createSocket("udp4");
 
     state.udpLocal.on("error", (err) => {
       console.error("[Bridge] UDP bind error:", err.message);
       if (err.code === "EADDRINUSE") {
-        sendStatus("Puerto 27960 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
+        sendStatus("Puerto 27961 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
       } else {
         sendStatus("Error de red: " + err.message);
       }
@@ -388,13 +348,12 @@ async function startBridge(roomId, isHost) {
       state.udpLocal = null;
     });
 
-    state.udpLocal.bind(27960, "127.0.0.1", () => {
-      console.log("[Bridge] Client UDP listening on 127.0.0.1:27960");
+    state.udpLocal.bind(27961, "127.0.0.1", () => {
+      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
     });
 
-    // Q3 cliente → DataChannel → host
     state.udpLocal.on("message", (msg) => {
-      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes | hex: ${msg.toString("hex")} | ascii: ${msg.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
+      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
@@ -410,6 +369,8 @@ async function startBridge(roomId, isHost) {
 }
 
 function createHostPeer(NDC, sig, roomId) {
+  console.log("[Bridge] Creating Host Peer with ICE servers:", buildIceServers());
+  
   const peer = new NDC.PeerConnection("RetroLink-Host", {
     iceServers: buildIceServers(),
     iceTransportPolicy: "all",
@@ -418,36 +379,53 @@ function createHostPeer(NDC, sig, roomId) {
 
   peer.onLocalDescription((sdp, type) => {
     console.log(`[Bridge] Host local description ready (${type})`);
+    console.log(`[Bridge] SDP (first 200 chars): ${sdp.substring(0, 200)}...`);
     sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
+    console.log(`[Bridge] Host local candidate: ${candidate} (${mid})`);
+    // Log si es un candidate de tipo host (IP local)
+    if (candidate.includes("host")) {
+      console.log(`[Bridge] ✅ Host candidate found: ${candidate}`);
+    }
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
-  peer.onStateChange((s) => console.log("[Bridge] Host peer state:", s));
+  peer.onStateChange((s) => {
+    console.log("[Bridge] Host peer state:", s);
+    if (s === "failed") {
+      console.error("[Bridge] ❌ ICE connection failed!");
+      const elapsed = ((Date.now() - state.iceConnectionStart) / 1000).toFixed(1);
+      console.error(`[Bridge] ICE failed after ${elapsed}s`);
+      sendStatus("❌ Conexión P2P falló. Revisa que ambos estén en la misma red o VPN.");
+    }
+    if (s === "connected") {
+      console.log("[Bridge] ✅ ICE connection established!");
+      sendStatus("¡Conexión P2P establecida!");
+    }
+    if (s === "disconnected") {
+      console.log("[Bridge] ⚠️ ICE connection disconnected");
+    }
+  });
+
   peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
 
-  // Crear DataChannel
-  // TEMPORALMENTE reliable (ordered, sin límite de retransmisiones) para
-  // descartar pérdida de paquetes como causa de que el host no reciba nada.
-  // TODO: volver a unordered/maxRetransmits:0 una vez confirmado el flujo.
   const channel = peer.createDataChannel("game", {
     ordered: true,
   });
   setupChannel(channel);
 
-  // Delay mínimo para asegurar que el socket del cliente está listo en Render
   setTimeout(() => {
     console.log("[Bridge] Host creating offer...");
     sendStatus("Enviando oferta de conexión al rival...");
-    // Igual que en el cliente: sin argumento de tipo, dejamos que la
-    // librería nativa infiera "offer" automáticamente del estado del peer.
     peer.setLocalDescription();
   }, 200);
 }
 
 function createClientPeer(NDC, sig, roomId) {
+  console.log("[Bridge] Creating Client Peer with ICE servers:", buildIceServers());
+  
   const peer = new NDC.PeerConnection("RetroLink-Client", {
     iceServers: buildIceServers(),
     iceTransportPolicy: "all",
@@ -456,10 +434,15 @@ function createClientPeer(NDC, sig, roomId) {
 
   peer.onLocalDescription((sdp, type) => {
     console.log(`[Bridge] Client local description ready (${type})`);
+    console.log(`[Bridge] SDP (first 200 chars): ${sdp.substring(0, 200)}...`);
     sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
+    console.log(`[Bridge] Client local candidate: ${candidate} (${mid})`);
+    if (candidate.includes("host")) {
+      console.log(`[Bridge] ✅ Client host candidate found: ${candidate}`);
+    }
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
@@ -468,7 +451,23 @@ function createClientPeer(NDC, sig, roomId) {
     setupChannel(channel);
   });
 
-  peer.onStateChange((s) => console.log("[Bridge] Client peer state:", s));
+  peer.onStateChange((s) => {
+    console.log("[Bridge] Client peer state:", s);
+    if (s === "failed") {
+      console.error("[Bridge] ❌ ICE connection failed!");
+      const elapsed = ((Date.now() - state.iceConnectionStart) / 1000).toFixed(1);
+      console.error(`[Bridge] ICE failed after ${elapsed}s`);
+      sendStatus("❌ Conexión P2P falló. Revisa que ambos estén en la misma red o VPN.");
+    }
+    if (s === "connected") {
+      console.log("[Bridge] ✅ ICE connection established!");
+      sendStatus("¡Conexión P2P establecida!");
+    }
+    if (s === "disconnected") {
+      console.log("[Bridge] ⚠️ ICE connection disconnected");
+    }
+  });
+
   peer.onGatheringStateChange((s) => console.log("[Bridge] Client gathering:", s));
 }
 
@@ -614,3 +613,6 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
+/*
+WINDOW
+*/
