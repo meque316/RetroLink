@@ -84,7 +84,24 @@ function getLocalIP() {
   const interfaces = os.networkInterfaces();
   const results = [];
   
+  // Patrones de interfaces virtuales a ignorar
+  const virtualPatterns = [
+    'VirtualBox', 'Hyper-V', 'vEthernet', 'VMware', 
+    'Loopback', 'Teredo', 'Bluetooth', 'Virtual', 
+    'TAP', 'WARP', 'Adapter'
+  ];
+  
   for (const name of Object.keys(interfaces)) {
+    // Saltar interfaces virtuales que no son de red real
+    const isVirtual = virtualPatterns.some(pattern => 
+      name.toLowerCase().includes(pattern.toLowerCase())
+    );
+    
+    // Si es virtual, saltar (a menos que sea la única opción)
+    if (isVirtual) {
+      continue;
+    }
+    
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
         results.push({
@@ -95,29 +112,67 @@ function getLocalIP() {
     }
   }
   
-  // Priorizar IPs de VPN (Radmin: 26.x.x.x, ZeroTier: 10.x.x.x, etc.)
-  const vpnIP = results.find(ip => ip.address.startsWith('26.') || ip.address.startsWith('10.'));
+  console.log('[Network] Available IPs:', results.map(r => `${r.address} (${r.name})`).join(', '));
+  
+  // Si no hay IPs (todas eran virtuales), buscar en todas las interfaces
+  if (results.length === 0) {
+    console.log('[Network] No real IPs found, checking all interfaces...');
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          results.push({
+            name: name,
+            address: iface.address,
+          });
+        }
+      }
+    }
+  }
+  
+  // Si solo hay una IP, usarla
+  if (results.length === 1) {
+    console.log(`[Network] ✅ Using only available IP: ${results[0].address}`);
+    return results[0].address;
+  }
+  
+  // 1️⃣ VPN: Radmin (26.x.x.x), ZeroTier (10.x.x.x), otras VPNs (172.16-31.x.x)
+  const vpnIP = results.find(ip => {
+    const parts = ip.address.split('.');
+    return parts[0] === '26' || 
+           parts[0] === '10' || 
+           (parts[0] === '172' && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31);
+  });
   if (vpnIP) {
-    console.log(`[Network] VPN IP detected: ${vpnIP.address} (${vpnIP.name})`);
+    console.log(`[Network] ✅ Using VPN IP: ${vpnIP.address} (${vpnIP.name})`);
     return vpnIP.address;
   }
   
-  // Si no hay VPN, devolver la primera IP local (preferir 192.168.x.x)
-  const localIP = results.find(ip => ip.address.startsWith('192.168.'));
-  if (localIP) {
-    console.log(`[Network] Local IP detected: ${localIP.address} (${localIP.name})`);
-    return localIP.address;
+  // 2️⃣ LAN: IP en 192.168.x.x
+  const lanIP = results.find(ip => ip.address.startsWith('192.168.'));
+  if (lanIP) {
+    console.log(`[Network] ✅ Using LAN IP: ${lanIP.address} (${lanIP.name})`);
+    return lanIP.address;
   }
   
-  // Fallback: primera IP no interna
+  // 3️⃣ Cualquier IP que no sea localhost
+  const realIP = results.find(ip => ip.address !== '127.0.0.1');
+  if (realIP) {
+    console.log(`[Network] ✅ Using IP: ${realIP.address} (${realIP.name})`);
+    return realIP.address;
+  }
+  
+  // 4️⃣ Fallback
   if (results.length > 0) {
-    console.log(`[Network] Using IP: ${results[0].address} (${results[0].name})`);
+    console.log(`[Network] ⚠️ Using fallback IP: ${results[0].address}`);
     return results[0].address;
   }
   
   console.log("[Network] No external IP found, using localhost");
   return '127.0.0.1';
 }
+
+// Guardar la IP seleccionada por el usuario
+let selectedHostIP = null;
 
 /*
 ================================================================
@@ -138,7 +193,7 @@ let state = {
   gameProcess: null,
   gameRoomId: null,
   iceConnectionStart: null,
-  hostIP: null, // IP del host (para el cliente)
+  hostIP: null,
 };
 
 let keepAliveInterval = null;
@@ -233,9 +288,9 @@ function onChannelOpen() {
   
   startKeepAlive();
 
-  // Si es el HOST, enviar su IP al cliente a través del DataChannel
   if (state.isHost) {
-    const localIP = getLocalIP();
+    // Usar la IP seleccionada por el usuario o la detectada automáticamente
+    const localIP = selectedHostIP || getLocalIP();
     state.hostIP = localIP;
     
     // Enviar la IP al cliente
@@ -247,7 +302,6 @@ function onChannelOpen() {
       console.error("[Bridge] Failed to send host IP:", e.message);
     }
     
-    // Configurar UDP proxy
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
@@ -279,14 +333,12 @@ function onChannelOpen() {
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  // Verificar si es un mensaje de IP (solo en el cliente)
   if (!state.isHost) {
     const msgStr = buf.toString('utf8');
     if (msgStr.startsWith('IP:')) {
       state.hostIP = msgStr.substring(3);
       console.log(`[Bridge] ✅ Host IP received: ${state.hostIP}`);
       sendStatus(`IP del host recibida: ${state.hostIP}`);
-      // Notificar al frontend que tenemos la IP del host
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
         win.webContents.send('host-ip-received', { hostIP: state.hostIP });
@@ -295,7 +347,7 @@ function onChannelMessage(msg) {
     }
   }
   
-  // SOLO EN EL CLIENTE: filtrar pings de keep-alive para no reenviarlos al juego local
+  // SOLO EN EL CLIENTE: filtrar pings de keep-alive
   if (!state.isHost && buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
     console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored by client");
     return;
@@ -391,9 +443,8 @@ async function startBridge(roomId, isHost) {
     console.log("[Bridge] Signaling connected:", sig.id);
     sendStatus("Uniéndose a la sala...");
 
-    // Si es el HOST, obtener y guardar su IP
     if (isHost) {
-      const localIP = getLocalIP();
+      const localIP = selectedHostIP || getLocalIP();
       state.hostIP = localIP;
       console.log(`[Bridge] Host IP: ${localIP}`);
     }
@@ -700,7 +751,31 @@ ipcMain.handle("stop-relay", async () => {
 });
 
 ipcMain.handle("get-host-ip", async () => {
-  return state.hostIP || null;
+  return state.hostIP || selectedHostIP || null;
+});
+
+ipcMain.handle("set-host-ip", async (_, ip) => {
+  selectedHostIP = ip;
+  console.log(`[Network] Host IP manually set to: ${ip}`);
+  return { success: true };
+});
+
+ipcMain.handle("get-local-ips", async () => {
+  const interfaces = os.networkInterfaces();
+  const results = [];
+  
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        results.push({
+          name: name,
+          address: iface.address,
+        });
+      }
+    }
+  }
+  
+  return results;
 });
 
 ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) => {
@@ -721,8 +796,7 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
-      // Si no se proporcionó hostIp, usar el guardado en state o localhost
-      const ipToUse = hostIp || state.hostIP || '127.0.0.1';
+      const ipToUse = hostIp || state.hostIP || selectedHostIP || '127.0.0.1';
       args = [
         "+connect", ipToUse,
         ...args
@@ -769,4 +843,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: conectar al host wena wena mysterionsito y topoyiyo
+ // Cliente: hola

@@ -10,6 +10,8 @@ import {
   X,
   Send,
   Smile,
+  Network,
+  ChevronDown,
 } from "lucide-react";
 
 const EMOTES = [
@@ -40,9 +42,15 @@ function Room({ room, leaveRoom }) {
   const [editingName, setEditingName] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   
-  // 🔥 NUEVO: Estado para la IP del host
+  // 🔥 Estado para la IP del host
   const [hostIP, setHostIP] = useState(null);
   const [hostIPReceived, setHostIPReceived] = useState(false);
+  
+  // 🔥 NUEVO: Estado para selector de IP (solo host)
+  const [availableIPs, setAvailableIPs] = useState([]);
+  const [selectedIP, setSelectedIP] = useState(null);
+  const [showIPSelector, setShowIPSelector] = useState(false);
+  const [isLoadingIPs, setIsLoadingIPs] = useState(false);
 
   /*
   CHAT STATE
@@ -64,6 +72,37 @@ function Room({ room, leaveRoom }) {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  /*
+  🔥 NUEVO: Obtener IPs disponibles cuando el host crea la sala
+  */
+  useEffect(() => {
+    const loadIPs = async () => {
+      if (isHost) {
+        setIsLoadingIPs(true);
+        try {
+          const ips = await window.retroLink?.getLocalIPs();
+          if (ips && ips.length > 0) {
+            setAvailableIPs(ips);
+            // Seleccionar automáticamente la mejor IP (VPN > LAN > primera)
+            const preferred = ips.find(ip => 
+              ip.address.startsWith('26.') || 
+              ip.address.startsWith('10.') ||
+              ip.address.startsWith('192.168.')
+            ) || ips[0];
+            setSelectedIP(preferred.address);
+            // Guardar la IP seleccionada
+            await window.retroLink?.setHostIP(preferred.address);
+            console.log("[Room] Auto-selected IP:", preferred.address);
+          }
+        } catch (error) {
+          console.error("[Room] Error loading IPs:", error);
+        }
+        setIsLoadingIPs(false);
+      }
+    };
+    loadIPs();
+  }, [isHost]);
 
   /*
   START RELAY
@@ -92,7 +131,7 @@ function Room({ room, leaveRoom }) {
       }
     });
 
-    // 🔥 NUEVO: Escuchar la IP del host
+    // Escuchar la IP del host (para el cliente)
     window.retroLink?.onHostIPReceived?.((data) => {
       console.log("[Room] Host IP received:", data.hostIP);
       setHostIP(data.hostIP);
@@ -105,6 +144,16 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.offHostIPReceived?.();
     };
   }, [room.id, isHost]);
+
+  /*
+  🔥 NUEVO: Manejar cambio de IP seleccionada
+  */
+  const handleIPSelect = async (ip) => {
+    setSelectedIP(ip);
+    setShowIPSelector(false);
+    await window.retroLink?.setHostIP(ip);
+    console.log("[Room] Manually selected IP:", ip);
+  };
 
   /*
   SOCKET EVENTS
@@ -129,7 +178,7 @@ function Room({ room, leaveRoom }) {
       if (isHost) {
         await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
       } else {
-        // 🔥 NUEVO: Usar la IP recibida automáticamente
+        // Usar la IP recibida automáticamente o localhost
         const ipToUse = hostIP || '127.0.0.1';
         console.log(`[Room] Connecting to host at: ${ipToUse}`);
         await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, []);
@@ -162,7 +211,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
-  }, [room.id, leaveRoom, gamePath, isHost, hostIP]); // 🔥 Añadido hostIP a dependencias
+  }, [room.id, leaveRoom, gamePath, isHost, hostIP]);
 
   const handleBrowseGame = async () => {
     try {
@@ -238,6 +287,61 @@ function Room({ room, leaveRoom }) {
     );
   };
 
+  /*
+  🔥 NUEVO: Renderizar selector de IP (solo host)
+  */
+  const renderIPSelector = () => {
+    if (!isHost) return null;
+    
+    const currentIP = selectedIP || availableIPs[0]?.address || 'Cargando...';
+    const interfaceName = availableIPs.find(ip => ip.address === selectedIP)?.name || '';
+    
+    return (
+      <div className="relative mb-4">
+        <button
+          onClick={() => setShowIPSelector(!showIPSelector)}
+          className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 px-3 py-2 rounded-xl text-sm transition w-full justify-between"
+        >
+          <div className="flex items-center gap-2">
+            <Network size={15} className="text-zinc-400" />
+            <span className="text-zinc-300">IP:</span>
+            <span className="text-green-400 font-mono">{currentIP}</span>
+            {interfaceName && (
+              <span className="text-xs text-zinc-500">({interfaceName})</span>
+            )}
+          </div>
+          <ChevronDown size={15} className={`text-zinc-500 transition ${showIPSelector ? 'rotate-180' : ''}`} />
+        </button>
+        
+        {showIPSelector && (
+          <div className="absolute top-full left-0 right-0 mt-1 bg-zinc-900 border border-zinc-700 rounded-xl overflow-hidden z-50 shadow-xl">
+            {isLoadingIPs ? (
+              <div className="px-4 py-3 text-sm text-zinc-400">Cargando interfaces de red...</div>
+            ) : availableIPs.length === 0 ? (
+              <div className="px-4 py-3 text-sm text-yellow-400">No se encontraron interfaces de red</div>
+            ) : (
+              availableIPs.map((ip, index) => (
+                <button
+                  key={index}
+                  onClick={() => handleIPSelect(ip.address)}
+                  className={`w-full text-left px-4 py-2.5 text-sm transition flex items-center justify-between hover:bg-zinc-800 ${
+                    ip.address === selectedIP ? 'bg-green-500/10 text-green-400' : 'text-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="font-mono">{ip.address}</span>
+                    <span className="text-xs text-zinc-500">{ip.name}</span>
+                  </div>
+                  {ip.address === selectedIP && <Check size={14} className="text-green-400" />}
+                </button>
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="h-full bg-[#0b0f14] text-white flex items-center justify-center p-8">
       <div className="w-full max-w-5xl flex gap-6">
@@ -296,7 +400,10 @@ function Room({ room, leaveRoom }) {
             </button>
           </div>
 
-          {/* 🔥 NUEVO: Indicador de IP del host */}
+          {/* 🔥 NUEVO: Selector de IP (solo host) */}
+          {renderIPSelector()}
+
+          {/* Indicador de IP del host (solo cliente) */}
           {!isHost && (
             <div className={`text-xs px-3 py-1 rounded-full mb-2 inline-block ${
               hostIPReceived ? 'text-green-400 bg-green-500/10' : 'text-yellow-400 bg-yellow-500/10'
