@@ -77,7 +77,7 @@ const closeUPnP = (port) => new Promise((resolve) => {
 
 /*
 ================================================================
-UTILITY: GET LOCAL IP (para mostrar en UI, no para conexión)
+UTILITY: GET LOCAL IP
 ================================================================
 */
 function getLocalIP() {
@@ -119,7 +119,7 @@ function getLocalIP() {
 
 /*
 ================================================================
-WebRTC P2P BRIDGE - TODO EL TRÁFICO POR DATACHANNEL
+WebRTC P2P BRIDGE
 ================================================================
 */
 
@@ -127,8 +127,8 @@ let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,   // Cliente: escucha en 27961 para recibir del juego
-  udpProxy: null,   // Host: escucha en 27960 para recibir del juego
+  udpLocal: null,
+  udpProxy: null,
   roomId: null,
   isHost: false,
   pendingCandidates: [],
@@ -232,8 +232,6 @@ function onChannelOpen() {
   startKeepAlive();
 
   if (state.isHost) {
-    // 🟢 HOST: Escucha en 27960 para recibir del juego
-    // Y reenvía TODO por DataChannel
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
@@ -245,7 +243,6 @@ function onChannelOpen() {
       console.log("[Bridge] Host UDP listening on 127.0.0.1:27960 (for game)");
     });
 
-    // 📤 Paquetes del juego HOST → DataChannel → CLIENTE
     state.udpProxy.on("message", (msg, rinfo) => {
       console.log(`[Bridge] Host GAME → DataChannel: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
@@ -261,8 +258,6 @@ function onChannelOpen() {
     });
 
   } else {
-    // 🔵 CLIENTE: Escucha en 27961 para recibir del juego
-    // Y reenvía TODO por DataChannel
     state.udpLocal = dgram.createSocket("udp4");
 
     state.udpLocal.on("error", (err) => {
@@ -280,7 +275,6 @@ function onChannelOpen() {
       console.log("[Bridge] Client UDP listening on 127.0.0.1:27961 (for game)");
     });
 
-    // 📤 Paquetes del juego CLIENTE → DataChannel → HOST
     state.udpLocal.on("message", (msg) => {
       console.log(`[Bridge] Client GAME → DataChannel: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
@@ -301,7 +295,7 @@ function onChannelOpen() {
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  // Si es un ping de keep-alive (getchallenge) y es del cliente, ignorarlo
+  // Si es un ping de keep-alive (getchallenge), ignorarlo
   if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
     console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
     return;
@@ -310,7 +304,6 @@ function onChannelMessage(msg) {
   console.log(`[Bridge] DataChannel → GAME: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
-    // 🟢 HOST: DataChannel → juego local en 27960
     if (!state.udpProxy) {
       console.warn("[Bridge] Host received DataChannel msg but udpProxy is null!");
       return;
@@ -320,7 +313,6 @@ function onChannelMessage(msg) {
       else console.log(`[Bridge] Host sent ${buf.length} bytes to game (127.0.0.1:27960)`);
     });
   } else {
-    // 🔵 CLIENTE: DataChannel → juego local en 27961
     if (!state.udpLocal) {
       console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
       return;
@@ -402,9 +394,10 @@ async function startBridge(roomId, isHost) {
     if (isHost) {
       const localIP = getLocalIP();
       state.hostIP = localIP;
-      console.log(`[Bridge] Host IP (for display): ${localIP}`);
+      console.log(`[Bridge] Host IP: ${localIP}`);
     }
 
+    // 🔥 Enviar la IP del host al servidor
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
@@ -414,6 +407,20 @@ async function startBridge(roomId, isHost) {
         createHostPeer(NDC, sig, roomId);
       }
     });
+  });
+
+  // 🔥 NUEVO: Recibir la IP del host desde el servidor (para el cliente)
+  sig.on("webrtc-host-ip", ({ hostIP }) => {
+    if (!isHost) {
+      state.hostIP = hostIP;
+      console.log(`[Bridge] ✅ Host IP received from server: ${hostIP}`);
+      sendStatus(`IP del host recibida: ${hostIP}`);
+      // Notificar al frontend
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win) {
+        win.webContents.send('host-ip-received', { hostIP });
+      }
+    }
   });
 
   sig.on("webrtc-peer-ready", () => {
@@ -706,7 +713,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     let args = [...(extraArgs || [])];
     
     if (isHost) {
-      // 🔥 HOST: el juego escucha en 27960 y el bridge lo captura
       args = [
         "+set", "net_port", "27960",
         "+set", "sv_lanForce", "1",
@@ -715,12 +721,12 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
-      // 🔥 CLIENTE: el juego se conecta a localhost:27961 (el bridge)
-      // El bridge reenvía todo por DataChannel al host
+      // 🔥 SIEMPRE usar localhost - NUNCA la IP del host directamente
       args = [
         "+connect", "127.0.0.1:27961",
         ...args
       ];
+      console.log(`[Game] Client connecting to localhost:27961 (bridge will relay)`);
     }
 
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
@@ -762,4 +768,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: hola uwu
+ // Cliente: hola uwu3x
