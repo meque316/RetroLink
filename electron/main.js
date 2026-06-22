@@ -295,7 +295,7 @@ function onChannelOpen() {
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  // Si es un ping de keep-alive (getchallenge), ignorarlo
+  // 🔥 FILTRAR PINGS EN AMBOS LADOS - SOLO keep-alive, no tráfico real del juego
   if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
     console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
     return;
@@ -397,7 +397,6 @@ async function startBridge(roomId, isHost) {
       console.log(`[Bridge] Host IP: ${localIP}`);
     }
 
-    // 🔥 Enviar la IP del host al servidor
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
@@ -409,13 +408,12 @@ async function startBridge(roomId, isHost) {
     });
   });
 
-  // 🔥 NUEVO: Recibir la IP del host desde el servidor (para el cliente)
+  // Recibir la IP del host desde el servidor (para el cliente)
   sig.on("webrtc-host-ip", ({ hostIP }) => {
     if (!isHost) {
       state.hostIP = hostIP;
       console.log(`[Bridge] ✅ Host IP received from server: ${hostIP}`);
       sendStatus(`IP del host recibida: ${hostIP}`);
-      // Notificar al frontend
       const win = BrowserWindow.getAllWindows()[0];
       if (win) {
         win.webContents.send('host-ip-received', { hostIP });
@@ -721,7 +719,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
-      // 🔥 SIEMPRE usar localhost - NUNCA la IP del host directamente
       args = [
         "+connect", "127.0.0.1:27961",
         ...args
@@ -768,4 +765,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: hola uwu3x
+ // Cliente: hola uwu3xxxx
