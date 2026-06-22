@@ -95,6 +95,8 @@ let state = {
   iceConnectionStart: null,
 };
 
+let keepAliveInterval = null;
+
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
@@ -114,6 +116,8 @@ const SIGNALING_URL = "https://retrolink-server.onrender.com";
 
 // Limpiar todo el estado del bridge
 function resetBridge() {
+  stopKeepAlive();
+  
   try {
     if (state.signalingSocket && state.roomId) {
       state.signalingSocket.emit("webrtc-leave", { roomId: state.roomId });
@@ -138,10 +142,48 @@ function resetBridge() {
   console.log("[Bridge] Reset complete");
 }
 
+// Keep-alive para mantener el DataChannel abierto
+function startKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+  
+  keepAliveInterval = setInterval(() => {
+    if (state.channel?.isOpen()) {
+      try {
+        state.channel.sendMessageBinary(Buffer.from([0x00]));
+        console.log("[Bridge] Keep-alive ping sent");
+      } catch(e) {
+        console.warn("[Bridge] Keep-alive ping failed:", e.message);
+        if (keepAliveInterval) {
+          clearInterval(keepAliveInterval);
+          keepAliveInterval = null;
+        }
+      }
+    } else {
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+        keepAliveInterval = null;
+      }
+    }
+  }, 5000);
+}
+
+function stopKeepAlive() {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+    console.log("[Bridge] Keep-alive stopped");
+  }
+}
+
 // Configurar DataChannel una vez abierto
 function onChannelOpen() {
   console.log("[Bridge] ✅ DataChannel open — P2P established!");
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
+  
+  startKeepAlive();
 
   if (state.isHost) {
     state.udpProxy = dgram.createSocket("udp4");
@@ -209,6 +251,7 @@ function setupChannel(channel) {
   channel.onClosed(() => {
     console.log("[Bridge] DataChannel closed");
     sendStatus("Conexión P2P cerrada.");
+    stopKeepAlive();
   });
 
   channel.onMessage((msg) => {
@@ -267,7 +310,6 @@ async function startBridge(roomId, isHost) {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
       // 🔥 CRUCIAL: El host crea el peer INMEDIATAMENTE después de unirse
-      // No esperamos webrtc-peer-ready porque el servidor puede no re-emitirlo
       if (isHost && !state.peer) {
         console.log("[Bridge] Host creating peer immediately after join...");
         sendStatus("Creando conexión P2P...");
@@ -579,7 +621,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     let args = [...(extraArgs || [])];
     
     if (isHost) {
-      // Host: forzar puerto 27960 y modo LAN
       args = [
         "+set", "net_port", "27960",
         "+set", "sv_lanForce", "1",
@@ -588,7 +629,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else if (hostIp) {
-      // Cliente: conectar al host
       args = [
         "+connect", hostIp,
         ...args
@@ -634,4 +674,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: conectar al host
+ // Cliente: conectar al host wena wena mysterion
