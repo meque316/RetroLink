@@ -77,31 +77,14 @@ const closeUPnP = (port) => new Promise((resolve) => {
 
 /*
 ================================================================
-UTILITY: GET LOCAL IP
+UTILITY: GET LOCAL IP (para mostrar en UI, no para conexión)
 ================================================================
 */
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   const results = [];
   
-  // Patrones de interfaces virtuales a ignorar
-  const virtualPatterns = [
-    'VirtualBox', 'Hyper-V', 'vEthernet', 'VMware', 
-    'Loopback', 'Teredo', 'Bluetooth', 'Virtual', 
-    'TAP', 'WARP', 'Adapter'
-  ];
-  
   for (const name of Object.keys(interfaces)) {
-    // Saltar interfaces virtuales que no son de red real
-    const isVirtual = virtualPatterns.some(pattern => 
-      name.toLowerCase().includes(pattern.toLowerCase())
-    );
-    
-    // Si es virtual, saltar (a menos que sea la única opción)
-    if (isVirtual) {
-      continue;
-    }
-    
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
         results.push({
@@ -112,71 +95,31 @@ function getLocalIP() {
     }
   }
   
-  console.log('[Network] Available IPs:', results.map(r => `${r.address} (${r.name})`).join(', '));
-  
-  // Si no hay IPs (todas eran virtuales), buscar en todas las interfaces
-  if (results.length === 0) {
-    console.log('[Network] No real IPs found, checking all interfaces...');
-    for (const name of Object.keys(interfaces)) {
-      for (const iface of interfaces[name]) {
-        if (iface.family === 'IPv4' && !iface.internal) {
-          results.push({
-            name: name,
-            address: iface.address,
-          });
-        }
-      }
-    }
-  }
-  
-  // Si solo hay una IP, usarla
-  if (results.length === 1) {
-    console.log(`[Network] ✅ Using only available IP: ${results[0].address}`);
-    return results[0].address;
-  }
-  
-  // 1️⃣ VPN: Radmin (26.x.x.x), ZeroTier (10.x.x.x), otras VPNs (172.16-31.x.x)
-  const vpnIP = results.find(ip => {
-    const parts = ip.address.split('.');
-    return parts[0] === '26' || 
-           parts[0] === '10' || 
-           (parts[0] === '172' && parseInt(parts[1]) >= 16 && parseInt(parts[1]) <= 31);
-  });
+  // Priorizar VPN (Radmin: 26.x.x.x, ZeroTier: 10.x.x.x)
+  const vpnIP = results.find(ip => ip.address.startsWith('26.') || ip.address.startsWith('10.'));
   if (vpnIP) {
-    console.log(`[Network] ✅ Using VPN IP: ${vpnIP.address} (${vpnIP.name})`);
+    console.log(`[Network] VPN IP detected: ${vpnIP.address} (${vpnIP.name})`);
     return vpnIP.address;
   }
   
-  // 2️⃣ LAN: IP en 192.168.x.x
+  // Priorizar LAN (192.168.x.x)
   const lanIP = results.find(ip => ip.address.startsWith('192.168.'));
   if (lanIP) {
-    console.log(`[Network] ✅ Using LAN IP: ${lanIP.address} (${lanIP.name})`);
+    console.log(`[Network] LAN IP detected: ${lanIP.address} (${lanIP.name})`);
     return lanIP.address;
   }
   
-  // 3️⃣ Cualquier IP que no sea localhost
-  const realIP = results.find(ip => ip.address !== '127.0.0.1');
-  if (realIP) {
-    console.log(`[Network] ✅ Using IP: ${realIP.address} (${realIP.name})`);
-    return realIP.address;
-  }
-  
-  // 4️⃣ Fallback
   if (results.length > 0) {
-    console.log(`[Network] ⚠️ Using fallback IP: ${results[0].address}`);
+    console.log(`[Network] Using IP: ${results[0].address}`);
     return results[0].address;
   }
   
-  console.log("[Network] No external IP found, using localhost");
   return '127.0.0.1';
 }
 
-// Guardar la IP seleccionada por el usuario
-let selectedHostIP = null;
-
 /*
 ================================================================
-WebRTC P2P BRIDGE
+WebRTC P2P BRIDGE - TODO EL TRÁFICO POR DATACHANNEL
 ================================================================
 */
 
@@ -184,8 +127,8 @@ let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,
-  udpProxy: null,
+  udpLocal: null,   // Cliente: escucha en 27961 para recibir del juego
+  udpProxy: null,   // Host: escucha en 27960 para recibir del juego
   roomId: null,
   isHost: false,
   pendingCandidates: [],
@@ -289,32 +232,22 @@ function onChannelOpen() {
   startKeepAlive();
 
   if (state.isHost) {
-    // Usar la IP seleccionada por el usuario o la detectada automáticamente
-    const localIP = selectedHostIP || getLocalIP();
-    state.hostIP = localIP;
-    
-    // Enviar la IP al cliente
-    try {
-      const ipMsg = Buffer.from(`IP:${localIP}`);
-      state.channel.sendMessageBinary(ipMsg);
-      console.log(`[Bridge] Host IP sent to client: ${localIP}`);
-    } catch(e) {
-      console.error("[Bridge] Failed to send host IP:", e.message);
-    }
-    
+    // 🟢 HOST: Escucha en 27960 para recibir del juego
+    // Y reenvía TODO por DataChannel
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
-      console.error("[Bridge] UDP proxy error:", err.message);
+      console.error("[Bridge] Host UDP proxy error:", err.message);
       sendStatus("Error de red en el proxy del host: " + err.message);
     });
 
-    state.udpProxy.bind(0, "127.0.0.1", () => {
-      console.log(`[Bridge] Host UDP proxy bound on port ${state.udpProxy.address().port}`);
+    state.udpProxy.bind(27960, "127.0.0.1", () => {
+      console.log("[Bridge] Host UDP listening on 127.0.0.1:27960 (for game)");
     });
 
+    // 📤 Paquetes del juego HOST → DataChannel → CLIENTE
     state.udpProxy.on("message", (msg, rinfo) => {
-      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
+      console.log(`[Bridge] Host GAME → DataChannel: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
@@ -323,55 +256,78 @@ function onChannelOpen() {
           console.error("[Bridge] Host DataChannel send error:", e.message);
         }
       } else {
-        console.warn("[Bridge] Host udpProxy received Q3 msg but DataChannel not open!");
+        console.warn("[Bridge] Host received game msg but DataChannel not open!");
+      }
+    });
+
+  } else {
+    // 🔵 CLIENTE: Escucha en 27961 para recibir del juego
+    // Y reenvía TODO por DataChannel
+    state.udpLocal = dgram.createSocket("udp4");
+
+    state.udpLocal.on("error", (err) => {
+      console.error("[Bridge] Client UDP error:", err.message);
+      if (err.code === "EADDRINUSE") {
+        sendStatus("Puerto 27961 ocupado. Cierra RetroLink y vuelve a abrirlo.");
+      } else {
+        sendStatus("Error de red: " + err.message);
+      }
+      try { state.udpLocal.close(); } catch(e) {}
+      state.udpLocal = null;
+    });
+
+    state.udpLocal.bind(27961, "127.0.0.1", () => {
+      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961 (for game)");
+    });
+
+    // 📤 Paquetes del juego CLIENTE → DataChannel → HOST
+    state.udpLocal.on("message", (msg) => {
+      console.log(`[Bridge] Client GAME → DataChannel: ${msg.length} bytes`);
+      if (state.channel?.isOpen()) {
+        try {
+          state.channel.sendMessageBinary(Buffer.from(msg));
+          console.log(`[Bridge] Client sent ${msg.length} bytes via DataChannel to host`);
+        } catch(e) {
+          console.error("[Bridge] Client DataChannel send error:", e.message);
+        }
+      } else {
+        console.warn("[Bridge] Client received game msg but DataChannel not open!");
       }
     });
   }
 }
 
-// Cuando llegan datos por el DataChannel
+// 📥 Datos recibidos por DataChannel → reenviar al juego local
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  if (!state.isHost) {
-    const msgStr = buf.toString('utf8');
-    if (msgStr.startsWith('IP:')) {
-      state.hostIP = msgStr.substring(3);
-      console.log(`[Bridge] ✅ Host IP received: ${state.hostIP}`);
-      sendStatus(`IP del host recibida: ${state.hostIP}`);
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win) {
-        win.webContents.send('host-ip-received', { hostIP: state.hostIP });
-      }
-      return;
-    }
-  }
-  
-  // SOLO EN EL CLIENTE: filtrar pings de keep-alive
-  if (!state.isHost && buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
-    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored by client");
+  // Si es un ping de keep-alive (getchallenge) y es del cliente, ignorarlo
+  if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
+    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
     return;
   }
   
-  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost})`);
+  console.log(`[Bridge] DataChannel → GAME: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
+    // 🟢 HOST: DataChannel → juego local en 27960
     if (!state.udpProxy) {
       console.warn("[Bridge] Host received DataChannel msg but udpProxy is null!");
       return;
     }
     state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Host udpProxy send error:", err.message);
-      else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
+      if (err) console.error("[Bridge] Host send to game error:", err.message);
+      else console.log(`[Bridge] Host sent ${buf.length} bytes to game (127.0.0.1:27960)`);
     });
   } else {
+    // 🔵 CLIENTE: DataChannel → juego local en 27961
     if (!state.udpLocal) {
       console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
       return;
     }
     state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client udpLocal send error:", err.message);
-      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27961`);
+      if (err) console.error("[Bridge] Client send to game error:", err.message);
+      else console.log(`[Bridge] Client sent ${buf.length} bytes to game (127.0.0.1:27961)`);
     });
   }
 }
@@ -444,9 +400,9 @@ async function startBridge(roomId, isHost) {
     sendStatus("Uniéndose a la sala...");
 
     if (isHost) {
-      const localIP = selectedHostIP || getLocalIP();
+      const localIP = getLocalIP();
       state.hostIP = localIP;
-      console.log(`[Bridge] Host IP: ${localIP}`);
+      console.log(`[Bridge] Host IP (for display): ${localIP}`);
     }
 
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
@@ -467,6 +423,7 @@ async function startBridge(roomId, isHost) {
     createHostPeer(NDC, sig, roomId);
   });
 
+  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
     try {
       if (type === "offer" && !isHost) {
@@ -518,39 +475,6 @@ async function startBridge(roomId, isHost) {
       sendStatus("Error procesando señal de conexión: " + err.message);
     }
   });
-
-  if (!isHost) {
-    state.udpLocal = dgram.createSocket("udp4");
-
-    state.udpLocal.on("error", (err) => {
-      console.error("[Bridge] UDP bind error:", err.message);
-      if (err.code === "EADDRINUSE") {
-        sendStatus("Puerto 27961 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
-      } else {
-        sendStatus("Error de red: " + err.message);
-      }
-      try { state.udpLocal.close(); } catch(e) {}
-      state.udpLocal = null;
-    });
-
-    state.udpLocal.bind(27961, "127.0.0.1", () => {
-      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
-    });
-
-    state.udpLocal.on("message", (msg) => {
-      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes`);
-      if (state.channel?.isOpen()) {
-        try {
-          state.channel.sendMessageBinary(Buffer.from(msg));
-          console.log(`[Bridge] Client sent ${msg.length} bytes via DataChannel`);
-        } catch(e) {
-          console.error("[Bridge] Client DataChannel send error:", e.message);
-        }
-      } else {
-        console.warn("[Bridge] Client received UDP but DataChannel is not open!");
-      }
-    });
-  }
 }
 
 function createHostPeer(NDC, sig, roomId) {
@@ -751,13 +675,7 @@ ipcMain.handle("stop-relay", async () => {
 });
 
 ipcMain.handle("get-host-ip", async () => {
-  return state.hostIP || selectedHostIP || null;
-});
-
-ipcMain.handle("set-host-ip", async (_, ip) => {
-  selectedHostIP = ip;
-  console.log(`[Network] Host IP manually set to: ${ip}`);
-  return { success: true };
+  return state.hostIP || null;
 });
 
 ipcMain.handle("get-local-ips", async () => {
@@ -788,6 +706,7 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     let args = [...(extraArgs || [])];
     
     if (isHost) {
+      // 🔥 HOST: el juego escucha en 27960 y el bridge lo captura
       args = [
         "+set", "net_port", "27960",
         "+set", "sv_lanForce", "1",
@@ -796,12 +715,12 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
-      const ipToUse = hostIp || state.hostIP || selectedHostIP || '127.0.0.1';
+      // 🔥 CLIENTE: el juego se conecta a localhost:27961 (el bridge)
+      // El bridge reenvía todo por DataChannel al host
       args = [
-        "+connect", ipToUse,
+        "+connect", "127.0.0.1:27961",
         ...args
       ];
-      console.log(`[Game] Client connecting to host IP: ${ipToUse}`);
     }
 
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
@@ -843,4 +762,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: hola
+ // Cliente: hola uwu
