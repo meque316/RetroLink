@@ -152,8 +152,10 @@ function startKeepAlive() {
   keepAliveInterval = setInterval(() => {
     if (state.channel?.isOpen()) {
       try {
-        state.channel.sendMessageBinary(Buffer.from([0x00]));
-        console.log("[Bridge] Keep-alive ping sent");
+        // Enviar un "getchallenge" cada 10 segundos (Quake 3 lo entiende)
+        const pingMsg = Buffer.from("\xFF\xFF\xFF\xFFgetchallenge");
+        state.channel.sendMessageBinary(pingMsg);
+        console.log("[Bridge] Keep-alive ping sent (getchallenge)");
       } catch(e) {
         console.warn("[Bridge] Keep-alive ping failed:", e.message);
         if (keepAliveInterval) {
@@ -167,7 +169,7 @@ function startKeepAlive() {
         keepAliveInterval = null;
       }
     }
-  }, 5000);
+  }, 10000);
 }
 
 function stopKeepAlive() {
@@ -216,6 +218,14 @@ function onChannelOpen() {
 // Cuando llegan datos por el DataChannel
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+  
+  // Si es un ping de keep-alive (getchallenge) y es del cliente, ignorarlo
+  // para no reenviarlo al juego y evitar bucles
+  if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
+    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
+    return;
+  }
+  
   console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
@@ -309,7 +319,6 @@ async function startBridge(roomId, isHost) {
     sig.emit("webrtc-join", { roomId, isHost }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
-      // 🔥 CRUCIAL: El host crea el peer INMEDIATAMENTE después de unirse
       if (isHost && !state.peer) {
         console.log("[Bridge] Host creating peer immediately after join...");
         sendStatus("Creando conexión P2P...");
@@ -318,7 +327,6 @@ async function startBridge(roomId, isHost) {
     });
   });
 
-  // ── HOST: respaldo por si el peer-ready llega tarde ──────────────
   sig.on("webrtc-peer-ready", () => {
     if (!isHost || state.peer) return;
     console.log("[Bridge] Client ready (late) — creating host peer...");
@@ -326,7 +334,6 @@ async function startBridge(roomId, isHost) {
     createHostPeer(NDC, sig, roomId);
   });
 
-  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
     try {
       if (type === "offer" && !isHost) {
@@ -379,7 +386,6 @@ async function startBridge(roomId, isHost) {
     }
   });
 
-  // ── UDP LOCAL (solo cliente) ──────────────────────────────────
   if (!isHost) {
     state.udpLocal = dgram.createSocket("udp4");
 
@@ -674,4 +680,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: conectar al host wena wena mysterion
+ // Cliente: conectar al host wena wena mysterionsito
