@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld(
     killGame: () =>
       ipcRenderer.invoke("kill-game"),
 
+    // 🔥 NUEVO: Obtener la IP del host
+    getHostIP: () =>
+      ipcRenderer.invoke("get-host-ip"),
+
     // Escucha cuando el host cierra el juego
     onHostGameClosed: (callback) =>
       ipcRenderer.on("host-game-closed", (_, data) => callback(data)),
@@ -35,6 +39,14 @@ contextBridge.exposeInMainWorld(
     // Limpia el listener
     offHostGameClosed: () =>
       ipcRenderer.removeAllListeners("host-game-closed"),
+
+    // 🔥 NUEVO: Escuchar cuando se recibe la IP del host
+    onHostIPReceived: (callback) =>
+      ipcRenderer.on("host-ip-received", (_, data) => callback(data)),
+
+    // 🔥 NUEVO: Limpiar listener de IP del host
+    offHostIPReceived: () =>
+      ipcRenderer.removeAllListeners("host-ip-received"),
 
     // Estado del bridge WebRTC (mensajes legibles para la UI)
     onBridgeStatus: (callback) =>

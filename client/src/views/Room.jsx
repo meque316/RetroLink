@@ -36,10 +36,13 @@ function Room({ room, leaveRoom }) {
 
   const [gamePath, setGamePath] = useState(getGamePathFromLibrary);
   const [relayStatus, setRelayStatus] = useState(null);
-  // null = conectando, "signaling" = signaling OK, "ok" = DataChannel abierto, "error" = falló
   const [relayStep, setRelayStep] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
+  
+  // 🔥 NUEVO: Estado para la IP del host
+  const [hostIP, setHostIP] = useState(null);
+  const [hostIPReceived, setHostIPReceived] = useState(false);
 
   /*
   CHAT STATE
@@ -51,14 +54,8 @@ function Room({ room, leaveRoom }) {
   const chatEndRef = useRef(null);
   const currentUser = JSON.parse(localStorage.getItem("user") || "{}");
 
-  // CRÍTICO: isHost se fija UNA SOLA VEZ al montar el componente, usando el
-  // socket.id actual y el room.host original. NO debe depender de currentRoom,
-  // porque currentRoom cambia con cada "rooms-list" recibido (toggle-ready, etc.)
-  // y eso causaría que el useEffect de START RELAY se reinicie, matando el
-  // bridge WebRTC en medio de la negociación P2P.
   const isHostRef = useRef(room?.host === socket.id);
   const isHost = isHostRef.current;
-
   const isReady = readyPlayers.includes(socket.id);
 
   /*
@@ -84,7 +81,6 @@ function Room({ room, leaveRoom }) {
 
     startRelay();
 
-    // Escuchar mensajes de estado legibles desde main.js
     window.retroLink?.onBridgeStatus?.((message) => {
       console.log("[Room] Bridge status:", message);
       setRelayStep(message);
@@ -92,13 +88,21 @@ function Room({ room, leaveRoom }) {
       if (message.includes("Conexión establecida")) {
         setRelayStatus("ok");
       } else if (message.includes("cerrada") || message.includes("detenido")) {
-        // No marcar error si simplemente se detuvo al desmontar
+        // No marcar error
       }
+    });
+
+    // 🔥 NUEVO: Escuchar la IP del host
+    window.retroLink?.onHostIPReceived?.((data) => {
+      console.log("[Room] Host IP received:", data.hostIP);
+      setHostIP(data.hostIP);
+      setHostIPReceived(true);
     });
 
     return () => {
       window.retroLink?.stopRelay();
       window.retroLink?.offBridgeStatus?.();
+      window.retroLink?.offHostIPReceived?.();
     };
   }, [room.id, isHost]);
 
@@ -117,16 +121,18 @@ function Room({ room, leaveRoom }) {
     const handleReadyState = (playersReady) => setReadyPlayers(playersReady);
 
     const handleMatchStarted = async (data) => {
-      if (!gamePath) { console.warn("No game path selected"); return; }
+      if (!gamePath) { 
+        console.warn("No game path selected"); 
+        return; 
+      }
 
       if (isHost) {
-        // Host lanza Quake 3 normal — crea la partida desde el menú del juego
-        // El bridge escucha en 27962 y reenvía los paquetes a Quake 3 en 27961
         await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
       } else {
-        // Cliente conecta al bridge local en 27961
-        // El bridge recibe y reenvía via WebRTC al host
-        await window.retroLink?.launchGame(gamePath, "127.0.0.1:27961", room.id, false, []);
+        // 🔥 NUEVO: Usar la IP recibida automáticamente
+        const ipToUse = hostIP || '127.0.0.1';
+        console.log(`[Room] Connecting to host at: ${ipToUse}`);
+        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, []);
       }
     };
 
@@ -156,7 +162,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
-  }, [room.id, leaveRoom, gamePath, isHost]);
+  }, [room.id, leaveRoom, gamePath, isHost, hostIP]); // 🔥 Añadido hostIP a dependencias
 
   const handleBrowseGame = async () => {
     try {
@@ -290,6 +296,15 @@ function Room({ room, leaveRoom }) {
             </button>
           </div>
 
+          {/* 🔥 NUEVO: Indicador de IP del host */}
+          {!isHost && (
+            <div className={`text-xs px-3 py-1 rounded-full mb-2 inline-block ${
+              hostIPReceived ? 'text-green-400 bg-green-500/10' : 'text-yellow-400 bg-yellow-500/10'
+            }`}>
+              {hostIPReceived ? `✓ Host IP: ${hostIP}` : '⏳ Obteniendo IP del host...'}
+            </div>
+          )}
+
           {renderRelayStatus()}
 
           {/* PLAYERS LIST */}
@@ -400,7 +415,6 @@ function Room({ room, leaveRoom }) {
           {/* EMOTE PICKER */}
           {showEmotes && (
             <div className="border-t border-zinc-800 bg-[#0d1117] p-3">
-              {/* CATEGORY TABS */}
               <div className="flex gap-1 mb-2 overflow-x-auto">
                 {EMOTES.map((cat, i) => (
                   <button
@@ -417,7 +431,6 @@ function Room({ room, leaveRoom }) {
                 ))}
               </div>
 
-              {/* EMOTES GRID */}
               <div className="grid grid-cols-5 gap-1">
                 {EMOTES[emoteCategory].emotes.map((emote, i) => (
                   <button

@@ -11,6 +11,7 @@ const { exec, execFile } = require("child_process");
 const dgram = require("dgram");
 const natUpnp = require("nat-upnp");
 const { io: socketClient } = require("socket.io-client");
+const os = require("os");
 
 const isDev = !app.isPackaged;
 
@@ -76,6 +77,50 @@ const closeUPnP = (port) => new Promise((resolve) => {
 
 /*
 ================================================================
+UTILITY: GET LOCAL IP
+================================================================
+*/
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  const results = [];
+  
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        results.push({
+          name: name,
+          address: iface.address,
+        });
+      }
+    }
+  }
+  
+  // Priorizar IPs de VPN (Radmin: 26.x.x.x, ZeroTier: 10.x.x.x, etc.)
+  const vpnIP = results.find(ip => ip.address.startsWith('26.') || ip.address.startsWith('10.'));
+  if (vpnIP) {
+    console.log(`[Network] VPN IP detected: ${vpnIP.address} (${vpnIP.name})`);
+    return vpnIP.address;
+  }
+  
+  // Si no hay VPN, devolver la primera IP local (preferir 192.168.x.x)
+  const localIP = results.find(ip => ip.address.startsWith('192.168.'));
+  if (localIP) {
+    console.log(`[Network] Local IP detected: ${localIP.address} (${localIP.name})`);
+    return localIP.address;
+  }
+  
+  // Fallback: primera IP no interna
+  if (results.length > 0) {
+    console.log(`[Network] Using IP: ${results[0].address} (${results[0].name})`);
+    return results[0].address;
+  }
+  
+  console.log("[Network] No external IP found, using localhost");
+  return '127.0.0.1';
+}
+
+/*
+================================================================
 WebRTC P2P BRIDGE
 ================================================================
 */
@@ -93,6 +138,7 @@ let state = {
   gameProcess: null,
   gameRoomId: null,
   iceConnectionStart: null,
+  hostIP: null, // IP del host (para el cliente)
 };
 
 let keepAliveInterval = null;
@@ -138,6 +184,7 @@ function resetBridge() {
   state.pendingCandidates = [];
   state.remoteDescSet = false;
   state.iceConnectionStart = null;
+  state.hostIP = null;
 
   console.log("[Bridge] Reset complete");
 }
@@ -152,7 +199,6 @@ function startKeepAlive() {
   keepAliveInterval = setInterval(() => {
     if (state.channel?.isOpen()) {
       try {
-        // Enviar un "getchallenge" cada 10 segundos (Quake 3 lo entiende)
         const pingMsg = Buffer.from("\xFF\xFF\xFF\xFFgetchallenge");
         state.channel.sendMessageBinary(pingMsg);
         console.log("[Bridge] Keep-alive ping sent (getchallenge)");
@@ -187,7 +233,21 @@ function onChannelOpen() {
   
   startKeepAlive();
 
+  // Si es el HOST, enviar su IP al cliente a través del DataChannel
   if (state.isHost) {
+    const localIP = getLocalIP();
+    state.hostIP = localIP;
+    
+    // Enviar la IP al cliente
+    try {
+      const ipMsg = Buffer.from(`IP:${localIP}`);
+      state.channel.sendMessageBinary(ipMsg);
+      console.log(`[Bridge] Host IP sent to client: ${localIP}`);
+    } catch(e) {
+      console.error("[Bridge] Failed to send host IP:", e.message);
+    }
+    
+    // Configurar UDP proxy
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
@@ -219,10 +279,25 @@ function onChannelOpen() {
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  // Si es un ping de keep-alive (getchallenge) y es del cliente, ignorarlo
-  // para no reenviarlo al juego y evitar bucles
-  if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
-    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
+  // Verificar si es un mensaje de IP (solo en el cliente)
+  if (!state.isHost) {
+    const msgStr = buf.toString('utf8');
+    if (msgStr.startsWith('IP:')) {
+      state.hostIP = msgStr.substring(3);
+      console.log(`[Bridge] ✅ Host IP received: ${state.hostIP}`);
+      sendStatus(`IP del host recibida: ${state.hostIP}`);
+      // Notificar al frontend que tenemos la IP del host
+      const win = BrowserWindow.getAllWindows()[0];
+      if (win) {
+        win.webContents.send('host-ip-received', { hostIP: state.hostIP });
+      }
+      return;
+    }
+  }
+  
+  // SOLO EN EL CLIENTE: filtrar pings de keep-alive para no reenviarlos al juego local
+  if (!state.isHost && buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
+    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored by client");
     return;
   }
   
@@ -316,7 +391,14 @@ async function startBridge(roomId, isHost) {
     console.log("[Bridge] Signaling connected:", sig.id);
     sendStatus("Uniéndose a la sala...");
 
-    sig.emit("webrtc-join", { roomId, isHost }, (response) => {
+    // Si es el HOST, obtener y guardar su IP
+    if (isHost) {
+      const localIP = getLocalIP();
+      state.hostIP = localIP;
+      console.log(`[Bridge] Host IP: ${localIP}`);
+    }
+
+    sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
       if (isHost && !state.peer) {
@@ -617,6 +699,10 @@ ipcMain.handle("stop-relay", async () => {
   return { success: true };
 });
 
+ipcMain.handle("get-host-ip", async () => {
+  return state.hostIP || null;
+});
+
 ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) => {
   if (!gamePath) return { success: false, error: "No game path provided" };
 
@@ -634,11 +720,14 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         "+set", "sv_pure", "0",
         ...args
       ];
-    } else if (hostIp) {
+    } else {
+      // Si no se proporcionó hostIp, usar el guardado en state o localhost
+      const ipToUse = hostIp || state.hostIP || '127.0.0.1';
       args = [
-        "+connect", hostIp,
+        "+connect", ipToUse,
         ...args
       ];
+      console.log(`[Game] Client connecting to host IP: ${ipToUse}`);
     }
 
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
@@ -680,4 +769,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
- // Cliente: conectar al host wena wena mysterionsito
+ // Cliente: conectar al host wena wena mysterionsito y topoyiyo
