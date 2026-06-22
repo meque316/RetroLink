@@ -107,7 +107,7 @@ function Room({ room, leaveRoom }) {
       if (isHost) {
         await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
       } else {
-        await window.retroLink?.launchGame(gamePath, "127.0.0.1:27961", room.id, false, []);
+        await window.retroLink?.launchGame(gamePath, "127.0.0.1:27960", room.id, false, []);
       }
     };
     const handleMatchError = (error) => alert(error.message);

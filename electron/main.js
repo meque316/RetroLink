@@ -92,10 +92,10 @@ Arquitectura:
   CLIENTE:
     - signalingSocket conecta a Render (socket.io-client)
     - PeerConnection (answerer)
-    - udpLocal en 27961
-      * Q3 cliente conecta a 127.0.0.1:27961
+    - udpLocal en 27960
+      * Q3 cliente conecta a 127.0.0.1:27960
       * Paquetes de Q3 → udpLocal → DataChannel
-      * Respuestas del DataChannel → udpLocal → Q3:27961
+      * Respuestas del DataChannel → udpLocal → Q3:27960
 
 Reglas clave:
   1. Solo signalingSocket maneja el WebRTC signaling (NUNCA el socket del frontend)
@@ -109,7 +109,7 @@ let state = {
   signalingSocket: null,
   peer: null,
   channel: null,
-  udpLocal: null,   // cliente: 27961 / host: no usado para escucha
+  udpLocal: null,   // cliente: 27960 / host: no usado para escucha
   udpProxy: null,   // host: habla con Q3 en 27960
   roomId: null,
   isHost: false,
@@ -189,8 +189,8 @@ function onChannelOpen() {
     });
 
     // Respuestas de Q3 → DataChannel → cliente
-    state.udpProxy.on("message", (msg) => {
-      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes`);
+    state.udpProxy.on("message", (msg, rinfo) => {
+      console.log(`[Bridge] Host udpProxy RECV from Q3: ${msg.length} bytes from ${rinfo.address}:${rinfo.port} | hex: ${msg.toString("hex")} | ascii: ${msg.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
@@ -208,7 +208,7 @@ function onChannelOpen() {
 // Cuando llegan datos por el DataChannel
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost})`);
+  console.log(`[Bridge] DataChannel RECV: ${buf.length} bytes (isHost=${state.isHost}) | hex: ${buf.toString("hex")} | ascii: ${buf.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
 
   if (state.isHost) {
     // Host: reenviar paquete del cliente a Q3 local
@@ -221,14 +221,14 @@ function onChannelMessage(msg) {
       else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
     });
   } else {
-    // Cliente: reenviar respuesta del host a Q3 local en 27961
+    // Cliente: reenviar respuesta del host a Q3 local en 27960
     if (!state.udpLocal) {
       console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
       return;
     }
-    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1", (err) => {
+    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
       if (err) console.error("[Bridge] Client udpLocal send error:", err.message);
-      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27961`);
+      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27960`);
     });
   }
 }
@@ -380,7 +380,7 @@ async function startBridge(roomId, isHost) {
     state.udpLocal.on("error", (err) => {
       console.error("[Bridge] UDP bind error:", err.message);
       if (err.code === "EADDRINUSE") {
-        sendStatus("Puerto 27961 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
+        sendStatus("Puerto 27960 ocupado por una sesión anterior. Cierra RetroLink completamente (revisa el Administrador de Tareas) y vuelve a abrirlo.");
       } else {
         sendStatus("Error de red: " + err.message);
       }
@@ -388,13 +388,13 @@ async function startBridge(roomId, isHost) {
       state.udpLocal = null;
     });
 
-    state.udpLocal.bind(27961, "127.0.0.1", () => {
-      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
+    state.udpLocal.bind(27960, "127.0.0.1", () => {
+      console.log("[Bridge] Client UDP listening on 127.0.0.1:27960");
     });
 
     // Q3 cliente → DataChannel → host
     state.udpLocal.on("message", (msg) => {
-      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes`);
+      console.log(`[Bridge] Client UDP RECV from Q3: ${msg.length} bytes | hex: ${msg.toString("hex")} | ascii: ${msg.toString("latin1").replace(/[^\x20-\x7E]/g, ".")}`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
@@ -614,4 +614,3 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
-
