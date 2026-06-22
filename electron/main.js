@@ -95,14 +95,12 @@ let state = {
   iceConnectionStart: null,
 };
 
-// STUN + TURN (rehabilitado con formato seguro)
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
   "stun:stun2.l.google.com:19302",
   "stun:stun3.l.google.com:19302",
   "stun:stun4.l.google.com:19302",
-  // TURN - Open Relay Project (sin autenticación, gratuito hasta 20GB/mes)
   "turn:openrelay.metered.ca:80",
   "turn:openrelay.metered.ca:443",
   "turn:openrelay.metered.ca:5349",
@@ -263,25 +261,30 @@ async function startBridge(roomId, isHost) {
 
   sig.on("connect", () => {
     console.log("[Bridge] Signaling connected:", sig.id);
-    sendStatus("Buscando rival en la sala...");
+    sendStatus("Uniéndose a la sala...");
 
     sig.emit("webrtc-join", { roomId, isHost }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
 
-      if (isHost && response?.otherPeerPresent && !state.peer) {
-        console.log("[Bridge] Client was already waiting — creating peer immediately...");
+      // 🔥 CRUCIAL: El host crea el peer INMEDIATAMENTE después de unirse
+      // No esperamos webrtc-peer-ready porque el servidor puede no re-emitirlo
+      if (isHost && !state.peer) {
+        console.log("[Bridge] Host creating peer immediately after join...");
+        sendStatus("Creando conexión P2P...");
         createHostPeer(NDC, sig, roomId);
       }
     });
   });
 
+  // ── HOST: respaldo por si el peer-ready llega tarde ──────────────
   sig.on("webrtc-peer-ready", () => {
     if (!isHost || state.peer) return;
-    console.log("[Bridge] Client ready — creating host peer...");
+    console.log("[Bridge] Client ready (late) — creating host peer...");
     sendStatus("Rival encontrado — creando conexión P2P...");
     createHostPeer(NDC, sig, roomId);
   });
 
+  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
     try {
       if (type === "offer" && !isHost) {
@@ -334,6 +337,7 @@ async function startBridge(roomId, isHost) {
     }
   });
 
+  // ── UDP LOCAL (solo cliente) ──────────────────────────────────
   if (!isHost) {
     state.udpLocal = dgram.createSocket("udp4");
 
@@ -385,7 +389,6 @@ function createHostPeer(NDC, sig, roomId) {
 
   peer.onLocalCandidate((candidate, mid) => {
     console.log(`[Bridge] Host local candidate: ${candidate} (${mid})`);
-    // Log si es un candidate de tipo host (IP local)
     if (candidate.includes("host")) {
       console.log(`[Bridge] ✅ Host candidate found: ${candidate}`);
     }
@@ -573,7 +576,25 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     const gameDir = path.dirname(gamePath);
     allowFirewall(gamePath, "RetroLink Game");
 
-    const args = [...(extraArgs || []), ...(hostIp ? ["+connect", hostIp] : [])];
+    let args = [...(extraArgs || [])];
+    
+    if (isHost) {
+      // Host: forzar puerto 27960 y modo LAN
+      args = [
+        "+set", "net_port", "27960",
+        "+set", "sv_lanForce", "1",
+        "+set", "sv_strictAuth", "0",
+        "+set", "sv_pure", "0",
+        ...args
+      ];
+    } else if (hostIp) {
+      // Cliente: conectar al host
+      args = [
+        "+connect", hostIp,
+        ...args
+      ];
+    }
+
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
 
     state.gameRoomId = roomId;
@@ -613,6 +634,4 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
-/*
-WINDOW
-*/
+ // Cliente: conectar al host
