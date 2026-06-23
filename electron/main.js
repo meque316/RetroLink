@@ -788,4 +788,4 @@ ipcMain.handle("kill-game", async () => {
   return { success: true };
 });
 
- // Cliente: hola uwu3xxxxx eeyyee wn
+ // Cliente: hola uwu3xxxxx eeyyee wn eye
