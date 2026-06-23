@@ -80,6 +80,21 @@ const closeUPnP = (port) => new Promise((resolve) => {
   c.portUnmapping({ public: port, protocol: "UDP" }, () => { c.close(); resolve(); });
 });
 
+const ICE_SERVERS = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun2.l.google.com:19302",
+  "stun:stun3.l.google.com:19302",
+  "stun:stun4.l.google.com:19302",
+  "turn:openrelay.metered.ca:80",
+  "turn:openrelay.metered.ca:443",
+  "turn:openrelay.metered.ca:5349",
+];
+
+function buildIceServers() { return ICE_SERVERS; }
+
+const SIGNALING_URL = "https://retrolink-server.onrender.com";
+
 /*
 GET LOCAL IP
 */
@@ -788,4 +803,6 @@ ipcMain.handle("kill-game", async () => {
   return { success: true };
 });
 
+
  // Cliente: hola uwu3xxxxx eeyyee wn eye
+
