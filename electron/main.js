@@ -646,6 +646,14 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
   }
 });
 
+// Handler para set-host-ip — la IP se gestiona internamente via WebRTC ICE,
+// este handler existe para compatibilidad con Room.jsx pero no hace nada crítico.
+ipcMain.handle("set-host-ip", async (_, ip) => {
+  console.log("[Bridge] set-host-ip called with:", ip);
+  state.hostIP = ip;
+  return { success: true };
+});
+
 ipcMain.handle("kill-game", async () => {
   if (state.gameProcess) {
     try { state.gameProcess.kill(); state.gameProcess = null; }
@@ -653,4 +661,5 @@ ipcMain.handle("kill-game", async () => {
   }
   return { success: true };
 });
+
  // Cliente: hola uwu3xxxx
