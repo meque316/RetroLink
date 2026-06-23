@@ -15,6 +15,11 @@ const os = require("os");
 
 const isDev = !app.isPackaged;
 
+// Puerto base para clientes — cada cliente recibe un puerto distinto
+// Cliente 1: 27961, Cliente 2: 27962, Cliente 3: 27963, etc.
+const CLIENT_PORT_BASE = 27961;
+const MAX_CLIENTS = 8;
+
 /*
 FILE LOGGING
 */
@@ -81,7 +86,6 @@ GET LOCAL IP
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   const results = [];
-  
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
@@ -89,227 +93,254 @@ function getLocalIP() {
       }
     }
   }
-  
   const vpnIP = results.find(ip => ip.address.startsWith('26.') || ip.address.startsWith('10.'));
   if (vpnIP) { console.log(`[Network] VPN IP: ${vpnIP.address}`); return vpnIP.address; }
-  
   const lanIP = results.find(ip => ip.address.startsWith('192.168.'));
   if (lanIP) { console.log(`[Network] LAN IP: ${lanIP.address}`); return lanIP.address; }
-  
   if (results.length > 0) { console.log(`[Network] IP: ${results[0].address}`); return results[0].address; }
-  
   return '127.0.0.1';
 }
 
 /*
 ================================================================
-WebRTC P2P BRIDGE
+WebRTC P2P BRIDGE — MULTI-PLAYER
 ================================================================
+
+ARQUITECTURA:
+- HOST: mantiene un mapa de clientes (peers), cada uno con su propio
+  DataChannel y udpProxy en un puerto distinto. Quake3 del host ve
+  múltiples conexiones entrando como si fueran jugadores LAN distintos.
+
+- CLIENTE: igual que antes — escucha en su puerto asignado (27961+N)
+  y reenvía por DataChannel al host.
+
+Flujo multi-jugador:
+  Cliente1 (puerto 27961) ──DataChannel1──┐
+  Cliente2 (puerto 27962) ──DataChannel2──┤── HOST Q3:27960
+  Cliente3 (puerto 27963) ──DataChannel3──┘
 */
 
 let state = {
   signalingSocket: null,
+  roomId: null,
+  isHost: false,
+  iceConnectionStart: null,
+  hostIP: null,
+  gameProcess: null,
+  gameRoomId: null,
+
+  // HOST: mapa de clientes { socketId -> { peer, channel, udpProxy, clientPort, pendingCandidates, remoteDescSet } }
+  clients: new Map(),
+
+  // CLIENTE: conexión única al host
   peer: null,
   channel: null,
   udpLocal: null,
-  udpProxy: null,
-  roomId: null,
-  isHost: false,
   pendingCandidates: [],
   remoteDescSet: false,
-  gameProcess: null,
-  gameRoomId: null,
-  iceConnectionStart: null,
-  hostIP: null,
+  clientPort: null, // puerto asignado por el host (27961, 27962, etc.)
 };
 
-let keepAliveInterval = null;
+let keepAliveIntervals = new Map(); // socketId -> interval (host) o "self" -> interval (cliente)
 
-const ICE_SERVERS = [
-  "stun:stun.l.google.com:19302",
-  "stun:stun1.l.google.com:19302",
-  "stun:stun2.l.google.com:19302",
-  "stun:stun3.l.google.com:19302",
-  "stun:stun4.l.google.com:19302",
-  "turn:openrelay.metered.ca:80",
-  "turn:openrelay.metered.ca:443",
-  "turn:openrelay.metered.ca:5349",
-];
-
-function buildIceServers() { return ICE_SERVERS; }
-
-const SIGNALING_URL = "https://retrolink-server.onrender.com";
+function getNextClientPort() {
+  const usedPorts = new Set([...state.clients.values()].map(c => c.clientPort));
+  for (let i = 0; i < MAX_CLIENTS; i++) {
+    const port = CLIENT_PORT_BASE + i;
+    if (!usedPorts.has(port)) return port;
+  }
+  return null; // sala llena
+}
 
 function resetBridge() {
-  stopKeepAlive();
-  
+  // Limpiar todos los keep-alive
+  for (const [, interval] of keepAliveIntervals) {
+    clearInterval(interval);
+  }
+  keepAliveIntervals.clear();
+
   try {
     if (state.signalingSocket && state.roomId) {
       state.signalingSocket.emit("webrtc-leave", { roomId: state.roomId });
     }
   } catch(e) {}
-  try { state.channel?.close(); }              catch(e) {}
-  try { state.peer?.close(); }                 catch(e) {}
+
+  // Limpiar clientes del host
+  for (const [socketId, client] of state.clients) {
+    try { client.channel?.close(); } catch(e) {}
+    try { client.peer?.close(); } catch(e) {}
+    try { client.udpProxy?.close(); } catch(e) {}
+  }
+  state.clients.clear();
+
+  // Limpiar estado del cliente
+  try { state.channel?.close(); } catch(e) {}
+  try { state.peer?.close(); } catch(e) {}
   try { state.signalingSocket?.disconnect(); } catch(e) {}
-  try { state.udpLocal?.close(); }             catch(e) {}
-  try { state.udpProxy?.close(); }             catch(e) {}
+  try { state.udpLocal?.close(); } catch(e) {}
 
   state.signalingSocket = null;
   state.peer = null;
   state.channel = null;
   state.udpLocal = null;
-  state.udpProxy = null;
   state.roomId = null;
   state.pendingCandidates = [];
   state.remoteDescSet = false;
   state.iceConnectionStart = null;
   state.hostIP = null;
+  state.clientPort = null;
 
   console.log("[Bridge] Reset complete");
 }
 
-function startKeepAlive() {
-  if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
-  
-  keepAliveInterval = setInterval(() => {
-    if (state.channel?.isOpen()) {
+/*
+HOST: crear proxy UDP para un cliente específico
+Cada cliente tiene su propio socket UDP que escucha en un puerto distinto.
+Los paquetes que lleguen de Quake3 host por ese socket se reenvían al cliente
+correspondiente por su DataChannel.
+*/
+function createHostUDPProxy(socketId, clientPort, channel) {
+  const udpProxy = dgram.createSocket("udp4");
+
+  udpProxy.on("error", (err) => {
+    console.error(`[Bridge] Host proxy error (client ${socketId}):`, err.message);
+  });
+
+  // Puerto random — el proxy envía a Q3:27960 y recibe respuestas
+  udpProxy.bind(0, "127.0.0.1", () => {
+    const addr = udpProxy.address();
+    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Q3 port: ${clientPort})`);
+  });
+
+  // Quake3 host → DataChannel → cliente
+  udpProxy.on("message", (msg, rinfo) => {
+    if (channel?.isOpen()) {
       try {
-        const pingMsg = Buffer.from("\xFF\xFF\xFF\xFFping");
-        state.channel.sendMessageBinary(pingMsg);
+        channel.sendMessageBinary(Buffer.from(msg));
       } catch(e) {
-        clearInterval(keepAliveInterval);
-        keepAliveInterval = null;
+        console.error(`[Bridge] Host proxy send error (client ${socketId}):`, e.message);
+      }
+    }
+  });
+
+  return udpProxy;
+}
+
+/*
+HOST: manejar apertura de DataChannel con un cliente nuevo
+*/
+function onHostChannelOpen(socketId, channel, clientPort) {
+  console.log(`[Bridge] Host DataChannel open for client ${socketId} on port ${clientPort}`);
+
+  const client = state.clients.get(socketId);
+  if (!client) return;
+
+  // Crear proxy UDP para este cliente
+  const udpProxy = createHostUDPProxy(socketId, clientPort, channel);
+  client.udpProxy = udpProxy;
+
+  // Keep-alive para este cliente
+  const interval = setInterval(() => {
+    if (channel?.isOpen()) {
+      try { channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
+        clearInterval(interval);
+        keepAliveIntervals.delete(socketId);
       }
     } else {
-      clearInterval(keepAliveInterval);
-      keepAliveInterval = null;
+      clearInterval(interval);
+      keepAliveIntervals.delete(socketId);
     }
   }, 10000);
+  keepAliveIntervals.set(socketId, interval);
+
+  // Actualizar status con conteo de conexiones
+  const connectedCount = [...state.clients.values()].filter(c => c.udpProxy).length;
+  sendStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
 }
 
-function stopKeepAlive() {
-  if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
-}
-
-function onChannelOpen() {
-  console.log("[Bridge] DataChannel open — P2P established!");
+/*
+CLIENTE: manejar apertura de DataChannel con el host
+*/
+function onClientChannelOpen() {
+  console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
-  startKeepAlive();
 
-  if (state.isHost) {
-    // HOST: escucha respuestas de Quake3 local (27960) y las manda al cliente
-    state.udpProxy = dgram.createSocket("udp4");
+  state.udpLocal = dgram.createSocket("udp4");
 
-    state.udpProxy.on("error", (err) => {
-      console.error("[Bridge] Host UDP proxy error:", err.message);
-    });
+  state.udpLocal.on("error", (err) => {
+    console.error("[Bridge] Client UDP error:", err.message);
+    if (err.code === "EADDRINUSE") {
+      sendStatus(`Puerto ${state.clientPort} ocupado. Cierra RetroLink y vuelve a abrirlo.`);
+    }
+  });
 
-    // No bindeamos en un puerto fijo — usamos send para enviar a Q3:27960
-    // y recibimos las respuestas desde ese socket
-    state.udpProxy.bind(0, "127.0.0.1", () => {
-      const addr = state.udpProxy.address();
-      console.log(`[Bridge] Host UDP proxy bound on port ${addr.port}`);
-    });
+  state.udpLocal.bind(state.clientPort, "127.0.0.1", () => {
+    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${state.clientPort}`);
+  });
 
-    state.udpProxy.on("message", (msg, rinfo) => {
-      console.log(`[Bridge] Host Q3→DataChannel: ${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
-      if (state.channel?.isOpen()) {
-        try {
-          state.channel.sendMessageBinary(Buffer.from(msg));
-        } catch(e) {
-          console.error("[Bridge] Host DataChannel send error:", e.message);
-        }
+  // Quake3 cliente → DataChannel → host
+  state.udpLocal.on("message", (msg) => {
+    if (state.channel?.isOpen()) {
+      try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+    }
+  });
+
+  // Keep-alive
+  const interval = setInterval(() => {
+    if (state.channel?.isOpen()) {
+      try { state.channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
+        clearInterval(interval);
+        keepAliveIntervals.delete("self");
       }
-    });
-
-  } else {
-    // CLIENTE: escucha paquetes salientes de Quake3 (que sale desde 27960 hacia 27961)
-    state.udpLocal = dgram.createSocket("udp4");
-
-    state.udpLocal.on("error", (err) => {
-      console.error("[Bridge] Client UDP error:", err.message);
-      if (err.code === "EADDRINUSE") {
-        sendStatus("Puerto 27961 ocupado. Cierra RetroLink y vuelve a abrirlo.");
-      }
-    });
-
-    state.udpLocal.bind(27961, "127.0.0.1", () => {
-      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
-    });
-
-    state.udpLocal.on("message", (msg) => {
-      console.log(`[Bridge] Client Q3→DataChannel: ${msg.length} bytes`);
-      if (state.channel?.isOpen()) {
-        try {
-          state.channel.sendMessageBinary(Buffer.from(msg));
-        } catch(e) {
-          console.error("[Bridge] Client DataChannel send error:", e.message);
-        }
-      }
-    });
-  }
+    } else {
+      clearInterval(interval);
+      keepAliveIntervals.delete("self");
+    }
+  }, 10000);
+  keepAliveIntervals.set("self", interval);
 }
 
-function onChannelMessage(msg) {
+/*
+Procesar mensaje recibido por DataChannel
+*/
+function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
 
   // Ignorar pings de keep-alive
-  if (buf.length === 8 && buf.toString("latin1").includes("ping")) return;
-
-  console.log(`[Bridge] DataChannel→Game: ${buf.length} bytes (isHost=${state.isHost})`);
+  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
 
   if (state.isHost) {
-    // HOST: reenviar al Quake3 local en 27960
-    if (!state.udpProxy) { console.warn("[Bridge] udpProxy null!"); return; }
-    state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Host→Q3 send error:", err.message);
-      else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
+    // HOST: reenviar paquete del cliente a Quake3 local
+    const client = state.clients.get(socketId);
+    if (!client?.udpProxy) return;
+    client.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+      if (err) console.error(`[Bridge] Host→Q3 error (${socketId}):`, err.message);
     });
   } else {
-    // CLIENTE: reinyectar respuesta al Quake3 local.
-    // CRÍTICO: Quake3 siempre usa su puerto fijo 27960 para escuchar respuestas,
-    // sin importar que haya conectado via +connect 127.0.0.1:27961.
-    // Confirmado con netstat: "UDP 0.0.0.0:27960 *:* [quake3.exe PID]"
-    if (!state.udpLocal) { console.warn("[Bridge] udpLocal null!"); return; }
+    // CLIENTE: reinyectar respuesta del host a Quake3 local
+    // Q3 escucha en 27960 sin importar el puerto de conexión (+connect usa 27961+N)
+    if (!state.udpLocal) return;
     state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client→Q3 send error:", err.message);
-      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27960`);
+      if (err) console.error("[Bridge] Client→Q3 error:", err.message);
     });
   }
 }
 
-function setupChannel(channel) {
-  state.channel = channel;
-  console.log(`[Bridge] setupChannel called, isHost=${state.isHost}`);
-
-  channel.onOpen(() => {
-    console.log("[Bridge] channel.onOpen fired");
-    onChannelOpen();
-  });
-
-  channel.onClosed(() => {
-    console.log("[Bridge] DataChannel closed");
-    sendStatus("Conexión P2P cerrada.");
-    stopKeepAlive();
-  });
-
-  channel.onMessage((msg) => {
-    onChannelMessage(msg);
-  });
-
-  channel.onError((e) => {
-    console.error("[Bridge] DataChannel error:", e);
-  });
-
-  console.log(`[Bridge] setupChannel handlers registered, isHost=${state.isHost}`);
-}
-
-function flushCandidates() {
-  if (!state.peer || !state.remoteDescSet) return;
-  state.pendingCandidates.forEach(({ candidate, mid }) => {
-    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
-  });
-  state.pendingCandidates = [];
+function flushCandidates(socketId = null) {
+  if (state.isHost) {
+    const client = state.clients.get(socketId);
+    if (!client?.peer || !client.remoteDescSet) return;
+    client.pendingCandidates.forEach(({ candidate, mid }) => {
+      try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+    });
+    client.pendingCandidates = [];
+  } else {
+    if (!state.peer || !state.remoteDescSet) return;
+    state.pendingCandidates.forEach(({ candidate, mid }) => {
+      try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+    });
+    state.pendingCandidates = [];
+  }
 }
 
 async function startBridge(roomId, isHost) {
@@ -346,10 +377,7 @@ async function startBridge(roomId, isHost) {
 
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
-      if (isHost && !state.peer) {
-        sendStatus("Creando conexión P2P...");
-        createHostPeer(NDC, sig, roomId);
-      }
+      sendStatus(isHost ? "Esperando jugadores..." : "Buscando rival en la sala...");
     });
   });
 
@@ -360,48 +388,88 @@ async function startBridge(roomId, isHost) {
     }
   });
 
-  sig.on("webrtc-peer-ready", () => {
-    if (!isHost || state.peer) return;
-    console.log("[Bridge] Client ready — creating host peer...");
-    sendStatus("Rival encontrado — creando conexión P2P...");
-    createHostPeer(NDC, sig, roomId);
+  // HOST: nuevo cliente listo — crear peer para ese cliente específico
+  sig.on("webrtc-peer-ready", ({ fromSocketId } = {}) => {
+    if (!isHost) return;
+    const clientSocketId = fromSocketId || "unknown";
+    if (state.clients.has(clientSocketId)) return; // ya existe
+
+    const clientPort = getNextClientPort();
+    if (!clientPort) {
+      console.warn("[Bridge] Sala llena — no se pueden agregar más clientes");
+      return;
+    }
+
+    console.log(`[Bridge] New client ${clientSocketId} → port ${clientPort}`);
+    sendStatus(`Rival encontrado — creando conexión P2P...`);
+
+    // Registrar cliente
+    state.clients.set(clientSocketId, {
+      peer: null,
+      channel: null,
+      udpProxy: null,
+      clientPort,
+      pendingCandidates: [],
+      remoteDescSet: false,
+    });
+
+    createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
   });
 
-  sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
+  // CLIENTE: recibir puerto asignado por el host
+  sig.on("webrtc-client-port", ({ port }) => {
+    if (isHost) return;
+    state.clientPort = port;
+    console.log(`[Bridge] Assigned client port: ${port}`);
+  });
+
+  sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId, toSocketId }) => {
     try {
-      if (type === "offer" && !isHost) {
-        if (!state.peer) createClientPeer(NDC, sig, roomId);
+      if (isHost) {
+        // HOST: procesar señales de un cliente específico
+        const clientSocketId = fromSocketId;
+        const client = state.clients.get(clientSocketId);
+        if (!client) return;
 
-        console.log("[Bridge] Client received offer — setting remote description...");
-        sendStatus("Procesando oferta de conexión...");
-        state.peer.setRemoteDescription(sdp, "offer");
-        state.remoteDescSet = true;
-        flushCandidates();
-
-        setTimeout(() => {
-          try {
-            console.log("[Bridge] Client sending answer...");
-            sendStatus("Respondiendo conexión...");
-            state.peer.setLocalDescription();
-            console.log("[Bridge] Client answer call completed");
-          } catch (err) {
-            console.error("[Bridge] setLocalDescription error:", err.message);
-            sendStatus("Error respondiendo conexión: " + err.message);
+        if (type === "answer") {
+          client.peer.setRemoteDescription(sdp, "answer");
+          client.remoteDescSet = true;
+          flushCandidates(clientSocketId);
+          console.log(`[Bridge] Host received answer from ${clientSocketId}`);
+        } else if (type === "candidate") {
+          if (client.peer && client.remoteDescSet) {
+            try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+          } else {
+            client.pendingCandidates.push({ candidate, mid });
           }
-        }, 500);
+        }
+      } else {
+        // CLIENTE: procesar señales del host
+        if (type === "offer") {
+          if (!state.peer) createClientPeer(NDC, sig, roomId);
 
-      } else if (type === "answer" && isHost) {
-        console.log("[Bridge] Host received answer — setting remote description...");
-        state.peer.setRemoteDescription(sdp, "answer");
-        state.remoteDescSet = true;
-        flushCandidates();
-        console.log("[Bridge] Host remote description set");
+          console.log("[Bridge] Client received offer");
+          sendStatus("Procesando oferta de conexión...");
+          state.peer.setRemoteDescription(sdp, "offer");
+          state.remoteDescSet = true;
+          flushCandidates();
 
-      } else if (type === "candidate") {
-        if (state.peer && state.remoteDescSet) {
-          try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
-        } else {
-          state.pendingCandidates.push({ candidate, mid });
+          setTimeout(() => {
+            try {
+              state.peer.setLocalDescription();
+              console.log("[Bridge] Client answer sent");
+            } catch (err) {
+              console.error("[Bridge] setLocalDescription error:", err.message);
+              sendStatus("Error respondiendo conexión: " + err.message);
+            }
+          }, 500);
+
+        } else if (type === "candidate") {
+          if (state.peer && state.remoteDescSet) {
+            try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+          } else {
+            state.pendingCandidates.push({ candidate, mid });
+          }
         }
       }
     } catch (err) {
@@ -409,37 +477,77 @@ async function startBridge(roomId, isHost) {
       sendStatus("Error procesando señal: " + err.message);
     }
   });
+
+  // HOST: cliente desconectado — limpiar su peer y proxy
+  sig.on("webrtc-client-left", ({ socketId: leftSocketId }) => {
+    if (!isHost) return;
+    const client = state.clients.get(leftSocketId);
+    if (!client) return;
+
+    console.log(`[Bridge] Client ${leftSocketId} disconnected`);
+    try { client.channel?.close(); } catch(e) {}
+    try { client.peer?.close(); } catch(e) {}
+    try { client.udpProxy?.close(); } catch(e) {}
+    const interval = keepAliveIntervals.get(leftSocketId);
+    if (interval) { clearInterval(interval); keepAliveIntervals.delete(leftSocketId); }
+    state.clients.delete(leftSocketId);
+
+    const remaining = state.clients.size;
+    sendStatus(remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores...");
+  });
 }
 
-function createHostPeer(NDC, sig, roomId) {
-  const peer = new NDC.PeerConnection("RetroLink-Host", {
+function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
+  const peer = new NDC.PeerConnection(`RetroLink-Host-${clientSocketId}`, {
     iceServers: buildIceServers(),
     iceTransportPolicy: "all",
   });
-  state.peer = peer;
+
+  const client = state.clients.get(clientSocketId);
+  client.peer = peer;
 
   peer.onLocalDescription((sdp, type) => {
-    console.log(`[Bridge] Host local description ready (${type})`);
-    sig.emit("webrtc-signal", { roomId, type, sdp });
+    console.log(`[Bridge] Host offer ready for ${clientSocketId}`);
+    // Notificar al cliente su puerto asignado junto con el offer
+    sig.emit("webrtc-signal", { roomId, type, sdp, toSocketId: clientSocketId });
+    sig.emit("webrtc-client-port", { roomId, port: clientPort, toSocketId: clientSocketId });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
-    sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
+    sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid, toSocketId: clientSocketId });
   });
 
   peer.onStateChange((s) => {
-    console.log("[Bridge] Host peer state:", s);
-    if (s === "failed") sendStatus("❌ Conexión P2P falló.");
-    if (s === "connected") sendStatus("¡Conexión P2P establecida!");
+    console.log(`[Bridge] Host peer state (${clientSocketId}):`, s);
+    if (s === "failed") {
+      console.error(`[Bridge] ICE failed for client ${clientSocketId}`);
+    }
   });
 
-  peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
+  peer.onGatheringStateChange((s) => console.log(`[Bridge] Host gathering (${clientSocketId}):`, s));
 
   const channel = peer.createDataChannel("game", { ordered: true });
-  setupChannel(channel);
+  client.channel = channel;
+
+  channel.onOpen(() => {
+    console.log(`[Bridge] channel.onOpen for ${clientSocketId}`);
+    onHostChannelOpen(clientSocketId, channel, clientPort);
+  });
+
+  channel.onClosed(() => {
+    console.log(`[Bridge] DataChannel closed for ${clientSocketId}`);
+  });
+
+  channel.onMessage((msg) => {
+    onChannelMessage(msg, clientSocketId);
+  });
+
+  channel.onError((e) => {
+    console.error(`[Bridge] DataChannel error (${clientSocketId}):`, e);
+  });
 
   setTimeout(() => {
-    console.log("[Bridge] Host creating offer...");
+    console.log(`[Bridge] Host creating offer for ${clientSocketId}...`);
     sendStatus("Enviando oferta de conexión al rival...");
     peer.setLocalDescription();
   }, 200);
@@ -463,7 +571,27 @@ function createClientPeer(NDC, sig, roomId) {
 
   peer.onDataChannel((channel) => {
     console.log("[Bridge] Client received DataChannel");
-    setupChannel(channel);
+    state.channel = channel;
+
+    channel.onOpen(() => {
+      console.log("[Bridge] channel.onOpen fired");
+      onClientChannelOpen();
+    });
+
+    channel.onClosed(() => {
+      console.log("[Bridge] DataChannel closed");
+      sendStatus("Conexión P2P cerrada.");
+      const interval = keepAliveIntervals.get("self");
+      if (interval) { clearInterval(interval); keepAliveIntervals.delete("self"); }
+    });
+
+    channel.onMessage((msg) => {
+      onChannelMessage(msg);
+    });
+
+    channel.onError((e) => {
+      console.error("[Bridge] DataChannel error:", e);
+    });
   });
 
   peer.onStateChange((s) => {
@@ -595,7 +723,7 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
     allowFirewall(gamePath, "RetroLink Game");
 
     let args = [...(extraArgs || [])];
-    
+
     if (isHost) {
       args = [
         "+set", "net_port", "27960",
@@ -605,13 +733,13 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
-      // Cliente conecta al bridge en 27961 — el bridge intercepta y reenvía
-      // Las respuestas del host se reinyectan al puerto 27960 (donde Q3 escucha)
+      // Usar el puerto asignado por el host, o 27961 por defecto
+      const port = state.clientPort || CLIENT_PORT_BASE;
       args = [
-        "+connect", "127.0.0.1:27961",
+        "+connect", `127.0.0.1:${port}`,
         ...args
       ];
-      console.log(`[Game] Client connecting to bridge at 127.0.0.1:27961`);
+      console.log(`[Game] Client connecting to bridge at 127.0.0.1:${port}`);
     }
 
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
@@ -646,8 +774,6 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
   }
 });
 
-// Handler para set-host-ip — la IP se gestiona internamente via WebRTC ICE,
-// este handler existe para compatibilidad con Room.jsx pero no hace nada crítico.
 ipcMain.handle("set-host-ip", async (_, ip) => {
   console.log("[Bridge] set-host-ip called with:", ip);
   state.hostIP = ip;
@@ -662,4 +788,4 @@ ipcMain.handle("kill-game", async () => {
   return { success: true };
 });
 
- // Cliente: hola uwu3xxxx
+ // Cliente: hola uwu3xxxxx eeyyee wn
