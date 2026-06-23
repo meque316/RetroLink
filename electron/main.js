@@ -76,9 +76,7 @@ const closeUPnP = (port) => new Promise((resolve) => {
 });
 
 /*
-================================================================
-UTILITY: GET LOCAL IP
-================================================================
+GET LOCAL IP
 */
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -87,32 +85,18 @@ function getLocalIP() {
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        results.push({
-          name: name,
-          address: iface.address,
-        });
+        results.push({ name, address: iface.address });
       }
     }
   }
   
-  // Priorizar VPN (Radmin: 26.x.x.x, ZeroTier: 10.x.x.x)
   const vpnIP = results.find(ip => ip.address.startsWith('26.') || ip.address.startsWith('10.'));
-  if (vpnIP) {
-    console.log(`[Network] VPN IP detected: ${vpnIP.address} (${vpnIP.name})`);
-    return vpnIP.address;
-  }
+  if (vpnIP) { console.log(`[Network] VPN IP: ${vpnIP.address}`); return vpnIP.address; }
   
-  // Priorizar LAN (192.168.x.x)
   const lanIP = results.find(ip => ip.address.startsWith('192.168.'));
-  if (lanIP) {
-    console.log(`[Network] LAN IP detected: ${lanIP.address} (${lanIP.name})`);
-    return lanIP.address;
-  }
+  if (lanIP) { console.log(`[Network] LAN IP: ${lanIP.address}`); return lanIP.address; }
   
-  if (results.length > 0) {
-    console.log(`[Network] Using IP: ${results[0].address}`);
-    return results[0].address;
-  }
+  if (results.length > 0) { console.log(`[Network] IP: ${results[0].address}`); return results[0].address; }
   
   return '127.0.0.1';
 }
@@ -152,13 +136,10 @@ const ICE_SERVERS = [
   "turn:openrelay.metered.ca:5349",
 ];
 
-function buildIceServers() {
-  return ICE_SERVERS;
-}
+function buildIceServers() { return ICE_SERVERS; }
 
 const SIGNALING_URL = "https://retrolink-server.onrender.com";
 
-// Limpiar todo el estado del bridge
 function resetBridge() {
   stopKeepAlive();
   
@@ -167,11 +148,11 @@ function resetBridge() {
       state.signalingSocket.emit("webrtc-leave", { roomId: state.roomId });
     }
   } catch(e) {}
-  try { state.channel?.close(); }         catch(e) {}
-  try { state.peer?.close(); }            catch(e) {}
+  try { state.channel?.close(); }              catch(e) {}
+  try { state.peer?.close(); }                 catch(e) {}
   try { state.signalingSocket?.disconnect(); } catch(e) {}
-  try { state.udpLocal?.close(); }        catch(e) {}
-  try { state.udpProxy?.close(); }        catch(e) {}
+  try { state.udpLocal?.close(); }             catch(e) {}
+  try { state.udpProxy?.close(); }             catch(e) {}
 
   state.signalingSocket = null;
   state.peer = null;
@@ -187,146 +168,119 @@ function resetBridge() {
   console.log("[Bridge] Reset complete");
 }
 
-// Keep-alive para mantener el DataChannel abierto
 function startKeepAlive() {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
-  }
+  if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
   
   keepAliveInterval = setInterval(() => {
     if (state.channel?.isOpen()) {
       try {
-        const pingMsg = Buffer.from("\xFF\xFF\xFF\xFFgetchallenge");
+        const pingMsg = Buffer.from("\xFF\xFF\xFF\xFFping");
         state.channel.sendMessageBinary(pingMsg);
-        console.log("[Bridge] Keep-alive ping sent (getchallenge)");
       } catch(e) {
-        console.warn("[Bridge] Keep-alive ping failed:", e.message);
-        if (keepAliveInterval) {
-          clearInterval(keepAliveInterval);
-          keepAliveInterval = null;
-        }
-      }
-    } else {
-      if (keepAliveInterval) {
         clearInterval(keepAliveInterval);
         keepAliveInterval = null;
       }
+    } else {
+      clearInterval(keepAliveInterval);
+      keepAliveInterval = null;
     }
   }, 10000);
 }
 
 function stopKeepAlive() {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
-    console.log("[Bridge] Keep-alive stopped");
-  }
+  if (keepAliveInterval) { clearInterval(keepAliveInterval); keepAliveInterval = null; }
 }
 
-// Configurar DataChannel una vez abierto
 function onChannelOpen() {
-  console.log("[Bridge] ✅ DataChannel open — P2P established!");
+  console.log("[Bridge] DataChannel open — P2P established!");
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
-  
   startKeepAlive();
 
   if (state.isHost) {
+    // HOST: escucha respuestas de Quake3 local (27960) y las manda al cliente
     state.udpProxy = dgram.createSocket("udp4");
 
     state.udpProxy.on("error", (err) => {
       console.error("[Bridge] Host UDP proxy error:", err.message);
-      sendStatus("Error de red en el proxy del host: " + err.message);
     });
 
-    state.udpProxy.bind(27960, "127.0.0.1", () => {
-      console.log("[Bridge] Host UDP listening on 127.0.0.1:27960 (for game)");
+    // No bindeamos en un puerto fijo — usamos send para enviar a Q3:27960
+    // y recibimos las respuestas desde ese socket
+    state.udpProxy.bind(0, "127.0.0.1", () => {
+      const addr = state.udpProxy.address();
+      console.log(`[Bridge] Host UDP proxy bound on port ${addr.port}`);
     });
 
     state.udpProxy.on("message", (msg, rinfo) => {
-      console.log(`[Bridge] Host GAME → DataChannel: ${msg.length} bytes`);
+      console.log(`[Bridge] Host Q3→DataChannel: ${msg.length} bytes from ${rinfo.address}:${rinfo.port}`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
-          console.log(`[Bridge] Host sent ${msg.length} bytes via DataChannel to client`);
         } catch(e) {
           console.error("[Bridge] Host DataChannel send error:", e.message);
         }
-      } else {
-        console.warn("[Bridge] Host received game msg but DataChannel not open!");
       }
     });
 
   } else {
+    // CLIENTE: escucha paquetes salientes de Quake3 (que sale desde 27960 hacia 27961)
     state.udpLocal = dgram.createSocket("udp4");
 
     state.udpLocal.on("error", (err) => {
       console.error("[Bridge] Client UDP error:", err.message);
       if (err.code === "EADDRINUSE") {
         sendStatus("Puerto 27961 ocupado. Cierra RetroLink y vuelve a abrirlo.");
-      } else {
-        sendStatus("Error de red: " + err.message);
       }
-      try { state.udpLocal.close(); } catch(e) {}
-      state.udpLocal = null;
     });
 
     state.udpLocal.bind(27961, "127.0.0.1", () => {
-      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961 (for game)");
+      console.log("[Bridge] Client UDP listening on 127.0.0.1:27961");
     });
 
     state.udpLocal.on("message", (msg) => {
-      console.log(`[Bridge] Client GAME → DataChannel: ${msg.length} bytes`);
+      console.log(`[Bridge] Client Q3→DataChannel: ${msg.length} bytes`);
       if (state.channel?.isOpen()) {
         try {
           state.channel.sendMessageBinary(Buffer.from(msg));
-          console.log(`[Bridge] Client sent ${msg.length} bytes via DataChannel to host`);
         } catch(e) {
           console.error("[Bridge] Client DataChannel send error:", e.message);
         }
-      } else {
-        console.warn("[Bridge] Client received game msg but DataChannel not open!");
       }
     });
   }
 }
 
-// 📥 Datos recibidos por DataChannel → reenviar al juego local
 function onChannelMessage(msg) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-  
-  // 🔥 FILTRAR PINGS EN AMBOS LADOS - SOLO keep-alive, no tráfico real del juego
-  if (buf.length === 16 && buf.toString("hex") === "ffffffff6765746368616c6c656e6765") {
-    console.log("[Bridge] Keep-alive ping (getchallenge) received - ignored");
-    return;
-  }
-  
-  console.log(`[Bridge] DataChannel → GAME: ${buf.length} bytes (isHost=${state.isHost})`);
+
+  // Ignorar pings de keep-alive
+  if (buf.length === 8 && buf.toString("latin1").includes("ping")) return;
+
+  console.log(`[Bridge] DataChannel→Game: ${buf.length} bytes (isHost=${state.isHost})`);
 
   if (state.isHost) {
-    if (!state.udpProxy) {
-      console.warn("[Bridge] Host received DataChannel msg but udpProxy is null!");
-      return;
-    }
+    // HOST: reenviar al Quake3 local en 27960
+    if (!state.udpProxy) { console.warn("[Bridge] udpProxy null!"); return; }
     state.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Host send to game error:", err.message);
-      else console.log(`[Bridge] Host sent ${buf.length} bytes to game (127.0.0.1:27960)`);
+      if (err) console.error("[Bridge] Host→Q3 send error:", err.message);
+      else console.log(`[Bridge] Host forwarded ${buf.length} bytes to Q3:27960`);
     });
   } else {
-    if (!state.udpLocal) {
-      console.warn("[Bridge] Client received DataChannel msg but udpLocal is null!");
-      return;
-    }
-    state.udpLocal.send(buf, 0, buf.length, 27961, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client send to game error:", err.message);
-      else console.log(`[Bridge] Client sent ${buf.length} bytes to game (127.0.0.1:27961)`);
+    // CLIENTE: reinyectar respuesta al Quake3 local.
+    // CRÍTICO: Quake3 siempre usa su puerto fijo 27960 para escuchar respuestas,
+    // sin importar que haya conectado via +connect 127.0.0.1:27961.
+    // Confirmado con netstat: "UDP 0.0.0.0:27960 *:* [quake3.exe PID]"
+    if (!state.udpLocal) { console.warn("[Bridge] udpLocal null!"); return; }
+    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Client→Q3 send error:", err.message);
+      else console.log(`[Bridge] Client forwarded ${buf.length} bytes to Q3:27960`);
     });
   }
 }
 
 function setupChannel(channel) {
   state.channel = channel;
-  console.log(`[Bridge] setupChannel called, isHost=${state.isHost}, channel.isOpen()=${channel.isOpen?.()}`);
+  console.log(`[Bridge] setupChannel called, isHost=${state.isHost}`);
 
   channel.onOpen(() => {
     console.log("[Bridge] channel.onOpen fired");
@@ -340,7 +294,6 @@ function setupChannel(channel) {
   });
 
   channel.onMessage((msg) => {
-    console.log(`[Bridge] RAW onMessage fired, isHost=${state.isHost}, type=${typeof msg}, len=${msg?.length ?? msg?.byteLength ?? "unknown"}`);
     onChannelMessage(msg);
   });
 
@@ -354,12 +307,7 @@ function setupChannel(channel) {
 function flushCandidates() {
   if (!state.peer || !state.remoteDescSet) return;
   state.pendingCandidates.forEach(({ candidate, mid }) => {
-    try { 
-      console.log(`[Bridge] Flushing candidate: ${candidate} (${mid})`);
-      state.peer.addRemoteCandidate(candidate, mid); 
-    } catch(e) {
-      console.error("[Bridge] Error adding remote candidate:", e.message);
-    }
+    try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
   });
   state.pendingCandidates = [];
 }
@@ -383,7 +331,7 @@ async function startBridge(roomId, isHost) {
   state.signalingSocket = sig;
 
   sig.on("connect_error", (err) => {
-    console.error("[Bridge] Signaling connection error:", err.message);
+    console.error("[Bridge] Signaling error:", err.message);
     sendStatus("Error al conectar al servidor de señales.");
   });
 
@@ -392,43 +340,33 @@ async function startBridge(roomId, isHost) {
     sendStatus("Uniéndose a la sala...");
 
     if (isHost) {
-      const localIP = getLocalIP();
-      state.hostIP = localIP;
-      console.log(`[Bridge] Host IP: ${localIP}`);
+      state.hostIP = getLocalIP();
+      console.log(`[Bridge] Host IP: ${state.hostIP}`);
     }
 
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, (response) => {
       console.log("[Bridge] webrtc-join acknowledged:", response);
-
       if (isHost && !state.peer) {
-        console.log("[Bridge] Host creating peer immediately after join...");
         sendStatus("Creando conexión P2P...");
         createHostPeer(NDC, sig, roomId);
       }
     });
   });
 
-  // Recibir la IP del host desde el servidor (para el cliente)
   sig.on("webrtc-host-ip", ({ hostIP }) => {
     if (!isHost) {
       state.hostIP = hostIP;
-      console.log(`[Bridge] ✅ Host IP received from server: ${hostIP}`);
-      sendStatus(`IP del host recibida: ${hostIP}`);
-      const win = BrowserWindow.getAllWindows()[0];
-      if (win) {
-        win.webContents.send('host-ip-received', { hostIP });
-      }
+      console.log(`[Bridge] Host IP received: ${hostIP}`);
     }
   });
 
   sig.on("webrtc-peer-ready", () => {
     if (!isHost || state.peer) return;
-    console.log("[Bridge] Client ready (late) — creating host peer...");
+    console.log("[Bridge] Client ready — creating host peer...");
     sendStatus("Rival encontrado — creando conexión P2P...");
     createHostPeer(NDC, sig, roomId);
   });
 
-  // ── SEÑALES WebRTC entrantes ──────────────────────────────────
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid }) => {
     try {
       if (type === "offer" && !isHost) {
@@ -445,46 +383,35 @@ async function startBridge(roomId, isHost) {
             console.log("[Bridge] Client sending answer...");
             sendStatus("Respondiendo conexión...");
             state.peer.setLocalDescription();
-            console.log("[Bridge] Client answer call completed without throwing");
-          } catch (innerErr) {
-            console.error("[Bridge] Error in delayed setLocalDescription:", innerErr.message);
-            sendStatus("Error respondiendo conexión: " + innerErr.message);
+            console.log("[Bridge] Client answer call completed");
+          } catch (err) {
+            console.error("[Bridge] setLocalDescription error:", err.message);
+            sendStatus("Error respondiendo conexión: " + err.message);
           }
         }, 500);
 
       } else if (type === "answer" && isHost) {
         console.log("[Bridge] Host received answer — setting remote description...");
-        sendStatus("Conectando túnel P2P...");
         state.peer.setRemoteDescription(sdp, "answer");
         state.remoteDescSet = true;
         flushCandidates();
-        console.log("[Bridge] Host remote description set without throwing");
+        console.log("[Bridge] Host remote description set");
 
       } else if (type === "candidate") {
-        console.log(`[Bridge] Received candidate: ${candidate} (${mid})`);
         if (state.peer && state.remoteDescSet) {
-          try { 
-            state.peer.addRemoteCandidate(candidate, mid); 
-            console.log("[Bridge] Candidate added successfully");
-          } catch(e) {
-            console.error("[Bridge] addRemoteCandidate error:", e.message);
-          }
+          try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
         } else {
-          console.log("[Bridge] Candidate queued (remote desc not set yet)");
           state.pendingCandidates.push({ candidate, mid });
         }
       }
     } catch (err) {
-      console.error("[Bridge] FATAL error processing webrtc-signal:", err.message);
-      console.error("[Bridge] Stack:", err.stack);
-      sendStatus("Error procesando señal de conexión: " + err.message);
+      console.error("[Bridge] Signal error:", err.message);
+      sendStatus("Error procesando señal: " + err.message);
     }
   });
 }
 
 function createHostPeer(NDC, sig, roomId) {
-  console.log("[Bridge] Creating Host Peer with ICE servers:", buildIceServers());
-  
   const peer = new NDC.PeerConnection("RetroLink-Host", {
     iceServers: buildIceServers(),
     iceTransportPolicy: "all",
@@ -493,40 +420,22 @@ function createHostPeer(NDC, sig, roomId) {
 
   peer.onLocalDescription((sdp, type) => {
     console.log(`[Bridge] Host local description ready (${type})`);
-    console.log(`[Bridge] SDP (first 200 chars): ${sdp.substring(0, 200)}...`);
     sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
-    console.log(`[Bridge] Host local candidate: ${candidate} (${mid})`);
-    if (candidate.includes("host")) {
-      console.log(`[Bridge] ✅ Host candidate found: ${candidate}`);
-    }
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
   peer.onStateChange((s) => {
     console.log("[Bridge] Host peer state:", s);
-    if (s === "failed") {
-      console.error("[Bridge] ❌ ICE connection failed!");
-      const elapsed = ((Date.now() - state.iceConnectionStart) / 1000).toFixed(1);
-      console.error(`[Bridge] ICE failed after ${elapsed}s`);
-      sendStatus("❌ Conexión P2P falló. Revisa que ambos estén en la misma red o VPN.");
-    }
-    if (s === "connected") {
-      console.log("[Bridge] ✅ ICE connection established!");
-      sendStatus("¡Conexión P2P establecida!");
-    }
-    if (s === "disconnected") {
-      console.log("[Bridge] ⚠️ ICE connection disconnected");
-    }
+    if (s === "failed") sendStatus("❌ Conexión P2P falló.");
+    if (s === "connected") sendStatus("¡Conexión P2P establecida!");
   });
 
   peer.onGatheringStateChange((s) => console.log("[Bridge] Host gathering:", s));
 
-  const channel = peer.createDataChannel("game", {
-    ordered: true,
-  });
+  const channel = peer.createDataChannel("game", { ordered: true });
   setupChannel(channel);
 
   setTimeout(() => {
@@ -537,8 +446,6 @@ function createHostPeer(NDC, sig, roomId) {
 }
 
 function createClientPeer(NDC, sig, roomId) {
-  console.log("[Bridge] Creating Client Peer with ICE servers:", buildIceServers());
-  
   const peer = new NDC.PeerConnection("RetroLink-Client", {
     iceServers: buildIceServers(),
     iceTransportPolicy: "all",
@@ -547,15 +454,10 @@ function createClientPeer(NDC, sig, roomId) {
 
   peer.onLocalDescription((sdp, type) => {
     console.log(`[Bridge] Client local description ready (${type})`);
-    console.log(`[Bridge] SDP (first 200 chars): ${sdp.substring(0, 200)}...`);
     sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
-    console.log(`[Bridge] Client local candidate: ${candidate} (${mid})`);
-    if (candidate.includes("host")) {
-      console.log(`[Bridge] ✅ Client host candidate found: ${candidate}`);
-    }
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
@@ -566,19 +468,8 @@ function createClientPeer(NDC, sig, roomId) {
 
   peer.onStateChange((s) => {
     console.log("[Bridge] Client peer state:", s);
-    if (s === "failed") {
-      console.error("[Bridge] ❌ ICE connection failed!");
-      const elapsed = ((Date.now() - state.iceConnectionStart) / 1000).toFixed(1);
-      console.error(`[Bridge] ICE failed after ${elapsed}s`);
-      sendStatus("❌ Conexión P2P falló. Revisa que ambos estén en la misma red o VPN.");
-    }
-    if (s === "connected") {
-      console.log("[Bridge] ✅ ICE connection established!");
-      sendStatus("¡Conexión P2P establecida!");
-    }
-    if (s === "disconnected") {
-      console.log("[Bridge] ⚠️ ICE connection disconnected");
-    }
+    if (s === "failed") sendStatus("❌ Conexión P2P falló.");
+    if (s === "connected") sendStatus("¡Conexión P2P establecida!");
   });
 
   peer.onGatheringStateChange((s) => console.log("[Bridge] Client gathering:", s));
@@ -686,18 +577,13 @@ ipcMain.handle("get-host-ip", async () => {
 ipcMain.handle("get-local-ips", async () => {
   const interfaces = os.networkInterfaces();
   const results = [];
-  
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
       if (iface.family === 'IPv4' && !iface.internal) {
-        results.push({
-          name: name,
-          address: iface.address,
-        });
+        results.push({ name, address: iface.address });
       }
     }
   }
-  
   return results;
 });
 
@@ -719,11 +605,13 @@ ipcMain.handle("launch-game", async (_, gamePath, hostIp = null, roomId = null, 
         ...args
       ];
     } else {
+      // Cliente conecta al bridge en 27961 — el bridge intercepta y reenvía
+      // Las respuestas del host se reinyectan al puerto 27960 (donde Q3 escucha)
       args = [
         "+connect", "127.0.0.1:27961",
         ...args
       ];
-      console.log(`[Game] Client connecting to localhost:27961 (bridge will relay)`);
+      console.log(`[Game] Client connecting to bridge at 127.0.0.1:27961`);
     }
 
     console.log(`[Game] Launching ${isHost ? "HOST" : "CLIENT"} — args: ${args.join(" ")}`);
