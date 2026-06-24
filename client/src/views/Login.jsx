@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from "react";
+import logo from "../assets/retrolink-logo.png";
 
 function Login({ onLoginSuccess, goToRegister }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [serverStatus, setServerStatus] = useState(null); 
-  const [error, setError] = useState(null); // <-- NUEVO: Estado para el mensaje de error
+  const [serverStatus, setServerStatus] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -18,14 +19,9 @@ function Login({ onLoginSuccess, goToRegister }) {
           "https://retrolink-server.onrender.com/api/health",
           { signal: controller.signal }
         );
-        
-        if (isMounted) {
-          setServerStatus(res.ok ? "online" : "offline");
-        }
+        if (isMounted) setServerStatus(res.ok ? "online" : "offline");
       } catch (err) {
-        if (isMounted && err.name !== "AbortError") {
-          setServerStatus("offline");
-        }
+        if (isMounted && err.name !== "AbortError") setServerStatus("offline");
       }
     };
 
@@ -41,13 +37,13 @@ function Login({ onLoginSuccess, goToRegister }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setError(null); // Limpiar errores previos al intentar de nuevo
+    setError(null);
 
     if (serverStatus === "offline") {
       setError("El servidor no está disponible en este momento.");
       return;
     }
-    
+
     setLoading(true);
 
     try {
@@ -63,29 +59,24 @@ function Login({ onLoginSuccess, goToRegister }) {
       const data = await response.json();
 
       if (!response.ok) {
-        // <-- CORREGIDO: En vez de alert(), guardamos el error en el estado
         setError(data.message || "Error al iniciar sesión");
         return;
       }
 
       const storage = rememberMe ? localStorage : sessionStorage;
-
       storage.setItem("token", data.token);
-      storage.setItem(
-        "user",
-        JSON.stringify({
-          id: data.user.id,
-          email: data.user.email,
-          username: data.user.username,
-          role: data.user.role,
-          avatar: data.user.avatar || "",
-        })
-      );
+      storage.setItem("user", JSON.stringify({
+        id: data.user.id,
+        email: data.user.email,
+        username: data.user.username,
+        role: data.user.role,
+        avatar: data.user.avatar || "",
+      }));
 
       onLoginSuccess(data.user);
     } catch (error) {
       console.error(error);
-      setError("Error de conexión con el servicio"); // <-- CORREGIDO: Evita el alert()
+      setError("Error de conexión con el servicio");
     } finally {
       setLoading(false);
     }
@@ -97,6 +88,15 @@ function Login({ onLoginSuccess, goToRegister }) {
         onSubmit={handleSubmit}
         className="w-full max-w-md bg-[#121821] p-8 rounded-3xl border border-zinc-800 shadow-2xl"
       >
+        {/* LOGO */}
+        <div className="flex justify-center mb-6">
+          <img
+            src={logo}
+            alt="RetroLink"
+            className="h-64 w-auto object-contain drop-shadow-[0_0_15px_rgba(34,197,94,0.15)]"
+          />
+        </div>
+
         {/* SERVER STATUS */}
         <div className="flex items-center gap-2 mb-6">
           {serverStatus === null && (
@@ -122,9 +122,8 @@ function Login({ onLoginSuccess, goToRegister }) {
         <h1 className="text-3xl font-bold mb-2">Iniciar sesión</h1>
         <p className="text-zinc-400 text-sm mb-6">Ingresa tus credenciales para acceder a RetroLink.</p>
 
-        {/* MENSAJE DE ERROR INCUSTADO EN LA UI */}
         {error && (
-          <div className="mb-4 p-3.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium flex items-center gap-2 animate-fadeIn">
+          <div className="mb-4 p-3.5 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm font-medium flex items-center gap-2">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
@@ -141,7 +140,6 @@ function Login({ onLoginSuccess, goToRegister }) {
             onChange={(e) => setEmail(e.target.value)}
             className="w-full bg-zinc-900 px-4 py-3 rounded-xl border border-transparent focus:border-indigo-500 focus:outline-none transition-colors"
           />
-
           <input
             type="password"
             placeholder="Contraseña"

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import socket, { connectSocket } from "../socket";
 import Room from "./Room";
+import logo from "../assets/retrolink-logo.png";
 import {
   Users,
   Wifi,
@@ -48,22 +49,17 @@ function Lobby() {
   const [onlineUsers, setOnlineUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentRoom, setCurrentRoom] = useState(null);
-
-  // CRITICO: ID de la sala activa, separado del objeto currentRoom.
-  // Se usa como "key" estable para <Room>. Mientras no cambie, React NUNCA
-  // desmonta/remonta el componente, sin importar cuantas veces cambie la
-  // referencia del objeto currentRoom por nuevos eventos rooms-list.
   const [activeRoomId, setActiveRoomId] = useState(null);
-
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [activeView, setActiveView] = useState("lobby");
-
   const [library, setLibrary] = useState(loadLibrary);
-
   const [friends, setFriends] = useState([]);
   const [friendRequest, setFriendRequest] = useState("");
   const [friendLoading, setFriendLoading] = useState(false);
   const [friendError, setFriendError] = useState("");
+  const [showModal, setShowModal] = useState(false);
+  const [roomName, setRoomName] = useState("");
+  const [selectedGame, setSelectedGame] = useState(GAMES[0]);
 
   const fetchFriends = async () => {
     const token = localStorage.getItem("token");
@@ -118,10 +114,6 @@ function Lobby() {
     fetchFriends();
   };
 
-  const [showModal, setShowModal] = useState(false);
-  const [roomName, setRoomName] = useState("");
-  const [selectedGame, setSelectedGame] = useState(GAMES[0]);
-
   useEffect(() => {
     connectSocket();
 
@@ -136,10 +128,6 @@ function Lobby() {
 
     const handleRoomsList = (updatedRooms) => {
       setRooms(updatedRooms);
-
-      // Conservamos currentRoom si no se encuentra momentaneamente en vez
-      // de ponerlo en null, evitando un desmontaje accidental de <Room>
-      // por una actualizacion transitoria de la lista de salas.
       setCurrentRoom((prevRoom) => {
         if (!prevRoom) return null;
         const updatedRoom = updatedRooms.find((room) => room.id === prevRoom.id);
@@ -305,7 +293,6 @@ function Lobby() {
       {showModal && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
           <div className="bg-[#121821] border border-zinc-800 rounded-3xl p-8 w-full max-w-lg">
-
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-bold">Host a Match</h2>
               <button onClick={() => setShowModal(false)} className="text-zinc-500 hover:text-white transition">
@@ -358,9 +345,14 @@ function Lobby() {
       )}
 
       <aside className="w-64 border-r border-zinc-800 bg-[#0d1117] p-6 flex flex-col">
-        <h1 className="text-2xl font-bold text-green-400 mb-10 tracking-wide">
-          RETROLINK
-        </h1>
+        {/* LOGO - MÁS GRANDE Y SIN FONDO */}
+        <div className="flex justify-center mb-10">
+          <img 
+            src={logo} 
+            alt="RetroLink" 
+            className="h-64 w-auto object-contain drop-shadow-[0_0_15px_rgba(34,197,94,0.15)]" 
+          />
+        </div>
 
         <nav className="space-y-4">
           <button
@@ -665,7 +657,6 @@ function Lobby() {
       </main>
 
       <aside className="w-72 border-l border-zinc-800 bg-[#0d1117] p-6">
-
         {currentUser && (
           <div className="mb-8 bg-[#121821] rounded-2xl p-4 border border-zinc-800">
             <div className="flex items-center gap-3">
