@@ -184,22 +184,18 @@ function Lobby() {
   const createRoom = async () => {
     const name = roomName.trim() || `${currentUser?.username}'s Room`;
 
+    const roomPayload = {
+      name,
+      game: selectedGame.name,
+      gameId: selectedGame.id, // Corrección crítica: Siempre garantizamos la inyección del ID modular
+    };
+
     try {
       const response = await fetch("https://api.ipify.org?format=json");
       const data = await response.json();
-      socket.emit("create-room", {
-        name,
-        game: selectedGame.name,
-        gameId: selectedGame.id,
-        hostPublicIp: data.ip,
-      });
+      socket.emit("create-room", { ...roomPayload, hostPublicIp: data.ip });
     } catch {
-      socket.emit("create-room", {
-        name,
-        game: selectedGame.name,
-        gameId: selectedGame.id,
-        hostPublicIp: null,
-      });
+      socket.emit("create-room", { ...roomPayload, hostPublicIp: null });
     }
 
     setShowModal(false);
@@ -284,6 +280,7 @@ function Lobby() {
   };
 
   if (currentRoom) {
+    // Corrección: Pasamos la sala completa asegurando que contenga tanto room.id como room.gameId
     return <Room key={activeRoomId} room={currentRoom} leaveRoom={leaveRoom} />;
   }
 
@@ -345,7 +342,6 @@ function Lobby() {
       )}
 
       <aside className="w-64 border-r border-zinc-800 bg-[#0d1117] p-6 flex flex-col">
-        {/* LOGO - MÁS GRANDE Y SIN FONDO */}
         <div className="flex justify-center mb-10">
           <img 
             src={logo} 

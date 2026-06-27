@@ -26,10 +26,11 @@ function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
   const [readyPlayers, setReadyPlayers] = useState([]);
 
+  // Corrección: Buscar en la librería usando el .id único en vez del nombre string
   const getGamePathFromLibrary = () => {
     try {
       const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
-      const saved = library.find((g) => g.name === room.game);
+      const saved = library.find((g) => g.id === room.gameId);
       return saved?.exePath || "";
     } catch {
       return "";
@@ -42,19 +43,14 @@ function Room({ room, leaveRoom }) {
   const [editingName, setEditingName] = useState(false);
   const [newRoomName, setNewRoomName] = useState("");
   
-  // 🔥 Estado para la IP del host
   const [hostIP, setHostIP] = useState(null);
   const [hostIPReceived, setHostIPReceived] = useState(false);
   
-  // 🔥 NUEVO: Estado para selector de IP (solo host)
   const [availableIPs, setAvailableIPs] = useState([]);
   const [selectedIP, setSelectedIP] = useState(null);
   const [showIPSelector, setShowIPSelector] = useState(false);
   const [isLoadingIPs, setIsLoadingIPs] = useState(false);
 
-  /*
-  CHAT STATE
-  */
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [showEmotes, setShowEmotes] = useState(false);
@@ -66,16 +62,10 @@ function Room({ room, leaveRoom }) {
   const isHost = isHostRef.current;
   const isReady = readyPlayers.includes(socket.id);
 
-  /*
-  AUTO SCROLL CHAT
-  */
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  /*
-  🔥 NUEVO: Obtener IPs disponibles cuando el host crea la sala
-  */
   useEffect(() => {
     const loadIPs = async () => {
       if (isHost) {
@@ -84,14 +74,12 @@ function Room({ room, leaveRoom }) {
           const ips = await window.retroLink?.getLocalIPs();
           if (ips && ips.length > 0) {
             setAvailableIPs(ips);
-            // Seleccionar automáticamente la mejor IP (VPN > LAN > primera)
             const preferred = ips.find(ip => 
               ip.address.startsWith('26.') || 
               ip.address.startsWith('10.') ||
               ip.address.startsWith('192.168.')
             ) || ips[0];
             setSelectedIP(preferred.address);
-            // Guardar la IP seleccionada
             await window.retroLink?.setHostIP(preferred.address);
             console.log("[Room] Auto-selected IP:", preferred.address);
           }
@@ -105,16 +93,19 @@ function Room({ room, leaveRoom }) {
   }, [isHost]);
 
   /*
-  START RELAY
+  START RELAY (Mapeado a la nueva arquitectura modular de Electron)
   */
   useEffect(() => {
     const startRelay = async () => {
       setRelayStatus(null);
       setRelayStep("Iniciando conexión...");
-      const result = await window.retroLink?.startRelay(room.id, isHost);
+      
+      // Corrección Crítica: Se pasa room.gameId para que Electron sepa qué puertos y motor usar
+      const result = await window.retroLink?.startRelay(room.id, isHost, room.gameId);
+      
       if (!result?.success) {
         setRelayStatus("error");
-        setRelayStep("No se pudo iniciar el bridge");
+        setRelayStep("No se pudo iniciar el bridge: " + (result?.error || ""));
       }
     };
 
@@ -126,12 +117,9 @@ function Room({ room, leaveRoom }) {
 
       if (message.includes("Conexión establecida")) {
         setRelayStatus("ok");
-      } else if (message.includes("cerrada") || message.includes("detenido")) {
-        // No marcar error
       }
     });
 
-    // Escuchar la IP del host (para el cliente)
     window.retroLink?.onHostIPReceived?.((data) => {
       console.log("[Room] Host IP received:", data.hostIP);
       setHostIP(data.hostIP);
@@ -143,11 +131,8 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.offBridgeStatus?.();
       window.retroLink?.offHostIPReceived?.();
     };
-  }, [room.id, isHost]);
+  }, [room.id, room.gameId, isHost]);
 
-  /*
-  🔥 NUEVO: Manejar cambio de IP seleccionada
-  */
   const handleIPSelect = async (ip) => {
     setSelectedIP(ip);
     setShowIPSelector(false);
@@ -156,7 +141,7 @@ function Room({ room, leaveRoom }) {
   };
 
   /*
-  SOCKET EVENTS
+  SOCKET EVENTS & GAME LAUNCHER
   */
   useEffect(() => {
     socket.emit("get-rooms");
@@ -175,13 +160,14 @@ function Room({ room, leaveRoom }) {
         return; 
       }
 
+      // Corrección Crítica: Adaptación de argumentos para ipc/handlers.js de Electron
       if (isHost) {
-        await window.retroLink?.launchGame(gamePath, null, room.id, true, []);
+        // signature: (gamePath, hostIp, roomId, isHost, gameId, extraArgs)
+        await window.retroLink?.launchGame(gamePath, null, room.id, true, room.gameId, []);
       } else {
-        // Usar la IP recibida automáticamente o localhost
         const ipToUse = hostIP || '127.0.0.1';
-        console.log(`[Room] Connecting to host at: ${ipToUse}`);
-        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, []);
+        console.log(`[Room] Connecting to host at: ${ipToUse} using engine ${room.gameId}`);
+        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, room.gameId, []);
       }
     };
 
@@ -211,7 +197,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
-  }, [room.id, leaveRoom, gamePath, isHost, hostIP]);
+  }, [room.id, room.gameId, leaveRoom, gamePath, isHost, hostIP]);
 
   const handleBrowseGame = async () => {
     try {
@@ -256,9 +242,6 @@ function Room({ room, leaveRoom }) {
     setChatInput((prev) => prev + emote);
   };
 
-  /*
-  RELAY STATUS BANNER
-  */
   const renderRelayStatus = () => {
     if (relayStatus === null) {
       return (
@@ -287,9 +270,6 @@ function Room({ room, leaveRoom }) {
     );
   };
 
-  /*
-  🔥 NUEVO: Renderizar selector de IP (solo host)
-  */
   const renderIPSelector = () => {
     if (!isHost) return null;
     
@@ -400,10 +380,8 @@ function Room({ room, leaveRoom }) {
             </button>
           </div>
 
-          {/* 🔥 NUEVO: Selector de IP (solo host) */}
           {renderIPSelector()}
 
-          {/* Indicador de IP del host (solo cliente) */}
           {!isHost && (
             <div className={`text-xs px-3 py-1 rounded-full mb-2 inline-block ${
               hostIPReceived ? 'text-green-400 bg-green-500/10' : 'text-yellow-400 bg-yellow-500/10'
@@ -441,7 +419,7 @@ function Room({ room, leaveRoom }) {
             })}
           </div>
 
-          {/* GAME PATH */}
+          /* GAME PATH */
           <div className="bg-[#0d1117] rounded-2xl p-5 mb-8 border border-zinc-800">
             <h2 className="text-lg font-semibold mb-2">{currentRoom?.game}</h2>
             <p className="text-sm text-zinc-400 mb-3">Executable Path</p>
@@ -488,12 +466,10 @@ function Room({ room, leaveRoom }) {
 
         {/* RIGHT — CHAT */}
         <div className="w-80 bg-[#121821] rounded-3xl border border-zinc-800 flex flex-col">
-
           <div className="p-5 border-b border-zinc-800">
             <h3 className="font-semibold">Room Chat</h3>
           </div>
 
-          {/* MESSAGES */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
             {messages.length === 0 ? (
               <p className="text-zinc-600 text-sm text-center mt-4">No messages yet 👾</p>
@@ -519,7 +495,6 @@ function Room({ room, leaveRoom }) {
             <div ref={chatEndRef} />
           </div>
 
-          {/* EMOTE PICKER */}
           {showEmotes && (
             <div className="border-t border-zinc-800 bg-[#0d1117] p-3">
               <div className="flex gap-1 mb-2 overflow-x-auto">
@@ -552,7 +527,6 @@ function Room({ room, leaveRoom }) {
             </div>
           )}
 
-          {/* INPUT */}
           <div className="p-4 border-t border-zinc-800">
             <div className="flex gap-2 items-center">
               <button

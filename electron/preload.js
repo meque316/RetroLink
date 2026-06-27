@@ -9,8 +9,9 @@ contextBridge.exposeInMainWorld(
     selectGameExe: () =>
       ipcRenderer.invoke("select-game-exe"),
 
-    launchGame: (gamePath, hostIp = null, roomId = null, isHost = false, extraArgs = []) =>
-      ipcRenderer.invoke("launch-game", gamePath, hostIp, roomId, isHost, extraArgs),
+    // CORRECCIÓN: Añadido gameId como 5to parámetro antes de extraArgs para coincidir con Room.jsx
+    launchGame: (gamePath, hostIp = null, roomId = null, isHost = false, gameId = null, extraArgs = []) =>
+      ipcRenderer.invoke("launch-game", gamePath, hostIp, roomId, isHost, gameId, extraArgs),
 
     prepareHost: (port = 27960) =>
       ipcRenderer.invoke("prepare-host", port),
@@ -18,8 +19,9 @@ contextBridge.exposeInMainWorld(
     closeHostPort: (port = 27960) =>
       ipcRenderer.invoke("close-host-port", port),
 
-    startRelay: (roomId, isHost) =>
-      ipcRenderer.invoke("start-relay", roomId, isHost),
+    // CORRECCIÓN: Añadido gameId para que el bridge sepa qué puertos UDP levantar automáticamente
+    startRelay: (roomId, isHost, gameId) =>
+      ipcRenderer.invoke("start-relay", roomId, isHost, gameId),
 
     stopRelay: () =>
       ipcRenderer.invoke("stop-relay"),
