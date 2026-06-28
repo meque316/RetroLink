@@ -23,8 +23,8 @@ let state = {
   gameProcess: null,
   gameRoomId: null,
   isBridgeReady: false,
-  currentGame: null,      // ✅ Guardar el juego actual
-  gamePort: 27960         // ✅ Puerto del juego actual
+  currentGame: null,
+  gamePort: 27960
 };
 
 let keepAliveIntervals = new Map();
@@ -74,8 +74,11 @@ function getLocalIP() {
 
 function getNextClientPort() {
   const usedPorts = new Set([...state.clients.values()].map(c => c.clientPort));
+  // ✅ Usar el puerto base del juego actual
+  const basePort = state.currentGame?.clientPortBase || CLIENT_PORT_BASE;
+  
   for (let i = 0; i < MAX_CLIENTS; i++) {
-    const port = CLIENT_PORT_BASE + i;
+    const port = basePort + i;
     if (!usedPorts.has(port)) return port;
   }
   return null;
@@ -132,9 +135,18 @@ function createHostUDPProxy(socketId, clientPort, channel) {
     console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Game port: ${gamePort}, Client port: ${clientPort})`);
   });
 
-  udpProxy.on("message", (msg) => {
+  // ✅ LOG: Cuando el host recibe paquetes del juego
+  udpProxy.on("message", (msg, rinfo) => {
+    console.log(`[Bridge] 📩 Host proxy recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
     if (channel?.isOpen()) {
-      try { channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+      try { 
+        channel.sendMessageBinary(Buffer.from(msg)); 
+        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
+      } catch(e) {
+        console.error('[Bridge] Error enviando por DataChannel:', e);
+      }
+    } else {
+      console.warn('[Bridge] ⚠️ DataChannel no disponible para enviar mensaje');
     }
   });
 
@@ -164,7 +176,6 @@ function onHostChannelOpen(socketId, channel, clientPort) {
 
   const connectedCount = [...state.clients.values()].filter(c => c.udpProxy).length;
   
-  // ✅ Notificar al frontend
   sendToFrontend("client-connected", { 
     socketId, 
     clientPort, 
@@ -173,7 +184,6 @@ function onHostChannelOpen(socketId, channel, clientPort) {
   
   sendBridgeStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
   
-  // ✅ Marcar bridge como listo cuando hay al menos un cliente
   if (!state.isBridgeReady) {
     state.isBridgeReady = true;
     sendToFrontend("bridge-ready", { 
@@ -188,7 +198,6 @@ function onClientChannelOpen() {
   console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
   sendBridgeStatus("¡Conexión P2P establecida! Listos para jugar.");
   
-  // ✅ Notificar al frontend que el bridge está listo (cliente)
   state.isBridgeReady = true;
   sendToFrontend("bridge-ready", { 
     connected: true,
@@ -205,14 +214,26 @@ function onClientChannelOpen() {
     }
   });
 
-  state.udpLocal.bind(state.clientPort || CLIENT_PORT_BASE, "127.0.0.1", () => {
-    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${state.clientPort || CLIENT_PORT_BASE}`);
-    sendToFrontend("client-port-assigned", state.clientPort || CLIENT_PORT_BASE);
+  // ✅ Usar el puerto base del juego para el cliente
+  const clientPort = state.clientPort || state.currentGame?.clientPortBase || CLIENT_PORT_BASE;
+  
+  state.udpLocal.bind(clientPort, "127.0.0.1", () => {
+    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${clientPort}`);
+    sendToFrontend("client-port-assigned", clientPort);
   });
 
-  state.udpLocal.on("message", (msg) => {
+  // ✅ LOG: Cuando el cliente recibe paquetes del juego
+  state.udpLocal.on("message", (msg, rinfo) => {
+    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
     if (state.channel?.isOpen()) {
-      try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+      try { 
+        state.channel.sendMessageBinary(Buffer.from(msg));
+        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
+      } catch(e) {
+        console.error('[Bridge] Error enviando por DataChannel:', e);
+      }
+    } else {
+      console.warn('[Bridge] ⚠️ DataChannel no disponible para enviar mensaje');
     }
   });
 
@@ -230,21 +251,35 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
-// ✅ onChannelMessage con puerto dinámico
+// ✅ onChannelMessage con logs de depuración
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
+  
+  // ✅ Log para ver paquetes que llegan al bridge desde el DataChannel
+  console.log(`[Bridge] 📦 Paquete recibido del DataChannel: ${buf.length} bytes, socketId: ${socketId || 'N/A'}`);
+  
+  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) {
+    console.log("[Bridge] Ping ignorado");
+    return;
+  }
 
   const gamePort = state.gamePort || 27015;
+  console.log(`[Bridge] Enviando paquete a puerto ${gamePort}`);
 
   if (state.isHost) {
     const client = state.clients.get(socketId);
-    if (!client?.udpProxy) return;
+    if (!client?.udpProxy) {
+      console.warn(`[Bridge] No hay proxy para cliente ${socketId}`);
+      return;
+    }
     client.udpProxy.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
       if (err) console.error(`[Bridge] Host→Game error:`, err.message);
     });
   } else {
-    if (!state.udpLocal) return;
+    if (!state.udpLocal) {
+      console.warn("[Bridge] No hay UDP local");
+      return;
+    }
     state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
       if (err) console.error("[Bridge] Client→Game error:", err.message);
     });
@@ -317,7 +352,7 @@ function createClientPeer(NDC, sig, roomId) {
   });
 }
 
-// ✅ FUNCIÓN PRINCIPAL startBridge - AHORA CON gameId
+// ✅ FUNCIÓN PRINCIPAL startBridge
 async function startBridge(roomId, isHost, gameId = null) {
   resetBridge();
 
@@ -344,7 +379,6 @@ async function startBridge(roomId, isHost, gameId = null) {
       state.gamePort = 27015;
     }
   } else {
-    // Fallback: Quake III por defecto
     state.gamePort = 27960;
     console.log(`[Bridge] Sin gameId, usando puerto por defecto: ${state.gamePort}`);
   }
