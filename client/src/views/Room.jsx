@@ -93,6 +93,46 @@ function Room({ room, leaveRoom }) {
   }, [isHost]);
 
   /*
+  ✅ REPORTAR JUEGOS CONFIGURADOS AL SERVIDOR
+  */
+  useEffect(() => {
+    const reportGames = () => {
+      try {
+        const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
+        console.log("[Room] Reportando juegos configurados:", library);
+        
+        library.forEach(game => {
+          const hasGame = !!game.exePath;
+          socket.emit("report-game-config", { 
+            gameId: game.id, 
+            hasGame: hasGame 
+          });
+          console.log(`[Room] Reportando ${game.id}: ${hasGame ? '✅ configurado' : '❌ no configurado'}`);
+        });
+      } catch (e) {
+        console.error("[Room] Error reporting games:", e);
+      }
+    };
+    
+    // Reportar al conectar y cuando cambie la librería
+    reportGames();
+    
+    // Escuchar cambios en localStorage (cuando se agrega un juego)
+    const handleStorageChange = (e) => {
+      if (e.key === "retrolink_library") {
+        console.log("[Room] Librería actualizada, reportando cambios...");
+        reportGames();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }, []);
+
+  /*
   START RELAY - ✅ CON MEJOR MANEJO DE ESTADOS
   */
   useEffect(() => {
@@ -167,10 +207,30 @@ function Room({ room, leaveRoom }) {
       setHostIPReceived(true);
     };
 
+    // ✅ Manejador de "player-missing-game" - cuando alguien no tiene el juego
+    const handlePlayerMissingGame = (data) => {
+      if (!isMounted) return;
+      
+      console.log("[Room] Player missing game:", data);
+      // Mostrar notificación en el chat o alerta
+      if (data.username !== currentUser.username) {
+        // Mostrar en el chat que alguien no tiene el juego
+        setMessages((prev) => [...prev, {
+          username: "Sistema",
+          message: `⚠️ ${data.username} no tiene ${data.game} configurado en RetroLink`,
+          timestamp: Date.now(),
+          isSystem: true
+        }]);
+      }
+    };
+
     // ✅ Registrar listeners
     window.retroLink?.onBridgeStatus?.(handleBridgeStatus);
     window.retroLink?.onBridgeReady?.(handleBridgeReady);
     window.retroLink?.onHostIPReceived?.(handleHostIP);
+    
+    // Listener de socket para cuando alguien no tiene el juego
+    socket.on("player-missing-game", handlePlayerMissingGame);
 
     return () => {
       isMounted = false;
@@ -178,8 +238,9 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.offBridgeStatus?.();
       window.retroLink?.offBridgeReady?.();
       window.retroLink?.offHostIPReceived?.();
+      socket.off("player-missing-game", handlePlayerMissingGame);
     };
-  }, [room.id, isHost]);
+  }, [room.id, isHost, currentUser.username]);
 
   const handleIPSelect = async (ip) => {
     setSelectedIP(ip);
@@ -207,7 +268,7 @@ function Room({ room, leaveRoom }) {
       
       if (!gamePath) { 
         console.warn("[Room] No game path selected"); 
-        alert("Por favor selecciona la ruta del juego");
+        alert("⚠️ No tienes el juego configurado.\nPor favor, selecciona la ruta del ejecutable antes de iniciar la partida.");
         return; 
       }
 
@@ -228,6 +289,15 @@ function Room({ room, leaveRoom }) {
 
     const handleMatchError = (error) => {
       console.error("[Room] Match error:", error);
+      
+      // ✅ Mostrar el error en el chat también
+      setMessages((prev) => [...prev, {
+        username: "Sistema",
+        message: `❌ ${error.message || "Error al iniciar la partida"}`,
+        timestamp: Date.now(),
+        isSystem: true
+      }]);
+      
       alert(error.message || "Error al iniciar la partida");
     };
 
@@ -276,6 +346,14 @@ function Room({ room, leaveRoom }) {
             library.push({ id: room.game, exePath: selectedPath });
           }
           localStorage.setItem("retrolink_library", JSON.stringify(library));
+          
+          // ✅ Reportar al servidor que ahora tiene el juego
+          socket.emit("report-game-config", { 
+            gameId: room.game, 
+            hasGame: true 
+          });
+          console.log(`[Room] Reportado ${room.game} como configurado`);
+          
         } catch (e) {
           console.error("Error saving game path:", e);
         }
@@ -399,6 +477,35 @@ function Room({ room, leaveRoom }) {
     );
   };
 
+  // ✅ Renderizar mensaje de sistema (para errores de juego)
+  const renderMessage = (msg, index) => {
+    if (msg.isSystem) {
+      return (
+        <div key={index} className="flex justify-center">
+          <div className="text-xs text-zinc-500 bg-zinc-800/50 px-3 py-1 rounded-full">
+            {msg.message}
+          </div>
+        </div>
+      );
+    }
+    
+    const isMe = msg.username === currentUser.username;
+    return (
+      <div key={index} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+        {!isMe && (
+          <span className="text-xs text-zinc-500 mb-1 px-1">{msg.username}</span>
+        )}
+        <div className={`px-3 py-2 rounded-2xl text-sm max-w-[90%] break-words ${
+          isMe
+            ? "bg-green-500/20 text-green-100 rounded-br-sm"
+            : "bg-zinc-800 text-white rounded-bl-sm"
+        }`}>
+          {msg.message}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="h-full bg-[#0b0f14] text-white flex items-center justify-center p-8">
       <div className="w-full max-w-5xl flex gap-6">
@@ -507,7 +614,7 @@ function Room({ room, leaveRoom }) {
                 <p className="text-xs text-green-500">✓ Ready to launch</p>
               </>
             ) : (
-              <p className="text-yellow-400 text-sm mb-3">Executable not configured</p>
+              <p className="text-yellow-400 text-sm mb-3">⚠️ Executable not configured</p>
             )}
 
             <button
@@ -551,23 +658,7 @@ function Room({ room, leaveRoom }) {
             {messages.length === 0 ? (
               <p className="text-zinc-600 text-sm text-center mt-4">No messages yet 👾</p>
             ) : (
-              messages.map((msg, index) => {
-                const isMe = msg.username === currentUser.username;
-                return (
-                  <div key={index} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
-                    {!isMe && (
-                      <span className="text-xs text-zinc-500 mb-1 px-1">{msg.username}</span>
-                    )}
-                    <div className={`px-3 py-2 rounded-2xl text-sm max-w-[90%] break-words ${
-                      isMe
-                        ? "bg-green-500/20 text-green-100 rounded-br-sm"
-                        : "bg-zinc-800 text-white rounded-bl-sm"
-                    }`}>
-                      {msg.message}
-                    </div>
-                  </div>
-                );
-              })
+              messages.map((msg, index) => renderMessage(msg, index))
             )}
             <div ref={chatEndRef} />
           </div>

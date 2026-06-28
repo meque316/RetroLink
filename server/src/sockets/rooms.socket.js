@@ -3,6 +3,7 @@ import crypto from "crypto";
 const rooms = [];
 const readyStates = {};
 const onlineUsers = {};
+const userGames = {}; // socket.id -> { gameId: boolean }
 
 export default function roomsSocket(io) {
   io.on("connection", (socket) => {
@@ -20,6 +21,15 @@ export default function roomsSocket(io) {
 
     socket.on("get-rooms", () => socket.emit("rooms-list", rooms));
     socket.on("get-users-online", () => socket.emit("users-online", Object.values(onlineUsers)));
+
+    /*
+    REPORT GAME CONFIG - Cliente reporta qué juegos tiene configurados
+    */
+    socket.on("report-game-config", ({ gameId, hasGame }) => {
+      if (!userGames[socket.id]) userGames[socket.id] = {};
+      userGames[socket.id][gameId] = hasGame;
+      console.log(`[User] ${socket.id} (${user.username}) game ${gameId} configured: ${hasGame}`);
+    });
 
     /*
     CREATE ROOM
@@ -54,7 +64,14 @@ export default function roomsSocket(io) {
       const alreadyInside = room.members.some((m) => m.id === socket.id);
       if (alreadyInside) return;
 
-      room.members.push({ id: socket.id, username: onlineUsers[socket.id]?.username });
+      // ✅ Verificar si el usuario tiene el juego configurado
+      const hasGame = userGames[socket.id]?.[room.game] || false;
+      
+      room.members.push({ 
+        id: socket.id, 
+        username: onlineUsers[socket.id]?.username,
+        gameReady: hasGame // Guardar estado del juego
+      });
       room.players = room.members.length;
       socket.join(roomId);
 
@@ -63,6 +80,17 @@ export default function roomsSocket(io) {
         hostSocketId: room.host,
         hostPublicIp: room.hostPublicIp,
       });
+
+      // ✅ Notificar si el jugador no tiene el juego configurado
+      if (!hasGame) {
+        const username = onlineUsers[socket.id]?.username || "Jugador";
+        io.to(roomId).emit("player-missing-game", {
+          username,
+          game: room.game,
+          message: `${username} no tiene ${room.game} configurado en RetroLink`
+        });
+        console.log(`[Room] ${username} no tiene ${room.game} configurado`);
+      }
 
       io.emit("rooms-list", rooms);
       io.to(roomId).emit("room-ready-state", readyStates[roomId] || []);
@@ -85,7 +113,7 @@ export default function roomsSocket(io) {
     });
 
     /*
-    START MATCH
+    START MATCH - ✅ CON VERIFICACIÓN DE JUEGOS
     */
     socket.on("start-match", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
@@ -95,10 +123,26 @@ export default function roomsSocket(io) {
       const everyoneReady = room.members.every((m) => readyPlayers.includes(m.id));
 
       if (!everyoneReady) {
-        socket.emit("match-error", { message: "All players must be ready before starting." });
+        socket.emit("match-error", { message: "Todos los jugadores deben estar listos antes de iniciar." });
         return;
       }
 
+      // ✅ VERIFICAR QUE TODOS TENGAN EL JUEGO CONFIGURADO
+      const missingGame = room.members.filter(m => 
+        !userGames[m.id]?.[room.game]
+      );
+
+      if (missingGame.length > 0) {
+        const names = missingGame.map(m => m.username).join(', ');
+        socket.emit("match-error", { 
+          message: `❌ Los siguientes jugadores no tienen ${room.game} configurado: ${names}` 
+        });
+        console.log(`[Room] Inicio bloqueado: ${missingGame.length} jugador(es) sin ${room.game}`);
+        return;
+      }
+
+      // ✅ Todos tienen el juego, iniciar partida
+      console.log(`[Room] Iniciando partida en sala ${room.name} - todos tienen el juego`);
       io.to(roomId).emit("match-started", { roomId, hostPublicIp: room.hostPublicIp });
     });
 
@@ -206,6 +250,9 @@ export default function roomsSocket(io) {
     */
     socket.on("disconnect", () => {
       console.log("Usuario desconectado:", socket.id);
+
+      // Limpiar datos de juegos del usuario
+      delete userGames[socket.id];
 
       // Notificar al host si era un cliente WebRTC
       const webrtcRoomId = socket.data.webrtcRoomId;
