@@ -26,11 +26,11 @@ function Room({ room, leaveRoom }) {
   const [currentRoom, setCurrentRoom] = useState(room);
   const [readyPlayers, setReadyPlayers] = useState([]);
 
-  // Corrección: Buscar en la librería usando el .id único en vez del nombre string
+  // ✅ Usar room.game para buscar en la librería
   const getGamePathFromLibrary = () => {
     try {
       const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
-      const saved = library.find((g) => g.id === room.gameId);
+      const saved = library.find((g) => g.id === room.game);
       return saved?.exePath || "";
     } catch {
       return "";
@@ -93,15 +93,15 @@ function Room({ room, leaveRoom }) {
   }, [isHost]);
 
   /*
-  START RELAY (Mapeado a la nueva arquitectura modular de Electron)
+  START RELAY - ✅ AHORA SIN gameId
   */
   useEffect(() => {
     const startRelay = async () => {
       setRelayStatus(null);
       setRelayStep("Iniciando conexión...");
       
-      // Corrección Crítica: Se pasa room.gameId para que Electron sepa qué puertos y motor usar
-      const result = await window.retroLink?.startRelay(room.id, isHost, room.gameId);
+      // ✅ CORRECCIÓN: startRelay ahora solo recibe roomId e isHost (sin gameId)
+      const result = await window.retroLink?.startRelay(room.id, isHost);
       
       if (!result?.success) {
         setRelayStatus("error");
@@ -131,7 +131,7 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.offBridgeStatus?.();
       window.retroLink?.offHostIPReceived?.();
     };
-  }, [room.id, room.gameId, isHost]);
+  }, [room.id, isHost]); // ✅ Ya no depende de room.game
 
   const handleIPSelect = async (ip) => {
     setSelectedIP(ip);
@@ -160,14 +160,13 @@ function Room({ room, leaveRoom }) {
         return; 
       }
 
-      // Corrección Crítica: Adaptación de argumentos para ipc/handlers.js de Electron
+      // ✅ CORRECCIÓN: launchGame ahora usa null en lugar de room.game
       if (isHost) {
-        // signature: (gamePath, hostIp, roomId, isHost, gameId, extraArgs)
-        await window.retroLink?.launchGame(gamePath, null, room.id, true, room.gameId, []);
+        await window.retroLink?.launchGame(gamePath, null, room.id, true, null, []);
       } else {
         const ipToUse = hostIP || '127.0.0.1';
-        console.log(`[Room] Connecting to host at: ${ipToUse} using engine ${room.gameId}`);
-        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, room.gameId, []);
+        console.log(`[Room] Connecting to host at: ${ipToUse}`);
+        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, null, []);
       }
     };
 
@@ -197,7 +196,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed();
     };
-  }, [room.id, room.gameId, leaveRoom, gamePath, isHost, hostIP]);
+  }, [room.id, leaveRoom, gamePath, isHost, hostIP]); // ✅ Ya no depende de room.game
 
   const handleBrowseGame = async () => {
     try {
@@ -419,7 +418,7 @@ function Room({ room, leaveRoom }) {
             })}
           </div>
 
-          /* GAME PATH */
+          {/* GAME PATH */}
           <div className="bg-[#0d1117] rounded-2xl p-5 mb-8 border border-zinc-800">
             <h2 className="text-lg font-semibold mb-2">{currentRoom?.game}</h2>
             <p className="text-sm text-zinc-400 mb-3">Executable Path</p>

@@ -1,27 +1,37 @@
 const { io: socketClient } = require("socket.io-client");
 const os = require("os");
 const dgram = require("dgram");
-const { getGame } = require("../games");
 
 const SIGNALING_URL = "https://retrolink-server.onrender.com";
+const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
+// Estado del bridge (igual que en el monolítico)
 let state = {
   signalingSocket: null,
   roomId: null,
   isHost: false,
-  currentGame: null,
   hostIP: null,
-  clients: new Map(), // HOST: socketId -> { peer, channel, udpProxy, clientPort, pendingCandidates, remoteDescSet }
-  peer: null,         // CLIENTE
-  channel: null,      // CLIENTE
-  udpLocal: null,     // CLIENTE
-  clientPort: null,   // CLIENTE
+  clients: new Map(),
+  peer: null,
+  channel: null,
+  udpLocal: null,
+  clientPort: null,
   pendingCandidates: [],
-  remoteDescSet: false
+  remoteDescSet: false,
+  gameProcess: null,
+  gameRoomId: null
 };
 
 let keepAliveIntervals = new Map();
+
+const ICE_SERVERS = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun2.l.google.com:19302",
+  "stun:stun3.l.google.com:19302",
+  "stun:stun4.l.google.com:19302",
+];
 
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -40,10 +50,10 @@ function getLocalIP() {
   return results[0]?.address || '127.0.0.1';
 }
 
-function getNextClientPort(game) {
+function getNextClientPort() {
   const usedPorts = new Set([...state.clients.values()].map(c => c.clientPort));
   for (let i = 0; i < MAX_CLIENTS; i++) {
-    const port = game.clientPortBase + i;
+    const port = CLIENT_PORT_BASE + i;
     if (!usedPorts.has(port)) return port;
   }
   return null;
@@ -71,30 +81,19 @@ function resetBridge() {
   state.channel = null;
   state.udpLocal = null;
   state.roomId = null;
-  state.currentGame = null;
   state.pendingCandidates = [];
   state.remoteDescSet = false;
-  console.log("[Bridge] Reset complete via Module");
+  state.hostIP = null;
+  state.clientPort = null;
+  state.gameProcess = null;
+  state.gameRoomId = null;
+
+  console.log("[Bridge] Reset complete");
 }
 
-function onChannelMessage(buf, sendStatus, socketId = null) {
-  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
-  const game = state.currentGame;
-  if (!game) return;
-
-  if (state.isHost) {
-    const client = state.clients.get(socketId);
-    if (!client?.udpProxy) return;
-    client.udpProxy.send(buf, 0, buf.length, game.defaultPort, "127.0.0.1");
-  } else {
-    if (!state.udpLocal) return;
-    state.udpLocal.send(buf, 0, buf.length, game.defaultPort, "127.0.0.1");
-  }
-}
-
-function createHostUDPProxy(socketId, clientPort, channel, sendStatus) {
+// ✅ FUNCIONES DE PROXY (igual que en el monolítico)
+function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
-  const game = state.currentGame;
 
   udpProxy.on("error", (err) => {
     console.error(`[Bridge] Host proxy error (client ${socketId}):`, err.message);
@@ -102,7 +101,7 @@ function createHostUDPProxy(socketId, clientPort, channel, sendStatus) {
 
   udpProxy.bind(0, "127.0.0.1", () => {
     const addr = udpProxy.address();
-    console.log(`[Bridge] Proxy UDP de Host para cliente ${socketId} en puerto local ${addr.port} (Puerto Juego: ${clientPort})`);
+    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Q3 port: ${clientPort})`);
   });
 
   udpProxy.on("message", (msg) => {
@@ -114,12 +113,12 @@ function createHostUDPProxy(socketId, clientPort, channel, sendStatus) {
   return udpProxy;
 }
 
-function onHostChannelOpen(socketId, channel, clientPort, sendStatus) {
-  console.log(`[Bridge] Host DataChannel abierto para cliente ${socketId} en puerto de juego ${clientPort}`);
+function onHostChannelOpen(socketId, channel, clientPort) {
+  console.log(`[Bridge] Host DataChannel open for client ${socketId} on port ${clientPort}`);
   const client = state.clients.get(socketId);
   if (!client) return;
 
-  const udpProxy = createHostUDPProxy(socketId, clientPort, channel, sendStatus);
+  const udpProxy = createHostUDPProxy(socketId, clientPort, channel);
   client.udpProxy = udpProxy;
 
   const interval = setInterval(() => {
@@ -134,26 +133,19 @@ function onHostChannelOpen(socketId, channel, clientPort, sendStatus) {
     }
   }, 10000);
   keepAliveIntervals.set(socketId, interval);
-
-  const connectedCount = [...state.clients.values()].filter(c => c.udpProxy).length;
-  sendStatus(`¡${connectedCount} jugador(es) conectado(s)! Conexión establecida.`);
 }
 
-function onClientChannelOpen(sendStatus) {
-  console.log(`[Bridge] Client DataChannel abierto (puerto: ${state.clientPort})`);
-  sendStatus("Conexión establecida — ¡Listos para jugar!");
-
+function onClientChannelOpen() {
+  console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
+  
   state.udpLocal = dgram.createSocket("udp4");
 
   state.udpLocal.on("error", (err) => {
     console.error("[Bridge] Client UDP error:", err.message);
-    if (err.code === "EADDRINUSE") {
-      sendStatus(`Puerto ${state.clientPort} ocupado. Cierra el juego o app y reintenta.`);
-    }
   });
 
-  state.udpLocal.bind(state.clientPort, "127.0.0.1", () => {
-    console.log(`[Bridge] Cliente UDP escuchando en 127.0.0.1:${state.clientPort}`);
+  state.udpLocal.bind(state.clientPort || CLIENT_PORT_BASE, "127.0.0.1", () => {
+    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${state.clientPort || CLIENT_PORT_BASE}`);
   });
 
   state.udpLocal.on("message", (msg) => {
@@ -176,6 +168,24 @@ function onClientChannelOpen(sendStatus) {
   keepAliveIntervals.set("self", interval);
 }
 
+function onChannelMessage(msg, socketId = null) {
+  const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
+  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
+
+  if (state.isHost) {
+    const client = state.clients.get(socketId);
+    if (!client?.udpProxy) return;
+    client.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+      if (err) console.error(`[Bridge] Host→Q3 error:`, err.message);
+    });
+  } else {
+    if (!state.udpLocal) return;
+    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Client→Q3 error:", err.message);
+    });
+  }
+}
+
 function flushCandidates(socketId = null) {
   if (state.isHost) {
     const client = state.clients.get(socketId);
@@ -193,10 +203,10 @@ function flushCandidates(socketId = null) {
   }
 }
 
-function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort, sendStatus) {
+function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const peer = new NDC.PeerConnection(`RetroLink-Host-${clientSocketId}`, {
-    iceServers: ["stun:stun.l.google.com:19302"],
-    iceTransportPolicy: "all"
+    iceServers: ICE_SERVERS,
+    iceTransportPolicy: "all",
   });
 
   const client = state.clients.get(clientSocketId);
@@ -214,16 +224,16 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort, sendStatus
   const channel = peer.createDataChannel("game", { ordered: true });
   client.channel = channel;
 
-  channel.onOpen(() => onHostChannelOpen(clientSocketId, channel, clientPort, sendStatus));
-  channel.onMessage((msg) => onChannelMessage(msg, sendStatus, clientSocketId));
+  channel.onOpen(() => onHostChannelOpen(clientSocketId, channel, clientPort));
+  channel.onMessage((msg) => onChannelMessage(msg, clientSocketId));
 
   setTimeout(() => { peer.setLocalDescription(); }, 200);
 }
 
-function createClientPeer(NDC, sig, roomId, sendStatus) {
+function createClientPeer(NDC, sig, roomId) {
   const peer = new NDC.PeerConnection("RetroLink-Client", {
-    iceServers: ["stun:stun.l.google.com:19302"],
-    iceTransportPolicy: "all"
+    iceServers: ICE_SERVERS,
+    iceTransportPolicy: "all",
   });
   state.peer = peer;
 
@@ -237,126 +247,141 @@ function createClientPeer(NDC, sig, roomId, sendStatus) {
 
   peer.onDataChannel((channel) => {
     state.channel = channel;
-    channel.onOpen(() => onClientChannelOpen(sendStatus));
-    channel.onMessage((msg) => onChannelMessage(msg, sendStatus));
-  });
-
-  peer.onStateChange((s) => {
-    if (s === "failed") sendStatus("❌ Conexión P2P falló.");
-    if (s === "connected") sendStatus("Conexión establecida");
+    channel.onOpen(() => onClientChannelOpen());
+    channel.onMessage((msg) => onChannelMessage(msg));
   });
 }
 
-module.exports = {
-  startBridge: async (roomId, isHost, gameId, sendStatus) => {
-    resetBridge();
-    const game = getGame(gameId);
-    if (!game) throw new Error("Juego no soportado o registrado");
-    
-    state.roomId = roomId;
-    state.isHost = isHost;
-    state.currentGame = game;
-    
-    if (isHost) state.hostIP = getLocalIP();
-    
-    const NDC = require("node-datachannel");
-    sendStatus("Iniciando conexión...");
+// ✅ FUNCIÓN PRINCIPAL startBridge (sin gameId)
+async function startBridge(roomId, isHost) {
+  resetBridge();
 
-    const sig = socketClient(SIGNALING_URL, {
-      transports: ["websocket"],
-      reconnection: false,
+  state.roomId = roomId;
+  state.isHost = isHost;
+
+  const NDC = require("node-datachannel");
+
+  console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
+
+  const sig = socketClient(SIGNALING_URL, {
+    transports: ["websocket"],
+    reconnection: false,
+  });
+  state.signalingSocket = sig;
+
+  sig.on("connect_error", (err) => {
+    console.error("[Bridge] Signaling error:", err.message);
+  });
+
+  sig.on("connect", () => {
+    console.log("[Bridge] Signaling connected:", sig.id);
+
+    if (isHost) {
+      state.hostIP = getLocalIP();
+      console.log(`[Bridge] Host IP: ${state.hostIP}`);
+    }
+
+    sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP });
+  });
+
+  sig.on("webrtc-host-ip", ({ hostIP }) => {
+    if (!isHost) {
+      state.hostIP = hostIP;
+      console.log(`[Bridge] Host IP received: ${hostIP}`);
+    }
+  });
+
+  sig.on("webrtc-peer-ready", ({ fromSocketId } = {}) => {
+    if (!isHost) return;
+    const clientSocketId = fromSocketId || "unknown";
+    if (state.clients.has(clientSocketId)) return;
+
+    const clientPort = getNextClientPort();
+    if (!clientPort) {
+      console.warn("[Bridge] Sala llena");
+      return;
+    }
+
+    console.log(`[Bridge] New client ${clientSocketId} → port ${clientPort}`);
+
+    state.clients.set(clientSocketId, {
+      peer: null,
+      channel: null,
+      udpProxy: null,
+      clientPort,
+      pendingCandidates: [],
+      remoteDescSet: false,
     });
-    state.signalingSocket = sig;
 
-    sig.on("connect_error", () => sendStatus("Error al conectar al servidor de señales."));
+    createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
+  });
 
-    sig.on("connect", () => {
-      sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP }, () => {
-        sendStatus(isHost ? "Esperando jugadores..." : "Buscando host de la sala...");
-      });
-    });
+  sig.on("webrtc-client-port", ({ port }) => {
+    if (isHost) return;
+    state.clientPort = port;
+    console.log(`[Bridge] Assigned client port: ${port}`);
+  });
 
-    sig.on("webrtc-host-ip", ({ hostIP }) => {
-      if (!isHost) state.hostIP = hostIP;
-    });
+  sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId }) => {
+    try {
+      if (isHost) {
+        const client = state.clients.get(fromSocketId);
+        if (!client) return;
 
-    sig.on("webrtc-peer-ready", ({ fromSocketId } = {}) => {
-      if (!isHost) return;
-      const clientSocketId = fromSocketId || "unknown";
-      if (state.clients.has(clientSocketId)) return;
-
-      const clientPort = getNextClientPort(game);
-      if (!clientPort) return console.warn("[Bridge] Sala llena.");
-
-      state.clients.set(clientSocketId, {
-        peer: null, channel: null, udpProxy: null, clientPort, pendingCandidates: [], remoteDescSet: false
-      });
-
-      createHostPeer(NDC, sig, roomId, clientSocketId, clientPort, sendStatus);
-    });
-
-    sig.on("webrtc-client-port", ({ port }) => {
-      if (isHost) return;
-      state.clientPort = port;
-    });
-
-    sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId }) => {
-      try {
-        if (isHost) {
-          const client = state.clients.get(fromSocketId);
-          if (!client) return;
-
-          if (type === "answer") {
-            client.peer.setRemoteDescription(sdp, "answer");
-            client.remoteDescSet = true;
-            flushCandidates(fromSocketId);
-          } else if (type === "candidate") {
-            if (client.peer && client.remoteDescSet) {
-              try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
-            } else {
-              client.pendingCandidates.push({ candidate, mid });
-            }
-          }
-        } else {
-          if (type === "offer") {
-            if (!state.peer) createClientPeer(NDC, sig, roomId, sendStatus);
-            state.peer.setRemoteDescription(sdp, "offer");
-            state.remoteDescSet = true;
-            flushCandidates();
-
-            setTimeout(() => {
-              try { state.peer.setLocalDescription(); } catch (err) {}
-            }, 500);
-          } else if (type === "candidate") {
-            if (state.peer && state.remoteDescSet) {
-              try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
-            } else {
-              state.pendingCandidates.push({ candidate, mid });
-            }
+        if (type === "answer") {
+          client.peer.setRemoteDescription(sdp, "answer");
+          client.remoteDescSet = true;
+          flushCandidates(fromSocketId);
+        } else if (type === "candidate") {
+          if (client.peer && client.remoteDescSet) {
+            try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+          } else {
+            client.pendingCandidates.push({ candidate, mid });
           }
         }
-      } catch (err) { console.error(err); }
-    });
+      } else {
+        if (type === "offer") {
+          if (!state.peer) createClientPeer(NDC, sig, roomId);
+          state.peer.setRemoteDescription(sdp, "offer");
+          state.remoteDescSet = true;
+          flushCandidates();
 
-    sig.on("webrtc-client-left", ({ socketId: leftSocketId }) => {
-      if (!isHost) return;
-      const client = state.clients.get(leftSocketId);
-      if (!client) return;
+          setTimeout(() => {
+            try { state.peer.setLocalDescription(); } catch (err) {}
+          }, 500);
+        } else if (type === "candidate") {
+          if (state.peer && state.remoteDescSet) {
+            try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+          } else {
+            state.pendingCandidates.push({ candidate, mid });
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[Bridge] Signal error:", err.message);
+    }
+  });
 
-      try { client.channel?.close(); } catch(e) {}
-      try { client.peer?.close(); } catch(e) {}
-      try { client.udpProxy?.close(); } catch(e) {}
-      clearInterval(keepAliveIntervals.get(leftSocketId));
-      state.clients.delete(leftSocketId);
+  sig.on("webrtc-client-left", ({ socketId: leftSocketId }) => {
+    if (!isHost) return;
+    const client = state.clients.get(leftSocketId);
+    if (!client) return;
 
-      const remaining = state.clients.size;
-      sendStatus(remaining > 0 ? `${remaining} jugador(es) en sala` : "Esperando jugadores...");
-    });
+    try { client.channel?.close(); } catch(e) {}
+    try { client.peer?.close(); } catch(e) {}
+    try { client.udpProxy?.close(); } catch(e) {}
+    const interval = keepAliveIntervals.get(leftSocketId);
+    if (interval) { clearInterval(interval); keepAliveIntervals.delete(leftSocketId); }
+    state.clients.delete(leftSocketId);
+  });
 
-    console.log(`[Bridge] Tunnel running dynamically for ${game.name}`);
-    return { success: true };
-  },
-  stopBridge: () => { resetBridge(); },
+  console.log(`[Bridge] Tunnel running`);
+  return { success: true };
+}
+
+module.exports = {
+  startBridge,
+  resetBridge,
   getClientPort: () => state.clientPort,
   getHostIP: () => state.hostIP
 };

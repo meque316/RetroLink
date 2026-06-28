@@ -2,13 +2,30 @@ const { ipcMain, dialog, BrowserWindow } = require("electron");
 const path = require("path");
 const os = require("os"); 
 const { execFile } = require("child_process");
-const { getGame } = require("../games");
-// Asegúrate de que esta ruta hacia relay.js sea la correcta en tu proyecto
-const { startBridge, stopBridge, getClientPort } = require("../bridge/relay");
+
+// ✅ CORREGIDO: Los juegos están en electron/games/
+const gamesPath = path.join(__dirname, '../games/index.js');
+console.log('[Handlers] Cargando juegos desde:', gamesPath);
+const { getGame, listGames } = require(gamesPath);
+
+const { startBridge, resetBridge, getClientPort } = require("../bridge/relay");
 const { allowFirewall, checkPort, openUPnP, closeUPnP } = require("../network/utils");
 
 let gameProcess = null;
 let savedHostIP = null;
+
+const GAME_ID_MAP = {
+  'cs16': 'cs16',
+  'counter-strike': 'cs16',
+  'counter-strike 1.6': 'cs16',
+  'cs': 'cs16',
+  'quake3': 'quake3',
+  'quake': 'quake3',
+  'quake 3': 'quake3',
+  'quake iii': 'quake3',
+  'quake iii arena': 'quake3',
+  'q3': 'quake3'
+};
 
 function registerIPCHandlers() {
   ipcMain.handle("select-game-exe", async () => {
@@ -27,18 +44,18 @@ function registerIPCHandlers() {
     return { portAvailable, upnpSuccess: upnp.success, port: targetPort };
   });
 
-  // CORREGIDO: Mapeo de argumentos exacto hacia relay.js y callback dinámico por evento
-  ipcMain.handle("start-relay", async (event, roomId, isHost, gameId) => {
+  // ✅ start-relay SIMPLIFICADO (sin gameId)
+  ipcMain.handle("start-relay", async (event, roomId, isHost) => {
     try {
-      // Creamos el sendStatus usando el sender específico que gatilló este evento
+      console.log('[Handlers] start-relay llamado:', { roomId, isHost });
+      
       const sendStatus = (msg) => {
         if (!event.sender.isDestroyed()) {
           event.sender.send("bridge-status-update", msg);
         }
       };
 
-      // Invocamos pasándole los 4 argumentos requeridos por relay.js
-      const res = await startBridge(roomId, isHost, gameId, sendStatus);
+      const res = await startBridge(roomId, isHost);
       return res;
     } catch (err) {
       console.error("[Handlers] Error en start-relay:", err.message);
@@ -46,48 +63,79 @@ function registerIPCHandlers() {
     }
   });
 
+  // ✅ launch-game - EXACTAMENTE IGUAL QUE EL MONOLÍTICO
   ipcMain.handle("launch-game", async (_, gamePath, hostIp, roomId, isHost, gameId, extraArgs = []) => {
     if (!gamePath) return { success: false, error: "No game path provided" };
-    const game = getGame(gameId);
-    if (!game) return { success: false, error: "Invalid game engine" };
 
     try {
       const gameDir = path.dirname(gamePath);
-      allowFirewall(gamePath, `RetroLink ${game.name}`);
+      allowFirewall(gamePath, "RetroLink Game");
 
-      const args = isHost 
-        ? game.getHostArgs(extraArgs) 
-        : game.getClientArgs(getClientPort() || game.clientPortBase, extraArgs);
+      // ✅ USAR EXACTAMENTE LOS MISMOS ARGUMENTOS QUE EN LA VERSIÓN MONOLÍTICA
+      let args = [...(extraArgs || [])];
 
-      console.log(`[Game Launcher] Executing ${game.name} with flags: ${args.join(" ")}`);
-      
-      gameProcess = execFile(gamePath, args, { cwd: gameDir }, (err) => {
+      if (isHost) {
+        // ✅ ARGUMENTOS DEL HOST - IGUAL QUE EL MONOLÍTICO
+        args = [
+          "+set", "net_port", "27960",
+          "+set", "sv_lanForce", "1",
+          "+set", "sv_strictAuth", "0",
+          "+set", "sv_pure", "0",
+          ...args  // ← Los extraArgs se agregan al final (como en el monolítico)
+        ];
+        console.log(`[Game Launcher] Host args: ${args.join(" ")}`);
+      } else {
+        // ✅ ARGUMENTOS DEL CLIENTE - IGUAL QUE EL MONOLÍTICO
+        const port = getClientPort() || 27961;
+        args = [
+          "+connect", `127.0.0.1:${port}`,
+          ...args
+        ];
+        console.log(`[Game Launcher] Client connecting to bridge at 127.0.0.1:${port}`);
+      }
+
+      console.log(`[Game Launcher] Executing ${gamePath} with args: ${args.join(" ")}`);
+
+      // ✅ EJECUTAR EXACTAMENTE IGUAL QUE EL MONOLÍTICO
+      const proc = execFile(gamePath, args, { cwd: gameDir }, (err) => {
         if (err && err.code !== null) console.error("[Game Process Error]:", err.message);
       });
 
-      gameProcess.on("close", () => {
-        if (isHost) {
-          const wins = BrowserWindow.getAllWindows();
-          if (wins[0] && !wins[0].webContents.isDestroyed()) {
-            wins[0].webContents.send("host-game-closed", { roomId });
+      gameProcess = proc;
+
+      // ✅ MANEJAR EL CIERRE IGUAL QUE EL MONOLÍTICO
+      if (isHost && roomId) {
+        proc.on("close", () => {
+          console.log("[Game] Host closed game — notifying clients");
+          const win = BrowserWindow.getAllWindows()[0];
+          if (win && !win.webContents.isDestroyed()) {
+            win.webContents.send("host-game-closed", { roomId });
           }
-        }
-        gameProcess = null;
-      });
+          gameProcess = null;
+        });
+      } else {
+        proc.on("close", () => {
+          gameProcess = null;
+        });
+      }
 
       return { success: true };
     } catch (err) {
+      console.error("[Handlers] Error en launch-game:", err);
       return { success: false, error: err.message };
     }
   });
 
   ipcMain.handle("stop-relay", async () => {
-    stopBridge();
+    resetBridge();
     return { success: true };
   });
 
   ipcMain.handle("kill-game", async () => {
-    if (gameProcess) { gameProcess.kill(); gameProcess = null; }
+    if (gameProcess) { 
+      try { gameProcess.kill(); } catch(e) {}
+      gameProcess = null; 
+    }
     return { success: true };
   });
 
