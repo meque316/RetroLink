@@ -133,7 +133,7 @@ function Room({ room, leaveRoom }) {
   }, []);
 
   /*
-  START RELAY - ✅ CON MEJOR MANEJO DE ESTADOS
+  START RELAY - ✅ AHORA CON gameId
   */
   useEffect(() => {
     let isMounted = true;
@@ -145,7 +145,9 @@ function Room({ room, leaveRoom }) {
       setRelayStep("Iniciando conexión...");
       
       try {
-        const result = await window.retroLink?.startRelay(room.id, isHost);
+        // ✅ PASAR gameId al startRelay
+        console.log(`[Room] Iniciando relay con gameId: ${room.game}`);
+        const result = await window.retroLink?.startRelay(room.id, isHost, room.game);
         
         if (!isMounted) return;
         
@@ -224,10 +226,18 @@ function Room({ room, leaveRoom }) {
       }
     };
 
+    // ✅ Manejador de detección de juego
+    const handleGameDetected = (game) => {
+      if (!isMounted) return;
+      console.log("[Room] Juego detectado:", game);
+      setRelayStep(`Juego: ${game.name} (puerto: ${game.defaultPort})`);
+    };
+
     // ✅ Registrar listeners
     window.retroLink?.onBridgeStatus?.(handleBridgeStatus);
     window.retroLink?.onBridgeReady?.(handleBridgeReady);
     window.retroLink?.onHostIPReceived?.(handleHostIP);
+    window.retroLink?.onGameDetected?.(handleGameDetected);
     
     // Listener de socket para cuando alguien no tiene el juego
     socket.on("player-missing-game", handlePlayerMissingGame);
@@ -238,9 +248,10 @@ function Room({ room, leaveRoom }) {
       window.retroLink?.offBridgeStatus?.();
       window.retroLink?.offBridgeReady?.();
       window.retroLink?.offHostIPReceived?.();
+      window.retroLink?.offGameDetected?.();
       socket.off("player-missing-game", handlePlayerMissingGame);
     };
-  }, [room.id, isHost, currentUser.username]);
+  }, [room.id, isHost, room.game, currentUser.username]); // ✅ Agregar room.game a dependencias
 
   const handleIPSelect = async (ip) => {
     setSelectedIP(ip);
@@ -264,7 +275,7 @@ function Room({ room, leaveRoom }) {
     const handleReadyState = (playersReady) => setReadyPlayers(playersReady);
 
     const handleMatchStarted = async (data) => {
-      console.log("[Room] 🎮 Match started!", { gamePath, isHost, hostIP });
+      console.log("[Room] 🎮 Match started!", { gamePath, isHost, hostIP, gameId: room.game });
       
       if (!gamePath) { 
         console.warn("[Room] No game path selected"); 
@@ -275,11 +286,13 @@ function Room({ room, leaveRoom }) {
       try {
         if (isHost) {
           console.log("[Room] Launching as HOST");
-          await window.retroLink?.launchGame(gamePath, null, room.id, true, null, []);
+          // ✅ PASAR gameId
+          await window.retroLink?.launchGame(gamePath, null, room.id, true, room.game, []);
         } else {
           const ipToUse = hostIP || '127.0.0.1';
           console.log(`[Room] Launching as CLIENT, connecting to: ${ipToUse}`);
-          await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, null, []);
+          // ✅ PASAR gameId
+          await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, room.game, []);
         }
       } catch (error) {
         console.error("[Room] Error launching game:", error);
@@ -329,7 +342,7 @@ function Room({ room, leaveRoom }) {
       socket.off("room-chat", handleChatMessage);
       window.retroLink?.offHostGameClosed?.();
     };
-  }, [room.id, leaveRoom, gamePath, isHost, hostIP]);
+  }, [room.id, leaveRoom, gamePath, isHost, hostIP, room.game]); // ✅ Agregar room.game a dependencias
 
   const handleBrowseGame = async () => {
     try {

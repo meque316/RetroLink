@@ -14,11 +14,21 @@ const { allowFirewall, checkPort, openUPnP, closeUPnP } = require("../network/ut
 let gameProcess = null;
 let savedHostIP = null;
 
+// ✅ Mapa de IDs de juegos
 const GAME_ID_MAP = {
+  // CS 1.6
   'cs16': 'cs16',
   'counter-strike': 'cs16',
   'counter-strike 1.6': 'cs16',
   'cs': 'cs16',
+  'counterstrike': 'cs16',
+  'cstrike': 'cs16',
+  'cs1.6': 'cs16',
+  'cs 1.6': 'cs16',
+  'counter strike': 'cs16',
+  'counter strike 1.6': 'cs16',
+  
+  // Quake 3
   'quake3': 'quake3',
   'quake': 'quake3',
   'quake 3': 'quake3',
@@ -44,10 +54,10 @@ function registerIPCHandlers() {
     return { portAvailable, upnpSuccess: upnp.success, port: targetPort };
   });
 
-  // ✅ start-relay SIMPLIFICADO (sin gameId)
-  ipcMain.handle("start-relay", async (event, roomId, isHost) => {
+  // ✅ start-relay - AHORA CON gameId
+  ipcMain.handle("start-relay", async (event, roomId, isHost, gameId) => {
     try {
-      console.log('[Handlers] start-relay llamado:', { roomId, isHost });
+      console.log('[Handlers] start-relay llamado:', { roomId, isHost, gameId });
       
       const sendStatus = (msg) => {
         if (!event.sender.isDestroyed()) {
@@ -55,7 +65,8 @@ function registerIPCHandlers() {
         }
       };
 
-      const res = await startBridge(roomId, isHost);
+      // ✅ Pasar gameId al bridge
+      const res = await startBridge(roomId, isHost, gameId);
       return res;
     } catch (err) {
       console.error("[Handlers] Error en start-relay:", err.message);
@@ -63,7 +74,7 @@ function registerIPCHandlers() {
     }
   });
 
-  // ✅ launch-game - EXACTAMENTE IGUAL QUE EL MONOLÍTICO
+  // ✅ launch-game - CON SOPORTE PARA MÚLTIPLES JUEGOS
   ipcMain.handle("launch-game", async (_, gamePath, hostIp, roomId, isHost, gameId, extraArgs = []) => {
     if (!gamePath) return { success: false, error: "No game path provided" };
 
@@ -71,42 +82,54 @@ function registerIPCHandlers() {
       const gameDir = path.dirname(gamePath);
       allowFirewall(gamePath, "RetroLink Game");
 
-      // ✅ USAR EXACTAMENTE LOS MISMOS ARGUMENTOS QUE EN LA VERSIÓN MONOLÍTICA
-      let args = [...(extraArgs || [])];
+      // ✅ Normalizar gameId
+      const normalizedGameId = GAME_ID_MAP[gameId?.toLowerCase?.()] || gameId;
+      const game = getGame(normalizedGameId);
+      
+      let args = [];
+      let gameName = "Desconocido";
 
-      if (isHost) {
-        // ✅ ARGUMENTOS DEL HOST - IGUAL QUE EL MONOLÍTICO
-        args = [
-          "+set", "net_port", "27960",
-          "+set", "sv_lanForce", "1",
-          "+set", "sv_strictAuth", "0",
-          "+set", "sv_pure", "0",
-          ...args  // ← Los extraArgs se agregan al final (como en el monolítico)
-        ];
-        console.log(`[Game Launcher] Host args: ${args.join(" ")}`);
+      if (game) {
+        gameName = game.name;
+        // ✅ Usar argumentos específicos del juego
+        if (isHost) {
+          args = game.getHostArgs(extraArgs || []);
+          console.log(`[Game Launcher] Host args (${gameName}): ${args.join(" ")}`);
+        } else {
+          const port = getClientPort() || game.clientPortBase || 27015;
+          args = game.getClientArgs(port, extraArgs || []);
+          console.log(`[Game Launcher] Client args (${gameName}): ${args.join(" ")}`);
+        }
       } else {
-        // ✅ ARGUMENTOS DEL CLIENTE - IGUAL QUE EL MONOLÍTICO
-        const port = getClientPort() || 27961;
-        args = [
-          "+connect", `127.0.0.1:${port}`,
-          ...args
-        ];
-        console.log(`[Game Launcher] Client connecting to bridge at 127.0.0.1:${port}`);
+        // ✅ Fallback para Quake III (mantener compatibilidad)
+        console.warn(`[Game Launcher] Juego no encontrado: ${gameId}, usando args genéricos (Quake III)`);
+        if (isHost) {
+          args = [
+            "+set", "net_port", "27960",
+            "+set", "sv_lanForce", "1",
+            "+set", "sv_strictAuth", "0",
+            "+set", "sv_pure", "0",
+            ...extraArgs
+          ];
+        } else {
+          const port = getClientPort() || 27961;
+          args = ["+connect", `127.0.0.1:${port}`, ...extraArgs];
+        }
       }
 
       console.log(`[Game Launcher] Executing ${gamePath} with args: ${args.join(" ")}`);
 
-      // ✅ EJECUTAR EXACTAMENTE IGUAL QUE EL MONOLÍTICO
+      // ✅ Ejecutar el juego
       const proc = execFile(gamePath, args, { cwd: gameDir }, (err) => {
         if (err && err.code !== null) console.error("[Game Process Error]:", err.message);
       });
 
       gameProcess = proc;
 
-      // ✅ MANEJAR EL CIERRE IGUAL QUE EL MONOLÍTICO
+      // ✅ Manejar el cierre
       if (isHost && roomId) {
-        proc.on("close", () => {
-          console.log("[Game] Host closed game — notifying clients");
+        proc.on("close", (code) => {
+          console.log(`[Game] Host closed game (${gameName}) — notifying clients, code: ${code}`);
           const win = BrowserWindow.getAllWindows()[0];
           if (win && !win.webContents.isDestroyed()) {
             win.webContents.send("host-game-closed", { roomId });
@@ -114,10 +137,17 @@ function registerIPCHandlers() {
           gameProcess = null;
         });
       } else {
-        proc.on("close", () => {
+        proc.on("close", (code) => {
+          console.log(`[Game] Client game (${gameName}) closed, code: ${code}`);
           gameProcess = null;
         });
       }
+
+      // ✅ Manejar errores del proceso
+      proc.on("error", (err) => {
+        console.error(`[Game] Error ejecutando ${gameName}:`, err.message);
+        gameProcess = null;
+      });
 
       return { success: true };
     } catch (err) {
@@ -133,7 +163,12 @@ function registerIPCHandlers() {
 
   ipcMain.handle("kill-game", async () => {
     if (gameProcess) { 
-      try { gameProcess.kill(); } catch(e) {}
+      try { 
+        gameProcess.kill(); 
+        console.log("[Game] Proceso terminado por kill-game");
+      } catch(e) {
+        console.error("[Game] Error al matar proceso:", e.message);
+      }
       gameProcess = null; 
     }
     return { success: true };
@@ -169,6 +204,22 @@ function registerIPCHandlers() {
 
   ipcMain.handle("get-host-ip", async () => {
     return savedHostIP;
+  });
+
+  // ✅ Nuevo: Obtener estado del bridge
+  ipcMain.handle("get-bridge-state", async () => {
+    try {
+      const { getBridgeState } = require("../bridge/relay");
+      return getBridgeState();
+    } catch (err) {
+      console.error("[IPC] Error getting bridge state:", err);
+      return null;
+    }
+  });
+
+  // ✅ Nuevo: Obtener puerto del cliente
+  ipcMain.handle("get-client-port", async () => {
+    return getClientPort();
   });
 }
 

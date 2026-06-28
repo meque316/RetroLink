@@ -22,7 +22,9 @@ let state = {
   remoteDescSet: false,
   gameProcess: null,
   gameRoomId: null,
-  isBridgeReady: false
+  isBridgeReady: false,
+  currentGame: null,      // ✅ Guardar el juego actual
+  gamePort: 27960         // ✅ Puerto del juego actual
 };
 
 let keepAliveIntervals = new Map();
@@ -81,6 +83,8 @@ function getNextClientPort() {
 
 function resetBridge() {
   state.isBridgeReady = false;
+  state.currentGame = null;
+  state.gamePort = 27960;
   
   for (const [, interval] of keepAliveIntervals) clearInterval(interval);
   keepAliveIntervals.clear();
@@ -117,6 +121,7 @@ function resetBridge() {
 // ✅ FUNCIONES DE PROXY
 function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
+  const gamePort = state.gamePort || 27015;
 
   udpProxy.on("error", (err) => {
     console.error(`[Bridge] Host proxy error (client ${socketId}):`, err.message);
@@ -124,7 +129,7 @@ function createHostUDPProxy(socketId, clientPort, channel) {
 
   udpProxy.bind(0, "127.0.0.1", () => {
     const addr = udpProxy.address();
-    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Q3 port: ${clientPort})`);
+    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Game port: ${gamePort}, Client port: ${clientPort})`);
   });
 
   udpProxy.on("message", (msg) => {
@@ -225,20 +230,23 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
+// ✅ onChannelMessage con puerto dinámico
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
 
+  const gamePort = state.gamePort || 27015;
+
   if (state.isHost) {
     const client = state.clients.get(socketId);
     if (!client?.udpProxy) return;
-    client.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error(`[Bridge] Host→Q3 error:`, err.message);
+    client.udpProxy.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
+      if (err) console.error(`[Bridge] Host→Game error:`, err.message);
     });
   } else {
     if (!state.udpLocal) return;
-    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client→Q3 error:", err.message);
+    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Client→Game error:", err.message);
     });
   }
 }
@@ -309,17 +317,41 @@ function createClientPeer(NDC, sig, roomId) {
   });
 }
 
-// ✅ FUNCIÓN PRINCIPAL startBridge
-async function startBridge(roomId, isHost) {
+// ✅ FUNCIÓN PRINCIPAL startBridge - AHORA CON gameId
+async function startBridge(roomId, isHost, gameId = null) {
   resetBridge();
 
   state.roomId = roomId;
   state.isHost = isHost;
   state.isBridgeReady = false;
 
+  // ✅ Detectar el juego y su puerto
+  if (gameId) {
+    try {
+      const { getGame } = require("../games");
+      const game = getGame(gameId);
+      if (game) {
+        state.currentGame = game;
+        state.gamePort = game.defaultPort || 27015;
+        console.log(`[Bridge] Juego detectado: ${game.name} (puerto: ${state.gamePort})`);
+        sendBridgeStatus(`Conectando a ${game.name}...`);
+      } else {
+        console.warn(`[Bridge] Juego no encontrado: ${gameId}, usando puerto por defecto 27015`);
+        state.gamePort = 27015;
+      }
+    } catch (e) {
+      console.error("[Bridge] Error detectando juego:", e.message);
+      state.gamePort = 27015;
+    }
+  } else {
+    // Fallback: Quake III por defecto
+    state.gamePort = 27960;
+    console.log(`[Bridge] Sin gameId, usando puerto por defecto: ${state.gamePort}`);
+  }
+
   const NDC = require("node-datachannel");
 
-  console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
+  console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}, game port: ${state.gamePort}`);
   sendBridgeStatus(isHost ? "Esperando jugadores..." : "Buscando host...");
 
   const sig = socketClient(SIGNALING_URL, {
@@ -458,7 +490,7 @@ async function startBridge(roomId, isHost) {
     }
   });
 
-  console.log(`[Bridge] Tunnel running`);
+  console.log(`[Bridge] Tunnel running (game port: ${state.gamePort})`);
   return { success: true };
 }
 
@@ -473,6 +505,8 @@ module.exports = {
     roomId: state.roomId,
     clientCount: state.clients.size,
     clientPort: state.clientPort,
-    hostIP: state.hostIP
+    hostIP: state.hostIP,
+    gamePort: state.gamePort,
+    currentGame: state.currentGame
   })
 };
