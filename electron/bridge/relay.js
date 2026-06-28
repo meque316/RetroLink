@@ -1,12 +1,13 @@
 const { io: socketClient } = require("socket.io-client");
 const os = require("os");
 const dgram = require("dgram");
+const { BrowserWindow } = require("electron");
 
 const SIGNALING_URL = "https://retrolink-server.onrender.com";
 const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
-// Estado del bridge (igual que en el monolítico)
+// Estado del bridge
 let state = {
   signalingSocket: null,
   roomId: null,
@@ -20,7 +21,8 @@ let state = {
   pendingCandidates: [],
   remoteDescSet: false,
   gameProcess: null,
-  gameRoomId: null
+  gameRoomId: null,
+  isBridgeReady: false
 };
 
 let keepAliveIntervals = new Map();
@@ -32,6 +34,24 @@ const ICE_SERVERS = [
   "stun:stun3.l.google.com:19302",
   "stun:stun4.l.google.com:19302",
 ];
+
+// ✅ Función para enviar eventos al frontend
+function sendToFrontend(channel, data) {
+  try {
+    const wins = BrowserWindow.getAllWindows();
+    if (wins[0] && !wins[0].webContents.isDestroyed()) {
+      wins[0].webContents.send(channel, data);
+    }
+  } catch (e) {
+    console.error(`[Bridge] Error sending to frontend (${channel}):`, e.message);
+  }
+}
+
+// ✅ Función para enviar estado del bridge
+function sendBridgeStatus(message) {
+  console.log(`[Bridge] Status: ${message}`);
+  sendToFrontend("bridge-status-update", message);
+}
 
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
@@ -60,6 +80,8 @@ function getNextClientPort() {
 }
 
 function resetBridge() {
+  state.isBridgeReady = false;
+  
   for (const [, interval] of keepAliveIntervals) clearInterval(interval);
   keepAliveIntervals.clear();
 
@@ -89,9 +111,10 @@ function resetBridge() {
   state.gameRoomId = null;
 
   console.log("[Bridge] Reset complete");
+  sendBridgeStatus("Bridge reiniciado");
 }
 
-// ✅ FUNCIONES DE PROXY (igual que en el monolítico)
+// ✅ FUNCIONES DE PROXY
 function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
 
@@ -133,19 +156,53 @@ function onHostChannelOpen(socketId, channel, clientPort) {
     }
   }, 10000);
   keepAliveIntervals.set(socketId, interval);
+
+  const connectedCount = [...state.clients.values()].filter(c => c.udpProxy).length;
+  
+  // ✅ Notificar al frontend
+  sendToFrontend("client-connected", { 
+    socketId, 
+    clientPort, 
+    totalPlayers: connectedCount 
+  });
+  
+  sendBridgeStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
+  
+  // ✅ Marcar bridge como listo cuando hay al menos un cliente
+  if (!state.isBridgeReady) {
+    state.isBridgeReady = true;
+    sendToFrontend("bridge-ready", { 
+      connected: true, 
+      players: connectedCount,
+      isHost: true
+    });
+  }
 }
 
 function onClientChannelOpen() {
   console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
+  sendBridgeStatus("¡Conexión P2P establecida! Listos para jugar.");
   
+  // ✅ Notificar al frontend que el bridge está listo (cliente)
+  state.isBridgeReady = true;
+  sendToFrontend("bridge-ready", { 
+    connected: true,
+    isClient: true,
+    port: state.clientPort
+  });
+
   state.udpLocal = dgram.createSocket("udp4");
 
   state.udpLocal.on("error", (err) => {
     console.error("[Bridge] Client UDP error:", err.message);
+    if (err.code === "EADDRINUSE") {
+      sendBridgeStatus(`Puerto ${state.clientPort} ocupado. Cierra el juego o app y reintenta.`);
+    }
   });
 
   state.udpLocal.bind(state.clientPort || CLIENT_PORT_BASE, "127.0.0.1", () => {
     console.log(`[Bridge] Client UDP listening on 127.0.0.1:${state.clientPort || CLIENT_PORT_BASE}`);
+    sendToFrontend("client-port-assigned", state.clientPort || CLIENT_PORT_BASE);
   });
 
   state.udpLocal.on("message", (msg) => {
@@ -252,16 +309,18 @@ function createClientPeer(NDC, sig, roomId) {
   });
 }
 
-// ✅ FUNCIÓN PRINCIPAL startBridge (sin gameId)
+// ✅ FUNCIÓN PRINCIPAL startBridge
 async function startBridge(roomId, isHost) {
   resetBridge();
 
   state.roomId = roomId;
   state.isHost = isHost;
+  state.isBridgeReady = false;
 
   const NDC = require("node-datachannel");
 
   console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
+  sendBridgeStatus(isHost ? "Esperando jugadores..." : "Buscando host...");
 
   const sig = socketClient(SIGNALING_URL, {
     transports: ["websocket"],
@@ -271,14 +330,17 @@ async function startBridge(roomId, isHost) {
 
   sig.on("connect_error", (err) => {
     console.error("[Bridge] Signaling error:", err.message);
+    sendBridgeStatus("Error al conectar al servidor de señales.");
   });
 
   sig.on("connect", () => {
     console.log("[Bridge] Signaling connected:", sig.id);
+    sendBridgeStatus("Conectado al servidor de señales.");
 
     if (isHost) {
       state.hostIP = getLocalIP();
       console.log(`[Bridge] Host IP: ${state.hostIP}`);
+      sendToFrontend("host-ip-received", { hostIP: state.hostIP });
     }
 
     sig.emit("webrtc-join", { roomId, isHost, hostIP: state.hostIP });
@@ -288,6 +350,7 @@ async function startBridge(roomId, isHost) {
     if (!isHost) {
       state.hostIP = hostIP;
       console.log(`[Bridge] Host IP received: ${hostIP}`);
+      sendToFrontend("host-ip-received", { hostIP });
     }
   });
 
@@ -299,10 +362,12 @@ async function startBridge(roomId, isHost) {
     const clientPort = getNextClientPort();
     if (!clientPort) {
       console.warn("[Bridge] Sala llena");
+      sendBridgeStatus("❌ Sala llena - no se pueden conectar más jugadores");
       return;
     }
 
     console.log(`[Bridge] New client ${clientSocketId} → port ${clientPort}`);
+    sendBridgeStatus(`Cliente conectado - puerto ${clientPort}`);
 
     state.clients.set(clientSocketId, {
       peer: null,
@@ -320,6 +385,8 @@ async function startBridge(roomId, isHost) {
     if (isHost) return;
     state.clientPort = port;
     console.log(`[Bridge] Assigned client port: ${port}`);
+    sendToFrontend("client-port-assigned", port);
+    sendBridgeStatus(`Puerto asignado: ${port}`);
   });
 
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId }) => {
@@ -332,6 +399,7 @@ async function startBridge(roomId, isHost) {
           client.peer.setRemoteDescription(sdp, "answer");
           client.remoteDescSet = true;
           flushCandidates(fromSocketId);
+          console.log(`[Bridge] Received answer from ${fromSocketId}`);
         } else if (type === "candidate") {
           if (client.peer && client.remoteDescSet) {
             try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
@@ -367,12 +435,27 @@ async function startBridge(roomId, isHost) {
     const client = state.clients.get(leftSocketId);
     if (!client) return;
 
+    console.log(`[Bridge] Client ${leftSocketId} disconnected`);
+    
     try { client.channel?.close(); } catch(e) {}
     try { client.peer?.close(); } catch(e) {}
     try { client.udpProxy?.close(); } catch(e) {}
     const interval = keepAliveIntervals.get(leftSocketId);
     if (interval) { clearInterval(interval); keepAliveIntervals.delete(leftSocketId); }
     state.clients.delete(leftSocketId);
+
+    const remaining = state.clients.size;
+    sendToFrontend("client-disconnected", { 
+      socketId: leftSocketId, 
+      remainingPlayers: remaining 
+    });
+    
+    if (remaining > 0) {
+      sendBridgeStatus(`${remaining} jugador(es) en sala`);
+    } else {
+      state.isBridgeReady = false;
+      sendBridgeStatus("Esperando jugadores...");
+    }
   });
 
   console.log(`[Bridge] Tunnel running`);
@@ -383,5 +466,13 @@ module.exports = {
   startBridge,
   resetBridge,
   getClientPort: () => state.clientPort,
-  getHostIP: () => state.hostIP
+  getHostIP: () => state.hostIP,
+  getBridgeState: () => ({
+    isReady: state.isBridgeReady,
+    isHost: state.isHost,
+    roomId: state.roomId,
+    clientCount: state.clients.size,
+    clientPort: state.clientPort,
+    hostIP: state.hostIP
+  })
 };

@@ -93,45 +93,93 @@ function Room({ room, leaveRoom }) {
   }, [isHost]);
 
   /*
-  START RELAY - ✅ AHORA SIN gameId
+  START RELAY - ✅ CON MEJOR MANEJO DE ESTADOS
   */
   useEffect(() => {
+    let isMounted = true;
+
     const startRelay = async () => {
+      if (!isMounted) return;
+      
       setRelayStatus(null);
       setRelayStep("Iniciando conexión...");
       
-      // ✅ CORRECCIÓN: startRelay ahora solo recibe roomId e isHost (sin gameId)
-      const result = await window.retroLink?.startRelay(room.id, isHost);
-      
-      if (!result?.success) {
+      try {
+        const result = await window.retroLink?.startRelay(room.id, isHost);
+        
+        if (!isMounted) return;
+        
+        if (!result?.success) {
+          setRelayStatus("error");
+          setRelayStep("No se pudo iniciar el bridge: " + (result?.error || "Error desconocido"));
+        } else {
+          // ✅ El bridge se inició correctamente
+          setRelayStep(isHost ? "Esperando jugadores..." : "Conectando al host...");
+        }
+      } catch (error) {
+        if (!isMounted) return;
         setRelayStatus("error");
-        setRelayStep("No se pudo iniciar el bridge: " + (result?.error || ""));
+        setRelayStep("Error al iniciar el bridge: " + error.message);
       }
     };
 
     startRelay();
 
-    window.retroLink?.onBridgeStatus?.((message) => {
+    // ✅ Manejador de estado del bridge
+    const handleBridgeStatus = (message) => {
+      if (!isMounted) return;
+      
       console.log("[Room] Bridge status:", message);
       setRelayStep(message);
 
-      if (message.includes("Conexión establecida")) {
+      // ✅ Detectar diferentes estados de conexión
+      const lowerMsg = message.toLowerCase();
+      
+      if (lowerMsg.includes("conexión establecida") || 
+          lowerMsg.includes("listos para jugar") ||
+          lowerMsg.includes("conectado") ||
+          lowerMsg.includes("conexión p2p establecida")) {
         setRelayStatus("ok");
+      } else if (lowerMsg.includes("error") || 
+                 lowerMsg.includes("falló") ||
+                 lowerMsg.includes("ocupado")) {
+        setRelayStatus("error");
+      } else if (lowerMsg.includes("esperando jugadores")) {
+        setRelayStatus(null);
       }
-    });
+    };
 
-    window.retroLink?.onHostIPReceived?.((data) => {
+    // ✅ Manejador de "bridge ready" (cuando la conexión P2P está lista)
+    const handleBridgeReady = (data) => {
+      if (!isMounted) return;
+      
+      console.log("[Room] Bridge ready:", data);
+      setRelayStatus("ok");
+      setRelayStep("¡Conexión P2P establecida! Listos para jugar.");
+    };
+
+    // ✅ Manejador de IP del host
+    const handleHostIP = (data) => {
+      if (!isMounted) return;
+      
       console.log("[Room] Host IP received:", data.hostIP);
       setHostIP(data.hostIP);
       setHostIPReceived(true);
-    });
+    };
+
+    // ✅ Registrar listeners
+    window.retroLink?.onBridgeStatus?.(handleBridgeStatus);
+    window.retroLink?.onBridgeReady?.(handleBridgeReady);
+    window.retroLink?.onHostIPReceived?.(handleHostIP);
 
     return () => {
+      isMounted = false;
       window.retroLink?.stopRelay();
       window.retroLink?.offBridgeStatus?.();
+      window.retroLink?.offBridgeReady?.();
       window.retroLink?.offHostIPReceived?.();
     };
-  }, [room.id, isHost]); // ✅ Ya no depende de room.game
+  }, [room.id, isHost]);
 
   const handleIPSelect = async (ip) => {
     setSelectedIP(ip);
@@ -155,32 +203,47 @@ function Room({ room, leaveRoom }) {
     const handleReadyState = (playersReady) => setReadyPlayers(playersReady);
 
     const handleMatchStarted = async (data) => {
+      console.log("[Room] 🎮 Match started!", { gamePath, isHost, hostIP });
+      
       if (!gamePath) { 
-        console.warn("No game path selected"); 
+        console.warn("[Room] No game path selected"); 
+        alert("Por favor selecciona la ruta del juego");
         return; 
       }
 
-      // ✅ CORRECCIÓN: launchGame ahora usa null en lugar de room.game
-      if (isHost) {
-        await window.retroLink?.launchGame(gamePath, null, room.id, true, null, []);
-      } else {
-        const ipToUse = hostIP || '127.0.0.1';
-        console.log(`[Room] Connecting to host at: ${ipToUse}`);
-        await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, null, []);
+      try {
+        if (isHost) {
+          console.log("[Room] Launching as HOST");
+          await window.retroLink?.launchGame(gamePath, null, room.id, true, null, []);
+        } else {
+          const ipToUse = hostIP || '127.0.0.1';
+          console.log(`[Room] Launching as CLIENT, connecting to: ${ipToUse}`);
+          await window.retroLink?.launchGame(gamePath, ipToUse, room.id, false, null, []);
+        }
+      } catch (error) {
+        console.error("[Room] Error launching game:", error);
+        alert("Error al lanzar el juego: " + error.message);
       }
     };
 
-    const handleMatchError = (error) => alert(error.message);
+    const handleMatchError = (error) => {
+      console.error("[Room] Match error:", error);
+      alert(error.message || "Error al iniciar la partida");
+    };
 
     const handleChatMessage = (msg) => {
       setMessages((prev) => [...prev, msg]);
     };
 
-    window.retroLink?.onHostGameClosed(async ({ roomId: closedRoomId }) => {
+    // ✅ Listener para cuando el host cierra el juego
+    const handleHostGameClosed = async ({ roomId: closedRoomId }) => {
       if (closedRoomId !== room.id) return;
+      console.log("[Room] Host game closed");
       await window.retroLink?.killGame();
       socket.emit("toggle-ready", room.id);
-    });
+    };
+
+    window.retroLink?.onHostGameClosed?.(handleHostGameClosed);
 
     socket.on("rooms-list", handleRoomsList);
     socket.on("room-ready-state", handleReadyState);
@@ -194,14 +257,29 @@ function Room({ room, leaveRoom }) {
       socket.off("match-started", handleMatchStarted);
       socket.off("match-error", handleMatchError);
       socket.off("room-chat", handleChatMessage);
-      window.retroLink?.offHostGameClosed();
+      window.retroLink?.offHostGameClosed?.();
     };
-  }, [room.id, leaveRoom, gamePath, isHost, hostIP]); // ✅ Ya no depende de room.game
+  }, [room.id, leaveRoom, gamePath, isHost, hostIP]);
 
   const handleBrowseGame = async () => {
     try {
       const selectedPath = await window.retroLink?.selectGameExe();
-      if (selectedPath) setGamePath(selectedPath);
+      if (selectedPath) {
+        setGamePath(selectedPath);
+        // ✅ Guardar en localStorage para futuras sesiones
+        try {
+          const library = JSON.parse(localStorage.getItem("retrolink_library") || "[]");
+          const existing = library.find((g) => g.id === room.game);
+          if (existing) {
+            existing.exePath = selectedPath;
+          } else {
+            library.push({ id: room.game, exePath: selectedPath });
+          }
+          localStorage.setItem("retrolink_library", JSON.stringify(library));
+        } catch (e) {
+          console.error("Error saving game path:", e);
+        }
+      }
     } catch (error) {
       console.error("Error selecting exe:", error);
     }
@@ -246,15 +324,15 @@ function Room({ room, leaveRoom }) {
       return (
         <div className="flex items-center gap-3 bg-zinc-800/50 border border-zinc-700 rounded-xl px-4 py-3 mb-4 text-sm text-zinc-400">
           <Radio size={15} className="animate-pulse" />
-          <span>{relayStep || "Connecting to relay..."}</span>
+          <span>{relayStep || "Conectando..."}</span>
         </div>
       );
     }
     if (relayStatus === "ok") {
       return (
         <div className="flex items-center gap-3 bg-green-500/10 border border-green-500/30 rounded-xl px-4 py-3 mb-4 text-sm text-green-400">
-          <Radio size={15} />
-          P2P connected — ready to play
+          <Radio size={15} className="text-green-400" />
+          <span className="font-medium">{relayStep || "✅ Conexión P2P establecida"}</span>
         </div>
       );
     }
@@ -262,7 +340,7 @@ function Room({ room, leaveRoom }) {
       <div className="flex flex-col gap-1 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 mb-4 text-sm text-red-400">
         <div className="flex items-center gap-3">
           <Radio size={15} />
-          Connection failed
+          <span className="font-medium">❌ Connection failed</span>
         </div>
         {relayStep && <p className="text-xs text-red-300 pl-6">{relayStep}</p>}
       </div>
