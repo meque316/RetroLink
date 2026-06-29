@@ -74,7 +74,6 @@ function getLocalIP() {
 
 function getNextClientPort() {
   const usedPorts = new Set([...state.clients.values()].map(c => c.clientPort));
-  // ✅ Usar el puerto base del juego actual
   const basePort = state.currentGame?.clientPortBase || CLIENT_PORT_BASE;
   
   for (let i = 0; i < MAX_CLIENTS; i++) {
@@ -121,7 +120,6 @@ function resetBridge() {
   sendBridgeStatus("Bridge reiniciado");
 }
 
-// ✅ FUNCIONES DE PROXY
 function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
   const gamePort = state.gamePort || 27015;
@@ -135,7 +133,6 @@ function createHostUDPProxy(socketId, clientPort, channel) {
     console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Game port: ${gamePort}, Client port: ${clientPort})`);
   });
 
-  // ✅ LOG: Cuando el host recibe paquetes del juego
   udpProxy.on("message", (msg, rinfo) => {
     console.log(`[Bridge] 📩 Host proxy recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
     if (channel?.isOpen()) {
@@ -182,7 +179,8 @@ function onHostChannelOpen(socketId, channel, clientPort) {
     totalPlayers: connectedCount 
   });
   
-  sendBridgeStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
+  const gameName = state.currentGame?.name || "Juego";
+  sendBridgeStatus(`¡${connectedCount} jugador(es) conectado(s) a ${gameName}! Listos para jugar.`);
   
   if (!state.isBridgeReady) {
     state.isBridgeReady = true;
@@ -196,7 +194,9 @@ function onHostChannelOpen(socketId, channel, clientPort) {
 
 function onClientChannelOpen() {
   console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
-  sendBridgeStatus("¡Conexión P2P establecida! Listos para jugar.");
+  
+  const gameName = state.currentGame?.name || "Juego";
+  sendBridgeStatus(`¡Conexión P2P establecida con ${gameName}! Listos para jugar.`);
   
   state.isBridgeReady = true;
   sendToFrontend("bridge-ready", { 
@@ -214,7 +214,6 @@ function onClientChannelOpen() {
     }
   });
 
-  // ✅ Usar el puerto base del juego para el cliente
   const clientPort = state.clientPort || state.currentGame?.clientPortBase || CLIENT_PORT_BASE;
   
   state.udpLocal.bind(clientPort, "127.0.0.1", () => {
@@ -222,13 +221,12 @@ function onClientChannelOpen() {
     sendToFrontend("client-port-assigned", clientPort);
   });
 
-  // ✅ LOG: Cuando el cliente recibe paquetes del juego
   state.udpLocal.on("message", (msg, rinfo) => {
-    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
+    const gamePort = state.gamePort || 27015;
+    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes) → enviando a puerto ${gamePort}`);
     if (state.channel?.isOpen()) {
       try { 
         state.channel.sendMessageBinary(Buffer.from(msg));
-        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
       } catch(e) {
         console.error('[Bridge] Error enviando por DataChannel:', e);
       }
@@ -251,20 +249,14 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
-// ✅ onChannelMessage con logs de depuración
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
   
-  // ✅ Log para ver paquetes que llegan al bridge desde el DataChannel
-  console.log(`[Bridge] 📦 Paquete recibido del DataChannel: ${buf.length} bytes, socketId: ${socketId || 'N/A'}`);
-  
   if (buf.length <= 12 && buf.toString("latin1").includes("ping")) {
-    console.log("[Bridge] Ping ignorado");
     return;
   }
 
   const gamePort = state.gamePort || 27015;
-  console.log(`[Bridge] Enviando paquete a puerto ${gamePort}`);
 
   if (state.isHost) {
     const client = state.clients.get(socketId);
@@ -301,6 +293,31 @@ function flushCandidates(socketId = null) {
     });
     state.pendingCandidates = [];
   }
+}
+
+function handleNewClient(clientSocketId, NDC, sig, roomId) {
+  if (state.clients.has(clientSocketId)) return;
+
+  const clientPort = getNextClientPort();
+  if (!clientPort) {
+    console.warn("[Bridge] Sala llena");
+    sendBridgeStatus("❌ Sala llena - no se pueden conectar más jugadores");
+    return;
+  }
+
+  console.log(`[Bridge] New client ${clientSocketId} → port ${clientPort}`);
+  sendBridgeStatus(`Cliente conectado - puerto ${clientPort}`);
+
+  state.clients.set(clientSocketId, {
+    peer: null,
+    channel: null,
+    udpProxy: null,
+    clientPort,
+    pendingCandidates: [],
+    remoteDescSet: false,
+  });
+
+  createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
 }
 
 function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
@@ -352,7 +369,6 @@ function createClientPeer(NDC, sig, roomId) {
   });
 }
 
-// ✅ FUNCIÓN PRINCIPAL startBridge
 async function startBridge(roomId, isHost, gameId = null) {
   resetBridge();
 
@@ -360,7 +376,7 @@ async function startBridge(roomId, isHost, gameId = null) {
   state.isHost = isHost;
   state.isBridgeReady = false;
 
-  // ✅ Detectar el juego y su puerto
+  // ✅ Detectar juego primero
   if (gameId) {
     try {
       const { getGame } = require("../games");
@@ -369,16 +385,22 @@ async function startBridge(roomId, isHost, gameId = null) {
         state.currentGame = game;
         state.gamePort = game.defaultPort || 27015;
         console.log(`[Bridge] Juego detectado: ${game.name} (puerto: ${state.gamePort})`);
+        console.log(`[Bridge] ClientPortBase: ${game.clientPortBase || CLIENT_PORT_BASE}`);
         sendBridgeStatus(`Conectando a ${game.name}...`);
+        sendToFrontend("game-detected", game);
+        sendToFrontend("game-port-detected", state.gamePort);
       } else {
         console.warn(`[Bridge] Juego no encontrado: ${gameId}, usando puerto por defecto 27015`);
+        state.currentGame = { clientPortBase: CLIENT_PORT_BASE };
         state.gamePort = 27015;
       }
     } catch (e) {
       console.error("[Bridge] Error detectando juego:", e.message);
+      state.currentGame = { clientPortBase: CLIENT_PORT_BASE };
       state.gamePort = 27015;
     }
   } else {
+    state.currentGame = { clientPortBase: CLIENT_PORT_BASE };
     state.gamePort = 27960;
     console.log(`[Bridge] Sin gameId, usando puerto por defecto: ${state.gamePort}`);
   }
@@ -423,28 +445,21 @@ async function startBridge(roomId, isHost, gameId = null) {
   sig.on("webrtc-peer-ready", ({ fromSocketId } = {}) => {
     if (!isHost) return;
     const clientSocketId = fromSocketId || "unknown";
-    if (state.clients.has(clientSocketId)) return;
-
-    const clientPort = getNextClientPort();
-    if (!clientPort) {
-      console.warn("[Bridge] Sala llena");
-      sendBridgeStatus("❌ Sala llena - no se pueden conectar más jugadores");
+    
+    if (!state.currentGame) {
+      console.warn("[Bridge] Juego no detectado aún, esperando 500ms...");
+      setTimeout(() => {
+        if (state.currentGame) {
+          handleNewClient(clientSocketId, NDC, sig, roomId);
+        } else {
+          console.error("[Bridge] No se pudo detectar el juego para asignar puerto");
+          sendBridgeStatus("❌ Error: Juego no detectado");
+        }
+      }, 500);
       return;
     }
-
-    console.log(`[Bridge] New client ${clientSocketId} → port ${clientPort}`);
-    sendBridgeStatus(`Cliente conectado - puerto ${clientPort}`);
-
-    state.clients.set(clientSocketId, {
-      peer: null,
-      channel: null,
-      udpProxy: null,
-      clientPort,
-      pendingCandidates: [],
-      remoteDescSet: false,
-    });
-
-    createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
+    
+    handleNewClient(clientSocketId, NDC, sig, roomId);
   });
 
   sig.on("webrtc-client-port", ({ port }) => {
@@ -452,7 +467,9 @@ async function startBridge(roomId, isHost, gameId = null) {
     state.clientPort = port;
     console.log(`[Bridge] Assigned client port: ${port}`);
     sendToFrontend("client-port-assigned", port);
-    sendBridgeStatus(`Puerto asignado: ${port}`);
+    
+    const gameName = state.currentGame?.name || "Juego";
+    sendBridgeStatus(`Puerto ${port} asignado para ${gameName}`);
   });
 
   sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId }) => {
