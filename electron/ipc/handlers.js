@@ -3,7 +3,6 @@ const path = require("path");
 const os = require("os"); 
 const { execFile } = require("child_process");
 
-// ✅ CORREGIDO: Los juegos están en electron/games/
 const gamesPath = path.join(__dirname, '../games/index.js');
 console.log('[Handlers] Cargando juegos desde:', gamesPath);
 const { getGame, listGames } = require(gamesPath);
@@ -14,9 +13,7 @@ const { allowFirewall, checkPort, openUPnP, closeUPnP } = require("../network/ut
 let gameProcess = null;
 let savedHostIP = null;
 
-// ✅ Mapa de IDs de juegos
 const GAME_ID_MAP = {
-  // CS 1.6
   'cs16': 'cs16',
   'counter-strike': 'cs16',
   'counter-strike 1.6': 'cs16',
@@ -28,7 +25,6 @@ const GAME_ID_MAP = {
   'counter strike': 'cs16',
   'counter strike 1.6': 'cs16',
   
-  // Quake 3
   'quake3': 'quake3',
   'quake': 'quake3',
   'quake 3': 'quake3',
@@ -54,7 +50,6 @@ function registerIPCHandlers() {
     return { portAvailable, upnpSuccess: upnp.success, port: targetPort };
   });
 
-  // ✅ start-relay - AHORA CON gameId
   ipcMain.handle("start-relay", async (event, roomId, isHost, gameId) => {
     try {
       console.log('[Handlers] start-relay llamado:', { roomId, isHost, gameId });
@@ -65,7 +60,6 @@ function registerIPCHandlers() {
         }
       };
 
-      // ✅ Pasar gameId al bridge
       const res = await startBridge(roomId, isHost, gameId);
       return res;
     } catch (err) {
@@ -74,7 +68,6 @@ function registerIPCHandlers() {
     }
   });
 
-  // ✅ launch-game - CON SOPORTE PARA MÚLTIPLES JUEGOS
   ipcMain.handle("launch-game", async (_, gamePath, hostIp, roomId, isHost, gameId, extraArgs = []) => {
     if (!gamePath) return { success: false, error: "No game path provided" };
 
@@ -82,7 +75,6 @@ function registerIPCHandlers() {
       const gameDir = path.dirname(gamePath);
       allowFirewall(gamePath, "RetroLink Game");
 
-      // ✅ Normalizar gameId
       const normalizedGameId = GAME_ID_MAP[gameId?.toLowerCase?.()] || gameId;
       const game = getGame(normalizedGameId);
       
@@ -91,7 +83,6 @@ function registerIPCHandlers() {
 
       if (game) {
         gameName = game.name;
-        // ✅ Usar argumentos específicos del juego
         if (isHost) {
           args = game.getHostArgs(extraArgs || []);
           console.log(`[Game Launcher] Host args (${gameName}): ${args.join(" ")}`);
@@ -101,7 +92,6 @@ function registerIPCHandlers() {
           console.log(`[Game Launcher] Client args (${gameName}): ${args.join(" ")}`);
         }
       } else {
-        // ✅ Fallback para Quake III (mantener compatibilidad)
         console.warn(`[Game Launcher] Juego no encontrado: ${gameId}, usando args genéricos (Quake III)`);
         if (isHost) {
           args = [
@@ -119,14 +109,12 @@ function registerIPCHandlers() {
 
       console.log(`[Game Launcher] Executing ${gamePath} with args: ${args.join(" ")}`);
 
-      // ✅ Ejecutar el juego
       const proc = execFile(gamePath, args, { cwd: gameDir }, (err) => {
         if (err && err.code !== null) console.error("[Game Process Error]:", err.message);
       });
 
       gameProcess = proc;
 
-      // ✅ Manejar el cierre
       if (isHost && roomId) {
         proc.on("close", (code) => {
           console.log(`[Game] Host closed game (${gameName}) — notifying clients, code: ${code}`);
@@ -143,7 +131,6 @@ function registerIPCHandlers() {
         });
       }
 
-      // ✅ Manejar errores del proceso
       proc.on("error", (err) => {
         console.error(`[Game] Error ejecutando ${gameName}:`, err.message);
         gameProcess = null;
@@ -206,7 +193,6 @@ function registerIPCHandlers() {
     return savedHostIP;
   });
 
-  // ✅ Nuevo: Obtener estado del bridge
   ipcMain.handle("get-bridge-state", async () => {
     try {
       const { getBridgeState } = require("../bridge/relay");
@@ -217,7 +203,6 @@ function registerIPCHandlers() {
     }
   });
 
-  // ✅ Nuevo: Obtener puerto del cliente
   ipcMain.handle("get-client-port", async () => {
     return getClientPort();
   });

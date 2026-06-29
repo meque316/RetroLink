@@ -3,7 +3,6 @@ const {
   ipcRenderer,
 } = require("electron");
 
-// ✅ Exponer API segura al frontend
 contextBridge.exposeInMainWorld(
   "retroLink",
   {

@@ -3,7 +3,7 @@ module.exports = {
   id: 'cs16',
   name: 'Counter-Strike 1.6',
   defaultPort: 27015,
-  clientPortBase: 27016,  // ✅ Los clientes usan puertos desde 27016 en adelante
+  clientPortBase: 27016,
   
   getHostArgs(extraArgs = []) {
     return [
@@ -45,7 +45,7 @@ module.exports = {
     return [
       '-console',
       '-game', 'cstrike',
-      '+connect', `127.0.0.1:${this.defaultPort}`, // ✅ Auto-conectar al servidor
+      '+connect', `127.0.0.1:${this.defaultPort}`,
       '+port', port.toString(),
       '+rate', '25000',
       '+cl_updaterate', '20',
@@ -55,6 +55,8 @@ module.exports = {
       '+cl_showfps', '1',
       '+developer', '0',
       '+condebug', '0',
+      '+sv_lan', '1',
+      '+ip', '127.0.0.1',
       ...extraArgs
     ];
   }

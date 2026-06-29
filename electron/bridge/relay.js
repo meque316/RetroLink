@@ -7,7 +7,6 @@ const SIGNALING_URL = "https://retrolink-server.onrender.com";
 const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
-// Estado del bridge
 let state = {
   signalingSocket: null,
   roomId: null,
@@ -24,7 +23,9 @@ let state = {
   gameRoomId: null,
   isBridgeReady: false,
   currentGame: null,
-  gamePort: 27960
+  gamePort: 27960,
+  // ✅ Guardar el puerto del cliente CS 1.6 (27005)
+  clientGamePort: 27005
 };
 
 let keepAliveIntervals = new Map();
@@ -37,19 +38,18 @@ const ICE_SERVERS = [
   "stun:stun4.l.google.com:19302",
 ];
 
-// ✅ Función para enviar eventos al frontend
 function sendToFrontend(channel, data) {
   try {
     const wins = BrowserWindow.getAllWindows();
     if (wins[0] && !wins[0].webContents.isDestroyed()) {
-      wins[0].webContents.send(channel, data);
+      const serializableData = JSON.parse(JSON.stringify(data || {}));
+      wins[0].webContents.send(channel, serializableData);
     }
   } catch (e) {
     console.error(`[Bridge] Error sending to frontend (${channel}):`, e.message);
   }
 }
 
-// ✅ Función para enviar estado del bridge
 function sendBridgeStatus(message) {
   console.log(`[Bridge] Status: ${message}`);
   sendToFrontend("bridge-status-update", message);
@@ -87,6 +87,7 @@ function resetBridge() {
   state.isBridgeReady = false;
   state.currentGame = null;
   state.gamePort = 27960;
+  state.clientGamePort = 27005;
   
   for (const [, interval] of keepAliveIntervals) clearInterval(interval);
   keepAliveIntervals.clear();
@@ -214,19 +215,20 @@ function onClientChannelOpen() {
     }
   });
 
-  const clientPort = state.clientPort || state.currentGame?.clientPortBase || CLIENT_PORT_BASE;
+  // ✅ El cliente escucha en 27015 (el puerto del juego)
+  const listenPort = state.currentGame?.defaultPort || 27015;
   
-  state.udpLocal.bind(clientPort, "127.0.0.1", () => {
-    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${clientPort}`);
-    sendToFrontend("client-port-assigned", clientPort);
+  state.udpLocal.bind(listenPort, "127.0.0.1", () => {
+    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${listenPort} (redirigiendo al host)`);
+    sendToFrontend("client-port-assigned", listenPort);
   });
 
   state.udpLocal.on("message", (msg, rinfo) => {
-    const gamePort = state.gamePort || 27015;
-    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes) → enviando a puerto ${gamePort}`);
+    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
     if (state.channel?.isOpen()) {
       try { 
         state.channel.sendMessageBinary(Buffer.from(msg));
+        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
       } catch(e) {
         console.error('[Bridge] Error enviando por DataChannel:', e);
       }
@@ -256,9 +258,8 @@ function onChannelMessage(msg, socketId = null) {
     return;
   }
 
-  const gamePort = state.gamePort || 27015;
-
   if (state.isHost) {
+    const gamePort = state.gamePort || 27015;
     const client = state.clients.get(socketId);
     if (!client?.udpProxy) {
       console.warn(`[Bridge] No hay proxy para cliente ${socketId}`);
@@ -272,7 +273,10 @@ function onChannelMessage(msg, socketId = null) {
       console.warn("[Bridge] No hay UDP local");
       return;
     }
-    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
+    // ✅ CS 1.6 CLIENTE ESCUCHA EN EL PUERTO 27005
+    const clientGamePort = 27005;
+    console.log(`[Bridge] 📤 Enviando respuesta al cliente CS 1.6 en puerto ${clientGamePort} (${buf.length} bytes)`);
+    state.udpLocal.send(buf, 0, buf.length, clientGamePort, "127.0.0.1", (err) => {
       if (err) console.error("[Bridge] Client→Game error:", err.message);
     });
   }
@@ -376,7 +380,6 @@ async function startBridge(roomId, isHost, gameId = null) {
   state.isHost = isHost;
   state.isBridgeReady = false;
 
-  // ✅ Detectar juego primero
   if (gameId) {
     try {
       const { getGame } = require("../games");
@@ -387,7 +390,11 @@ async function startBridge(roomId, isHost, gameId = null) {
         console.log(`[Bridge] Juego detectado: ${game.name} (puerto: ${state.gamePort})`);
         console.log(`[Bridge] ClientPortBase: ${game.clientPortBase || CLIENT_PORT_BASE}`);
         sendBridgeStatus(`Conectando a ${game.name}...`);
-        sendToFrontend("game-detected", game);
+        sendToFrontend("game-detected", { 
+          id: game.id, 
+          name: game.name, 
+          defaultPort: game.defaultPort 
+        });
         sendToFrontend("game-port-detected", state.gamePort);
       } else {
         console.warn(`[Bridge] Juego no encontrado: ${gameId}, usando puerto por defecto 27015`);
@@ -558,6 +565,11 @@ module.exports = {
     clientPort: state.clientPort,
     hostIP: state.hostIP,
     gamePort: state.gamePort,
-    currentGame: state.currentGame
+    currentGame: state.currentGame ? {
+      id: state.currentGame.id,
+      name: state.currentGame.name,
+      defaultPort: state.currentGame.defaultPort,
+      clientPortBase: state.currentGame.clientPortBase
+    } : null
   })
 };
