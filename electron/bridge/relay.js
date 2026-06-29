@@ -23,9 +23,7 @@ let state = {
   gameRoomId: null,
   isBridgeReady: false,
   currentGame: null,
-  gamePort: 27960,
-  // ✅ Guardar el puerto del cliente CS 1.6 (27005)
-  clientGamePort: 27005
+  gamePort: 27960
 };
 
 let keepAliveIntervals = new Map();
@@ -87,7 +85,6 @@ function resetBridge() {
   state.isBridgeReady = false;
   state.currentGame = null;
   state.gamePort = 27960;
-  state.clientGamePort = 27005;
   
   for (const [, interval] of keepAliveIntervals) clearInterval(interval);
   keepAliveIntervals.clear();
@@ -215,7 +212,7 @@ function onClientChannelOpen() {
     }
   });
 
-  // ✅ El cliente escucha en 27015 (el puerto del juego)
+  // ✅ Escuchar en el puerto del juego (27015 para CS, 27960 para Quake III)
   const listenPort = state.currentGame?.defaultPort || 27015;
   
   state.udpLocal.bind(listenPort, "127.0.0.1", () => {
@@ -273,10 +270,10 @@ function onChannelMessage(msg, socketId = null) {
       console.warn("[Bridge] No hay UDP local");
       return;
     }
-    // ✅ CS 1.6 CLIENTE ESCUCHA EN EL PUERTO 27005
-    const clientGamePort = 27005;
-    console.log(`[Bridge] 📤 Enviando respuesta al cliente CS 1.6 en puerto ${clientGamePort} (${buf.length} bytes)`);
-    state.udpLocal.send(buf, 0, buf.length, clientGamePort, "127.0.0.1", (err) => {
+    // ✅ Usar el puerto del juego actual (dinámico según el juego)
+    const gamePort = state.gamePort || 27960;
+    console.log(`[Bridge] 📤 Enviando respuesta al cliente en puerto ${gamePort} (${buf.length} bytes)`);
+    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
       if (err) console.error("[Bridge] Client→Game error:", err.message);
     });
   }
