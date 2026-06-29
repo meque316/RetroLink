@@ -7,7 +7,6 @@ const SIGNALING_URL = "https://retrolink-server.onrender.com";
 const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
-// ✅ ESTADO IDÉNTICO AL MONOLÍTICO
 let state = {
   signalingSocket: null,
   roomId: null,
@@ -23,11 +22,11 @@ let state = {
   pendingCandidates: [],
   remoteDescSet: false,
   clientPort: null,
+  currentGame: null,
 };
 
 let keepAliveIntervals = new Map();
 
-// ✅ MISMO ICE_SERVERS QUE EL MONOLÍTICO
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
   "stun:stun1.l.google.com:19302",
@@ -115,13 +114,14 @@ function resetBridge() {
   state.iceConnectionStart = null;
   state.hostIP = null;
   state.clientPort = null;
+  state.currentGame = null;
 
   console.log("[Bridge] Reset complete");
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
+  const gamePort = state.currentGame?.defaultPort || 27960;
 
   udpProxy.on("error", (err) => {
     console.error(`[Bridge] Host proxy error (client ${socketId}):`, err.message);
@@ -129,7 +129,7 @@ function createHostUDPProxy(socketId, clientPort, channel) {
 
   udpProxy.bind(0, "127.0.0.1", () => {
     const addr = udpProxy.address();
-    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Q3 port: ${clientPort})`);
+    console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Game port: ${gamePort})`);
   });
 
   udpProxy.on("message", (msg) => {
@@ -137,7 +137,7 @@ function createHostUDPProxy(socketId, clientPort, channel) {
       try {
         channel.sendMessageBinary(Buffer.from(msg));
       } catch(e) {
-        console.error(`[Bridge] Host proxy send error (client ${socketId}):`, e.message);
+        console.error(`[Bridge] Host proxy send error:`, e.message);
       }
     }
   });
@@ -145,7 +145,6 @@ function createHostUDPProxy(socketId, clientPort, channel) {
   return udpProxy;
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function onHostChannelOpen(socketId, channel, clientPort) {
   console.log(`[Bridge] Host DataChannel open for client ${socketId} on port ${clientPort}`);
 
@@ -172,7 +171,6 @@ function onHostChannelOpen(socketId, channel, clientPort) {
   sendStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function onClientChannelOpen() {
   console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
@@ -182,12 +180,15 @@ function onClientChannelOpen() {
   state.udpLocal.on("error", (err) => {
     console.error("[Bridge] Client UDP error:", err.message);
     if (err.code === "EADDRINUSE") {
-      sendStatus(`Puerto ${state.clientPort} ocupado. Cierra RetroLink y vuelve a abrirlo.`);
+      sendStatus(`Puerto ${state.clientPort} ocupado. Cierra el juego y reintenta.`);
     }
   });
 
-  state.udpLocal.bind(state.clientPort, "127.0.0.1", () => {
-    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${state.clientPort}`);
+  // ✅ Escuchar en el puerto del juego (27015 para CS, 27960 para Quake III)
+  const listenPort = state.currentGame?.defaultPort || 27960;
+  
+  state.udpLocal.bind(listenPort, "127.0.0.1", () => {
+    console.log(`[Bridge] Client UDP listening on 127.0.0.1:${listenPort}`);
   });
 
   state.udpLocal.on("message", (msg) => {
@@ -210,22 +211,23 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO - PUERTO FIJO 27960 PARA QUAKE III
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-
   if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
+
+  // ✅ Usar el puerto del juego actual
+  const gamePort = state.currentGame?.defaultPort || 27960;
 
   if (state.isHost) {
     const client = state.clients.get(socketId);
     if (!client?.udpProxy) return;
-    client.udpProxy.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error(`[Bridge] Host→Q3 error:`, err.message);
+    client.udpProxy.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
+      if (err) console.error(`[Bridge] Host→Game error:`, err.message);
     });
   } else {
     if (!state.udpLocal) return;
-    state.udpLocal.send(buf, 0, buf.length, 27960, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client→Q3 error:", err.message);
+    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
+      if (err) console.error("[Bridge] Client→Game error:", err.message);
     });
   }
 }
@@ -247,7 +249,6 @@ function flushCandidates(socketId = null) {
   }
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const peer = new NDC.PeerConnection(`RetroLink-Host-${clientSocketId}`, {
     iceServers: buildIceServers(),
@@ -275,7 +276,6 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   setTimeout(() => { peer.setLocalDescription(); }, 200);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createClientPeer(NDC, sig, roomId) {
   const peer = new NDC.PeerConnection("RetroLink-Client", {
     iceServers: buildIceServers(),
@@ -298,13 +298,27 @@ function createClientPeer(NDC, sig, roomId) {
   });
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO - SIN gameId
-async function startBridge(roomId, isHost) {
+async function startBridge(roomId, isHost, gameId = null) {
   resetBridge();
 
   state.roomId = roomId;
   state.isHost = isHost;
   state.iceConnectionStart = Date.now();
+
+  // ✅ DETECTAR JUEGO Y GUARDAR SU PUERTO
+  if (gameId) {
+    try {
+      const { getGame } = require("../games");
+      const game = getGame(gameId);
+      if (game) {
+        state.currentGame = game;
+        console.log(`[Bridge] Juego detectado: ${game.name} (puerto: ${game.defaultPort || 27960})`);
+        sendStatus(`Conectando a ${game.name}...`);
+      }
+    } catch (e) {
+      console.error("[Bridge] Error detectando juego:", e.message);
+    }
+  }
 
   const NDC = require("node-datachannel");
 
@@ -455,11 +469,12 @@ module.exports = {
   getClientPort: () => state.clientPort,
   getHostIP: () => state.hostIP,
   getBridgeState: () => ({
-    isReady: state.clients.size > 0,
+    isReady: state.clients.size > 0 || !!state.channel,
     isHost: state.isHost,
     roomId: state.roomId,
     clientCount: state.clients.size,
     clientPort: state.clientPort,
     hostIP: state.hostIP,
+    currentGame: state.currentGame
   })
 };
