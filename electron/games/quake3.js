@@ -2,26 +2,22 @@
 module.exports = {
   id: 'quake3',
   name: 'Quake III Arena',
-  defaultPort: 27960,
-  clientPortBase: 27961,
   
+  // ✅ Solo necesitamos los argumentos, el bridge maneja los puertos
   getHostArgs(extraArgs = []) {
     return [
-      '+set', 'dedicated', '1',
+      '+set', 'net_port', '27960',
+      '+set', 'sv_lanForce', '1',
+      '+set', 'sv_strictAuth', '0',
       '+set', 'sv_pure', '0',
-      '+set', 'net_port', this.defaultPort.toString(),
-      '+set', 'sv_maxclients', '8',
-      '+set', 'sv_allowAnonymous', '1',
-      '+set', 'g_gametype', '0',
-      '+set', 'mapname', 'q3dm17',
       ...extraArgs
     ];
   },
   
   getClientArgs(port, extraArgs = []) {
+    // ✅ El cliente usa +connect con el puerto asignado por el bridge
     return [
-      '+set', 'net_port', port.toString(),
-      '+connect', '127.0.0.1',
+      '+connect', `127.0.0.1:${port}`,
       ...extraArgs
     ];
   }
