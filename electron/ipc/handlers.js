@@ -7,11 +7,15 @@ const gamesPath = path.join(__dirname, '../games/index.js');
 console.log('[Handlers] Cargando juegos desde:', gamesPath);
 const { getGame, listGames } = require(gamesPath);
 
-const { startBridge, resetBridge, getClientPort } = require("../bridge/relay");
+// ✅ IMPORTAR AMBOS BRIDGES
+const relayQuake = require("../bridge/relay");
+const relayCS = require("../bridge/relay-cs");
+
 const { allowFirewall, checkPort, openUPnP, closeUPnP } = require("../network/utils");
 
 let gameProcess = null;
 let savedHostIP = null;
+let activeBridge = null; // Para saber qué bridge está activo
 
 const GAME_ID_MAP = {
   'cs16': 'cs16',
@@ -33,6 +37,26 @@ const GAME_ID_MAP = {
   'q3': 'quake3'
 };
 
+// ✅ Función para obtener el bridge correcto según el juego
+function getBridge(gameId) {
+  const normalizedId = GAME_ID_MAP[gameId?.toLowerCase?.()] || gameId;
+  
+  // Si es CS 1.6
+  if (normalizedId === 'cs16') {
+    console.log('[Handlers] Usando bridge para CS 1.6');
+    return relayCS;
+  }
+  
+  // Si es Quake III o cualquier otro
+  console.log('[Handlers] Usando bridge para Quake III');
+  return relayQuake;
+}
+
+// ✅ Función para obtener el bridge activo (o el de Quake por defecto)
+function getActiveBridge() {
+  return activeBridge || relayQuake;
+}
+
 function registerIPCHandlers() {
   ipcMain.handle("select-game-exe", async () => {
     const result = await dialog.showOpenDialog({
@@ -50,9 +74,13 @@ function registerIPCHandlers() {
     return { portAvailable, upnpSuccess: upnp.success, port: targetPort };
   });
 
+  // ✅ start-relay - usa el bridge correcto según gameId
   ipcMain.handle("start-relay", async (event, roomId, isHost, gameId) => {
     try {
       console.log('[Handlers] start-relay llamado:', { roomId, isHost, gameId });
+      
+      const bridge = getBridge(gameId);
+      activeBridge = bridge;
       
       const sendStatus = (msg) => {
         if (!event.sender.isDestroyed()) {
@@ -60,7 +88,8 @@ function registerIPCHandlers() {
         }
       };
 
-      const res = await startBridge(roomId, isHost, gameId);
+      // ✅ Pasar gameId al bridge (aunque no lo use, por compatibilidad)
+      const res = await bridge.startBridge(roomId, isHost);
       return res;
     } catch (err) {
       console.error("[Handlers] Error en start-relay:", err.message);
@@ -68,6 +97,7 @@ function registerIPCHandlers() {
     }
   });
 
+  // ✅ launch-game - usa el bridge correcto para obtener el puerto del cliente
   ipcMain.handle("launch-game", async (_, gamePath, hostIp, roomId, isHost, gameId, extraArgs = []) => {
     if (!gamePath) return { success: false, error: "No game path provided" };
 
@@ -81,13 +111,18 @@ function registerIPCHandlers() {
       let args = [];
       let gameName = "Desconocido";
 
+      // ✅ Obtener el puerto del cliente del bridge correcto
+      const bridge = getBridge(gameId);
+      const clientPort = bridge.getClientPort() || 27961;
+
       if (game) {
         gameName = game.name;
         if (isHost) {
           args = game.getHostArgs(extraArgs || []);
           console.log(`[Game Launcher] Host args (${gameName}): ${args.join(" ")}`);
         } else {
-          const port = getClientPort() || game.clientPortBase || 27015;
+          // ✅ Usar el puerto del bridge correcto
+          const port = bridge.getClientPort() || game.clientPortBase || 27015;
           args = game.getClientArgs(port, extraArgs || []);
           console.log(`[Game Launcher] Client args (${gameName}): ${args.join(" ")}`);
         }
@@ -102,7 +137,7 @@ function registerIPCHandlers() {
             ...extraArgs
           ];
         } else {
-          const port = getClientPort() || 27961;
+          const port = bridge.getClientPort() || 27961;
           args = ["+connect", `127.0.0.1:${port}`, ...extraArgs];
         }
       }
@@ -143,8 +178,11 @@ function registerIPCHandlers() {
     }
   });
 
+  // ✅ stop-relay - usa el bridge activo
   ipcMain.handle("stop-relay", async () => {
-    resetBridge();
+    const bridge = getActiveBridge();
+    bridge.resetBridge();
+    activeBridge = null;
     return { success: true };
   });
 
@@ -193,18 +231,21 @@ function registerIPCHandlers() {
     return savedHostIP;
   });
 
+  // ✅ get-bridge-state - usa el bridge activo
   ipcMain.handle("get-bridge-state", async () => {
     try {
-      const { getBridgeState } = require("../bridge/relay");
-      return getBridgeState();
+      const bridge = getActiveBridge();
+      return bridge.getBridgeState();
     } catch (err) {
       console.error("[IPC] Error getting bridge state:", err);
       return null;
     }
   });
 
+  // ✅ get-client-port - usa el bridge activo
   ipcMain.handle("get-client-port", async () => {
-    return getClientPort();
+    const bridge = getActiveBridge();
+    return bridge.getClientPort();
   });
 }
 
