@@ -40,8 +40,7 @@ function sendToFrontend(channel, data) {
   try {
     const wins = BrowserWindow.getAllWindows();
     if (wins[0] && !wins[0].webContents.isDestroyed()) {
-      const serializableData = JSON.parse(JSON.stringify(data || {}));
-      wins[0].webContents.send(channel, serializableData);
+      wins[0].webContents.send(channel, data);
     }
   } catch (e) {
     console.error(`[Bridge] Error sending to frontend (${channel}):`, e.message);
@@ -131,17 +130,9 @@ function createHostUDPProxy(socketId, clientPort, channel) {
     console.log(`[Bridge] Host proxy for client ${socketId} bound on port ${addr.port} (Game port: ${gamePort}, Client port: ${clientPort})`);
   });
 
-  udpProxy.on("message", (msg, rinfo) => {
-    console.log(`[Bridge] 📩 Host proxy recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
+  udpProxy.on("message", (msg) => {
     if (channel?.isOpen()) {
-      try { 
-        channel.sendMessageBinary(Buffer.from(msg)); 
-        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
-      } catch(e) {
-        console.error('[Bridge] Error enviando por DataChannel:', e);
-      }
-    } else {
-      console.warn('[Bridge] ⚠️ DataChannel no disponible para enviar mensaje');
+      try { channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
     }
   });
 
@@ -156,19 +147,9 @@ function onHostChannelOpen(socketId, channel, clientPort) {
   const udpProxy = createHostUDPProxy(socketId, clientPort, channel);
   client.udpProxy = udpProxy;
 
-  // ✅ Manejar cierre del DataChannel
-  channel.onClosed(() => {
-    console.log(`[Bridge] DataChannel closed for client ${socketId}`);
-    const interval = keepAliveIntervals.get(socketId);
-    if (interval) { clearInterval(interval); keepAliveIntervals.delete(socketId); }
-  });
-
   const interval = setInterval(() => {
     if (channel?.isOpen()) {
-      try { 
-        channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); 
-      } catch(e) {
-        console.log(`[Bridge] Keep-alive failed for client ${socketId}`);
+      try { channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
         clearInterval(interval);
         keepAliveIntervals.delete(socketId);
       }
@@ -222,6 +203,7 @@ function onClientChannelOpen() {
     }
   });
 
+  // ✅ El cliente escucha en el puerto DEL JUEGO (27960 o 27015)
   const listenPort = state.currentGame?.defaultPort || 27015;
   
   state.udpLocal.bind(listenPort, "127.0.0.1", () => {
@@ -229,17 +211,9 @@ function onClientChannelOpen() {
     sendToFrontend("client-port-assigned", listenPort);
   });
 
-  state.udpLocal.on("message", (msg, rinfo) => {
-    console.log(`[Bridge] 📩 Cliente UDP recibió mensaje de ${rinfo.address}:${rinfo.port} (${msg.length} bytes)`);
+  state.udpLocal.on("message", (msg) => {
     if (state.channel?.isOpen()) {
-      try { 
-        state.channel.sendMessageBinary(Buffer.from(msg));
-        console.log(`[Bridge] ✅ Mensaje enviado al DataChannel (${msg.length} bytes)`);
-      } catch(e) {
-        console.error('[Bridge] Error enviando por DataChannel:', e);
-      }
-    } else {
-      console.warn('[Bridge] ⚠️ DataChannel no disponible para enviar mensaje');
+      try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
     }
   });
 
@@ -257,33 +231,20 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
+// ✅ CORRECCIÓN CLAVE: El cliente envía las respuestas al puerto DEL JUEGO
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-  
-  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) {
-    return;
-  }
+  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) return;
 
   if (state.isHost) {
-    const gamePort = state.gamePort || 27015;
     const client = state.clients.get(socketId);
-    if (!client?.udpProxy) {
-      console.warn(`[Bridge] No hay proxy para cliente ${socketId}`);
-      return;
-    }
-    client.udpProxy.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
-      if (err) console.error(`[Bridge] Host→Game error:`, err.message);
-    });
+    if (!client?.udpProxy) return;
+    client.udpProxy.send(buf, 0, buf.length, state.gamePort || 27015, "127.0.0.1");
   } else {
-    if (!state.udpLocal) {
-      console.warn("[Bridge] No hay UDP local");
-      return;
-    }
+    // ✅ CLIENTE: enviar al puerto DEL JUEGO (no al puerto del cliente)
+    if (!state.udpLocal) return;
     const gamePort = state.gamePort || 27960;
-    console.log(`[Bridge] 📤 Enviando respuesta al cliente en puerto ${gamePort} (${buf.length} bytes)`);
-    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
-      if (err) console.error("[Bridge] Client→Game error:", err.message);
-    });
+    state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1");
   }
 }
 
