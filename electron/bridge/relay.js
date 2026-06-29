@@ -156,9 +156,19 @@ function onHostChannelOpen(socketId, channel, clientPort) {
   const udpProxy = createHostUDPProxy(socketId, clientPort, channel);
   client.udpProxy = udpProxy;
 
+  // ✅ Manejar cierre del DataChannel
+  channel.onClosed(() => {
+    console.log(`[Bridge] DataChannel closed for client ${socketId}`);
+    const interval = keepAliveIntervals.get(socketId);
+    if (interval) { clearInterval(interval); keepAliveIntervals.delete(socketId); }
+  });
+
   const interval = setInterval(() => {
     if (channel?.isOpen()) {
-      try { channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
+      try { 
+        channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); 
+      } catch(e) {
+        console.log(`[Bridge] Keep-alive failed for client ${socketId}`);
         clearInterval(interval);
         keepAliveIntervals.delete(socketId);
       }
@@ -212,7 +222,6 @@ function onClientChannelOpen() {
     }
   });
 
-  // ✅ Escuchar en el puerto del juego (27015 para CS, 27960 para Quake III)
   const listenPort = state.currentGame?.defaultPort || 27015;
   
   state.udpLocal.bind(listenPort, "127.0.0.1", () => {
@@ -270,7 +279,6 @@ function onChannelMessage(msg, socketId = null) {
       console.warn("[Bridge] No hay UDP local");
       return;
     }
-    // ✅ Usar el puerto del juego actual (dinámico según el juego)
     const gamePort = state.gamePort || 27960;
     console.log(`[Bridge] 📤 Enviando respuesta al cliente en puerto ${gamePort} (${buf.length} bytes)`);
     state.udpLocal.send(buf, 0, buf.length, gamePort, "127.0.0.1", (err) => {
