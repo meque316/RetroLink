@@ -7,9 +7,10 @@ const gamesPath = path.join(__dirname, '../games/index.js');
 console.log('[Handlers] Cargando juegos desde:', gamesPath);
 const { getGame, listGames } = require(gamesPath);
 
-// ✅ IMPORTAR AMBOS BRIDGES
+// ✅ IMPORTAR TODOS LOS BRIDGES
 const relayQuake = require("../bridge/relay");
 const relayCS = require("../bridge/relay-cs");
+const relayC2 = require("../bridge/relay-c2");
 
 const { allowFirewall, checkPort, openUPnP, closeUPnP } = require("../network/utils");
 
@@ -18,6 +19,7 @@ let savedHostIP = null;
 let activeBridge = null; // Para saber qué bridge está activo
 
 const GAME_ID_MAP = {
+  // CS 1.6
   'cs16': 'cs16',
   'counter-strike': 'cs16',
   'counter-strike 1.6': 'cs16',
@@ -29,12 +31,22 @@ const GAME_ID_MAP = {
   'counter strike': 'cs16',
   'counter strike 1.6': 'cs16',
   
+  // Quake 3
   'quake3': 'quake3',
   'quake': 'quake3',
   'quake 3': 'quake3',
   'quake iii': 'quake3',
   'quake iii arena': 'quake3',
-  'q3': 'quake3'
+  'q3': 'quake3',
+  
+  // ✅ Carmageddon 2
+  'carmageddon2': 'carmageddon2',
+  'carmageddon 2': 'carmageddon2',
+  'carmageddon ii': 'carmageddon2',
+  'carmageddon': 'carmageddon2',
+  'carma2': 'carmageddon2',
+  'c2': 'carmageddon2',
+  'carmageddon ii: carpocalypse now': 'carmageddon2'
 };
 
 // ✅ Función para obtener el bridge correcto según el juego
@@ -45,6 +57,12 @@ function getBridge(gameId) {
   if (normalizedId === 'cs16') {
     console.log('[Handlers] Usando bridge para CS 1.6');
     return relayCS;
+  }
+  
+  // ✅ Si es Carmageddon 2
+  if (normalizedId === 'carmageddon2') {
+    console.log('[Handlers] Usando bridge para Carmageddon 2');
+    return relayC2;
   }
   
   // Si es Quake III o cualquier otro

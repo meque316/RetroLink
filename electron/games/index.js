@@ -1,10 +1,12 @@
 // electron/games/index.js
 const quake3 = require("./quake3");
 const cs16 = require("./cs16");
+const carmageddon2 = require("./carmageddon2");
 
 const gamesRegistry = {
   [quake3.id]: quake3,
-  [cs16.id]: cs16
+  [cs16.id]: cs16,
+  [carmageddon2.id]: carmageddon2,
 };
 
 const GAME_ALIASES = {
@@ -35,7 +37,18 @@ const GAME_ALIASES = {
   'quake3arena': 'quake3',
   'quake3 arena': 'quake3',
   'quak3': 'quake3',
-  'q3a': 'quake3'
+  'q3a': 'quake3',
+  
+  //  Aliases para Carmageddon 2
+  'carmageddon2': 'carmageddon2',
+  'carmageddon 2': 'carmageddon2',
+  'carmageddon ii': 'carmageddon2',
+  'carmageddon ii: carpocalypse now': 'carmageddon2',
+  'carmageddon': 'carmageddon2',
+  'carma2': 'carmageddon2',
+  'carma 2': 'carmageddon2',
+  'c2': 'carmageddon2',
+  'carmageddon2': 'carmageddon2'
 };
 
 function getGame(gameId) {

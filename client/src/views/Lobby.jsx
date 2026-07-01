@@ -21,16 +21,49 @@ import {
 const CLOUDINARY_CLOUD_NAME = "davmgvs7u";
 const CLOUDINARY_UPLOAD_PRESET = "retrolink_avatars";
 
-const GAMES = [
+// ✅ JUEGOS SOPORTADOS (los que tienen bridge implementado)
+const SUPPORTED_GAMES = [
   { id: "quake3",  name: "Quake III Arena",       year: "1999" },
+  { id: "cs16",    name: "Counter-Strike 1.6",     year: "2000" },
+  { id: "carmageddon2", name: "Carmageddon II: Carpocalypse Now", year: "1998" },
+];
+
+// ✅ JUEGOS EN DESARROLLO (aparecen pero con indicador visual)
+const GAMES_IN_DEVELOPMENT = [
   { id: "quake2",  name: "Quake II",               year: "1997" },
   { id: "quake1",  name: "Quake",                  year: "1996" },
   { id: "ut99",    name: "Unreal Tournament",      year: "1999" },
   { id: "ut2004",  name: "Unreal Tournament 2004", year: "2004" },
-  { id: "cs16",    name: "Counter-Strike 1.6",     year: "2000" },
   { id: "hl1",     name: "Half-Life",              year: "1998" },
   { id: "doom2",   name: "Doom II",                year: "1994" },
 ];
+
+// ✅ Combinar juegos soportados y en desarrollo
+const GAMES = [
+  ...SUPPORTED_GAMES.map(g => ({ ...g, supported: true })),
+  ...GAMES_IN_DEVELOPMENT.map(g => ({ ...g, supported: false })),
+];
+
+// ✅ Función mejorada para verificar si un juego está soportado
+const isGameSupported = (gameIdOrName) => {
+  // Buscar por gameId primero
+  if (SUPPORTED_GAMES.some(g => g.id === gameIdOrName)) {
+    return true;
+  }
+  // Si no, buscar por nombre (para salas antiguas)
+  return SUPPORTED_GAMES.some(g => g.name === gameIdOrName);
+};
+
+// ✅ Función para obtener el gameId real
+const getRealGameId = (gameIdOrName) => {
+  // Buscar por gameId
+  const foundById = SUPPORTED_GAMES.find(g => g.id === gameIdOrName);
+  if (foundById) return foundById.id;
+  
+  // Buscar por nombre (para salas antiguas)
+  const foundByName = SUPPORTED_GAMES.find(g => g.name === gameIdOrName);
+  return foundByName ? foundByName.id : null;
+};
 
 function loadLibrary() {
   try {
@@ -59,7 +92,7 @@ function Lobby() {
   const [friendError, setFriendError] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [roomName, setRoomName] = useState("");
-  const [selectedGame, setSelectedGame] = useState(GAMES[0]);
+  const [selectedGame, setSelectedGame] = useState(SUPPORTED_GAMES[0]);
 
   const fetchFriends = async () => {
     const token = localStorage.getItem("token");
@@ -187,7 +220,7 @@ function Lobby() {
     const roomPayload = {
       name,
       game: selectedGame.name,
-      gameId: selectedGame.id, // Corrección crítica: Siempre garantizamos la inyección del ID modular
+      gameId: selectedGame.id,
     };
 
     try {
@@ -200,7 +233,7 @@ function Lobby() {
 
     setShowModal(false);
     setRoomName("");
-    setSelectedGame(GAMES[0]);
+    setSelectedGame(SUPPORTED_GAMES[0]);
   };
 
   const leaveRoom = () => {
@@ -280,7 +313,6 @@ function Lobby() {
   };
 
   if (currentRoom) {
-    // Corrección: Pasamos la sala completa asegurando que contenga tanto room.id como room.gameId
     return <Room key={activeRoomId} room={currentRoom} leaveRoom={leaveRoom} />;
   }
 
@@ -311,29 +343,57 @@ function Lobby() {
             <div className="mb-8">
               <label className="text-sm text-zinc-400 mb-2 block">Select game</label>
               <div className="grid grid-cols-2 gap-2">
-                {GAMES.map((game) => (
-                  <button
-                    key={game.id}
-                    onClick={() => setSelectedGame(game)}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition text-left ${
-                      selectedGame.id === game.id
-                        ? "border-green-500 bg-green-500/10 text-green-400"
-                        : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
-                    }`}
-                  >
-                    <Gamepad2 size={16} className="shrink-0" />
-                    <div>
-                      <p className="text-sm font-medium leading-tight">{game.name}</p>
-                      <p className="text-xs text-zinc-500">{game.year}</p>
-                    </div>
-                  </button>
-                ))}
+                {GAMES.map((game) => {
+                  const isSupported = game.supported;
+                  const isConfigured = library.some((g) => g.id === game.id);
+                  
+                  return (
+                    <button
+                      key={game.id}
+                      onClick={() => isSupported && setSelectedGame(game)}
+                      disabled={!isSupported}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition text-left ${
+                        selectedGame.id === game.id && isSupported
+                          ? "border-green-500 bg-green-500/10 text-green-400"
+                          : isSupported
+                          ? "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500"
+                          : "border-zinc-800 bg-zinc-900/50 text-zinc-600 cursor-not-allowed opacity-60"
+                      }`}
+                    >
+                      <Gamepad2 size={16} className="shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium leading-tight flex items-center gap-2">
+                          {game.name}
+                          {!isSupported && (
+                            <span className="text-[10px] bg-yellow-500/20 text-yellow-500 px-1.5 py-0.5 rounded-full">
+                              Pronto
+                            </span>
+                          )}
+                          {isSupported && isConfigured && (
+                            <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded-full">
+                              ✓
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-xs text-zinc-500">{game.year}</p>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
+              <p className="text-xs text-zinc-500 mt-3">
+                ✅ Juegos soportados: Quake III Arena, Counter-Strike 1.6, Carmageddon 2
+              </p>
             </div>
 
             <button
               onClick={createRoom}
-              className="w-full bg-green-500 hover:bg-green-400 text-black py-3 rounded-xl font-semibold transition"
+              disabled={!isGameSupported(selectedGame.id)}
+              className={`w-full py-3 rounded-xl font-semibold transition ${
+                isGameSupported(selectedGame.id)
+                  ? "bg-green-500 hover:bg-green-400 text-black"
+                  : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
+              }`}
             >
               Create Room
             </button>
@@ -423,42 +483,63 @@ function Lobby() {
                   No active rooms. Create one 🚀
                 </div>
               ) : (
-                rooms.map((room) => (
-                  <div
-                    key={room.id}
-                    className="bg-[#11161d] border border-zinc-800 rounded-2xl p-5 hover:border-green-500 transition flex items-center justify-between gap-6"
-                  >
-                    <div className="flex items-center gap-5">
-                      <div className="w-24 h-24 rounded-xl bg-gradient-to-br from-green-500/20 to-zinc-900 border border-zinc-700 flex items-center justify-center text-green-400">
-                        <Gamepad2 size={34} />
-                      </div>
+                rooms.map((room) => {
+                  // ✅ Usar gameId o game (nombre) para verificar soporte
+                  const gameIdentifier = room.gameId || room.game;
+                  const isSupported = isGameSupported(gameIdentifier);
+                  const realGameId = getRealGameId(gameIdentifier);
+                  
+                  return (
+                    <div
+                      key={room.id}
+                      className={`bg-[#11161d] border rounded-2xl p-5 hover:border-green-500 transition flex items-center justify-between gap-6 ${
+                        isSupported ? "border-zinc-800" : "border-zinc-800/50 opacity-60"
+                      }`}
+                    >
+                      <div className="flex items-center gap-5">
+                        <div className="w-24 h-24 rounded-xl bg-gradient-to-br from-green-500/20 to-zinc-900 border border-zinc-700 flex items-center justify-center text-green-400">
+                          <Gamepad2 size={34} />
+                        </div>
 
-                      <div>
-                        <h3 className="text-xl font-semibold">{room.name}</h3>
-                        <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
-                          {room.game}
-                        </span>
-                        <div className="flex gap-6 text-zinc-400 text-sm mt-4">
-                          <div className="flex items-center gap-2">
-                            <Users size={16} />
-                            {room.players} player(s)
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <Wifi size={16} />
-                            P2P Ready
+                        <div>
+                          <h3 className="text-xl font-semibold flex items-center gap-2">
+                            {room.name}
+                            {!isSupported && (
+                              <span className="text-[10px] bg-yellow-500/20 text-yellow-500 px-2 py-0.5 rounded-full">
+                                No soportado
+                              </span>
+                            )}
+                          </h3>
+                          <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
+                            {room.game}
+                          </span>
+                          <div className="flex gap-6 text-zinc-400 text-sm mt-4">
+                            <div className="flex items-center gap-2">
+                              <Users size={16} />
+                              {room.players} player(s)
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Wifi size={16} />
+                              P2P Ready
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
 
-                    <button
-                      onClick={() => joinRoom(room)}
-                      className="bg-green-500 hover:bg-green-400 text-black px-5 py-2 rounded-xl font-semibold transition"
-                    >
-                      Join Room
-                    </button>
-                  </div>
-                ))
+                      <button
+                        onClick={() => isSupported && joinRoom(room)}
+                        disabled={!isSupported}
+                        className={`px-5 py-2 rounded-xl font-semibold transition ${
+                          isSupported
+                            ? "bg-green-500 hover:bg-green-400 text-black"
+                            : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
+                        }`}
+                      >
+                        {isSupported ? "Join Room" : "No disponible"}
+                      </button>
+                    </div>
+                  );
+                })
               )}
             </div>
           </>
@@ -596,36 +677,49 @@ function Lobby() {
             <div className="grid grid-cols-2 gap-4">
               {GAMES.map((game) => {
                 const saved = library.find((g) => g.id === game.id);
+                const isSupported = game.supported;
                 return (
                   <div
                     key={game.id}
                     className={`bg-[#11161d] border rounded-2xl p-5 transition ${
-                      saved ? "border-green-500/30" : "border-zinc-800"
-                    }`}
+                      saved ? "border-green-500/30" : isSupported ? "border-zinc-800" : "border-zinc-800/50"
+                    } ${!isSupported ? "opacity-60" : ""}`}
                   >
                     <div className="flex items-center gap-4 mb-4">
                       <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-green-500/20 to-zinc-900 border border-zinc-700 flex items-center justify-center text-green-400">
                         <Gamepad2 size={22} />
                       </div>
-                      <div>
-                        <p className="font-semibold">{game.name}</p>
+                      <div className="flex-1">
+                        <p className="font-semibold flex items-center gap-2">
+                          {game.name}
+                          {!isSupported && (
+                            <span className="text-[10px] bg-yellow-500/20 text-yellow-500 px-1.5 py-0.5 rounded-full">
+                              Pronto
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-zinc-500">{game.year}</p>
                       </div>
                     </div>
 
                     {saved ? (
                       <>
-                        <p className="text-xs text-green-400 mb-1">✓ Configured</p>
+                        <p className="text-xs text-green-400 mb-1">✓ Configurado</p>
                         <p className="text-xs text-zinc-500 break-all mb-4 line-clamp-1">
                           {saved.exePath}
                         </p>
                         <div className="flex gap-2">
                           <button
                             onClick={() => handleAddGame(game)}
-                            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-sm transition"
+                            disabled={!isSupported}
+                            className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm transition ${
+                              isSupported
+                                ? "bg-zinc-800 hover:bg-zinc-700"
+                                : "bg-zinc-800/50 text-zinc-600 cursor-not-allowed"
+                            }`}
                           >
                             <FolderOpen size={14} />
-                            Change
+                            {isSupported ? "Change" : "No disponible"}
                           </button>
                           <button
                             onClick={() => handleRemoveGame(game.id)}
@@ -638,15 +732,29 @@ function Lobby() {
                     ) : (
                       <button
                         onClick={() => handleAddGame(game)}
-                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-sm transition text-zinc-300"
+                        disabled={!isSupported}
+                        className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-sm transition ${
+                          isSupported
+                            ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                            : "bg-zinc-800/50 text-zinc-600 cursor-not-allowed"
+                        }`}
                       >
                         <FolderOpen size={14} />
-                        Add to Library
+                        {isSupported ? "Add to Library" : "Próximamente"}
                       </button>
                     )}
                   </div>
                 );
               })}
+            </div>
+
+            <div className="mt-6 p-4 bg-[#11161d] border border-zinc-800 rounded-2xl">
+              <p className="text-sm text-zinc-400">
+                🎮 <span className="text-green-400 font-medium">Soportados:</span> Quake III Arena, Counter-Strike 1.6, Carmageddon 2
+              </p>
+              <p className="text-xs text-zinc-500 mt-1">
+                🚧 <span className="text-yellow-500">En desarrollo:</span> Quake II, Quake, Unreal Tournament, UT2004, Half-Life, Doom II
+              </p>
             </div>
           </>
         )}
