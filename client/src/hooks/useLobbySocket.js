@@ -15,7 +15,10 @@ export default function useLobbySocket() {
       setCurrentRoom((prevRoom) => {
         if (!prevRoom) return null;
 
-        const updatedRoom = updatedRooms.find((room) => room.id === prevRoom.id);
+        const updatedRoom = updatedRooms.find(
+          (room) => room.id === prevRoom.id
+        );
+
         return updatedRoom || prevRoom;
       });
     };
@@ -41,13 +44,20 @@ export default function useLobbySocket() {
     setCurrentRoom(room);
   };
 
-  const createRoom = async ({ roomName, selectedGame, currentUser, onSuccess }) => {
+  const createRoom = async ({
+    roomName,
+    selectedGame,
+    currentUser,
+    gameOptions = {},
+    onSuccess,
+  }) => {
     const name = roomName.trim() || `${currentUser?.username}'s Room`;
 
     const roomPayload = {
       name,
       game: selectedGame.name,
       gameId: selectedGame.id,
+      gameOptions,
     };
 
     try {
@@ -69,7 +79,10 @@ export default function useLobbySocket() {
   };
 
   const leaveRoom = () => {
-    if (currentRoom) socket.emit("leave-room", currentRoom.id);
+    if (currentRoom) {
+      socket.emit("leave-room", currentRoom.id);
+    }
+
     setCurrentRoom(null);
   };
 

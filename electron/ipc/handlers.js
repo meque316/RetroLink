@@ -6,20 +6,13 @@ const { execFile } = require("child_process");
 const gamesPath = path.join(__dirname, "../games/index.js");
 console.log("[Handlers] Cargando juegos desde:", gamesPath);
 
-const {
-  getGame,
-  getRealGameId,
-} = require(gamesPath);
+const { getGame, getRealGameId } = require(gamesPath);
 
 const relayQuake = require("../bridge/relay");
 const relayCS = require("../bridge/relay-cs");
 const relayC2 = require("../bridge/relay-c2");
 
-const {
-  allowFirewall,
-  checkPort,
-  openUPnP,
-} = require("../network/utils");
+const { allowFirewall, checkPort, openUPnP } = require("../network/utils");
 
 let gameProcess = null;
 let savedHostIP = null;
@@ -46,6 +39,28 @@ function getActiveBridge() {
   return activeBridge || relayQuake;
 }
 
+function buildGameArgs({ game, bridge, isHost, gameOptions, extraArgs }) {
+  if (isHost) {
+    if (game.supportsRoomOptions) {
+      return game.getHostArgs(gameOptions, extraArgs || []);
+    }
+
+    return game.getHostArgs(extraArgs || []);
+  }
+
+  const port =
+    bridge.getClientPort() ||
+    game.clientPortBase ||
+    game.defaultPort ||
+    27961;
+
+  if (game.supportsRoomOptions) {
+    return game.getClientArgs(port, gameOptions, extraArgs || []);
+  }
+
+  return game.getClientArgs(port, extraArgs || []);
+}
+
 function registerIPCHandlers() {
   ipcMain.handle("select-game-exe", async () => {
     const result = await dialog.showOpenDialog({
@@ -70,7 +85,7 @@ function registerIPCHandlers() {
     };
   });
 
-  ipcMain.handle("start-relay", async (event, roomId, isHost, gameId) => {
+  ipcMain.handle("start-relay", async (_, roomId, isHost, gameId) => {
     try {
       console.log("[Handlers] start-relay llamado:", {
         roomId,
@@ -81,10 +96,10 @@ function registerIPCHandlers() {
       const bridge = getBridge(gameId);
       activeBridge = bridge;
 
-      const res = await bridge.startBridge(roomId, isHost, gameId);
-      return res;
+      return await bridge.startBridge(roomId, isHost, gameId);
     } catch (err) {
       console.error("[Handlers] Error en start-relay:", err.message);
+
       return {
         success: false,
         error: err.message,
@@ -94,7 +109,16 @@ function registerIPCHandlers() {
 
   ipcMain.handle(
     "launch-game",
-    async (_, gamePath, hostIp, roomId, isHost, gameId, extraArgs = []) => {
+    async (
+      _,
+      gamePath,
+      hostIp,
+      roomId,
+      isHost,
+      gameId,
+      gameOptions = {},
+      extraArgs = []
+    ) => {
       if (!gamePath) {
         return {
           success: false,
@@ -109,7 +133,6 @@ function registerIPCHandlers() {
 
         const realGameId = getRealGameId(gameId);
         const game = getGame(realGameId);
-
         const bridge = getBridge(realGameId);
 
         let args = [];
@@ -118,23 +141,27 @@ function registerIPCHandlers() {
         if (game) {
           gameName = game.name;
 
-          if (isHost) {
-            args = game.getHostArgs(extraArgs || []);
+          if (!isHost && game.serverWarmupMs) {
             console.log(
-              `[Game Launcher] Host args (${gameName}): ${args.join(" ")}`
+              `[Game Launcher] Esperando ${game.serverWarmupMs}ms antes de lanzar cliente...`
             );
-          } else {
-            const port =
-              bridge.getClientPort() ||
-              game.clientPortBase ||
-              game.defaultPort ||
-              27961;
 
-            args = game.getClientArgs(port, extraArgs || []);
-            console.log(
-              `[Game Launcher] Client args (${gameName}): ${args.join(" ")}`
+            await new Promise((resolve) =>
+              setTimeout(resolve, game.serverWarmupMs)
             );
           }
+
+          args = buildGameArgs({
+            game,
+            bridge,
+            isHost,
+            gameOptions,
+            extraArgs,
+          });
+
+          console.log(
+            `[Game Launcher] ${isHost ? "Host" : "Client"} args (${gameName}): ${args.join(" ")}`
+          );
         } else {
           console.warn(
             `[Game Launcher] Juego no encontrado: ${gameId}, usando args genéricos de Quake III`
@@ -159,11 +186,7 @@ function registerIPCHandlers() {
           } else {
             const port = bridge.getClientPort() || 27961;
 
-            args = [
-              "+connect",
-              `127.0.0.1:${port}`,
-              ...extraArgs,
-            ];
+            args = ["+connect", `127.0.0.1:${port}`, ...extraArgs];
           }
         }
 

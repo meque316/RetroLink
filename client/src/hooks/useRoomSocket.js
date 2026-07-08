@@ -39,6 +39,8 @@ export default function useRoomSocket({
         return;
       }
 
+      const gameOptions = room.gameOptions || {};
+
       try {
         if (isHost) {
           await window.retroLink?.launchGame(
@@ -47,6 +49,7 @@ export default function useRoomSocket({
             room.id,
             true,
             room.game,
+            gameOptions,
             []
           );
         } else {
@@ -58,6 +61,7 @@ export default function useRoomSocket({
             room.id,
             false,
             room.game,
+            gameOptions,
             []
           );
         }
@@ -128,6 +132,7 @@ export default function useRoomSocket({
   }, [
     room.id,
     room.game,
+    room.gameOptions,
     leaveRoom,
     gamePath,
     isHost,

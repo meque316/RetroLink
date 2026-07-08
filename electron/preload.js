@@ -10,8 +10,25 @@ contextBridge.exposeInMainWorld(
     selectGameExe: () =>
       ipcRenderer.invoke("select-game-exe"),
 
-    launchGame: (gamePath, hostIp = null, roomId = null, isHost = false, gameId = null, extraArgs = []) =>
-      ipcRenderer.invoke("launch-game", gamePath, hostIp, roomId, isHost, gameId, extraArgs),
+    launchGame: (
+      gamePath,
+      hostIp = null,
+      roomId = null,
+      isHost = false,
+      gameId = null,
+      gameOptions = {},
+      extraArgs = []
+    ) =>
+      ipcRenderer.invoke(
+        "launch-game",
+        gamePath,
+        hostIp,
+        roomId,
+        isHost,
+        gameId,
+        gameOptions,
+        extraArgs
+      ),
 
     killGame: () =>
       ipcRenderer.invoke("kill-game"),

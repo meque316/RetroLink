@@ -39,6 +39,13 @@ const GAMES = [
   ...GAMES_IN_DEVELOPMENT.map((g) => ({ ...g, supported: false })),
 ];
 
+const DEFAULT_GAME_OPTIONS = {
+  map: "de_dust2",
+  maxPlayers: 16,
+  timeLimit: 30,
+  friendlyFire: false,
+};
+
 const isGameSupported = (gameIdOrName) => {
   if (SUPPORTED_GAMES.some((g) => g.id === gameIdOrName)) return true;
   return SUPPORTED_GAMES.some((g) => g.name === gameIdOrName);
@@ -50,6 +57,7 @@ function Lobby() {
   const [showModal, setShowModal] = useState(false);
   const [roomName, setRoomName] = useState("");
   const [selectedGame, setSelectedGame] = useState(SUPPORTED_GAMES[0]);
+  const [gameOptions, setGameOptions] = useState(DEFAULT_GAME_OPTIONS);
 
   const {
     rooms,
@@ -104,10 +112,12 @@ function Lobby() {
       roomName,
       selectedGame,
       currentUser,
+      gameOptions,
       onSuccess: () => {
         setShowModal(false);
         setRoomName("");
         setSelectedGame(SUPPORTED_GAMES[0]);
+        setGameOptions(DEFAULT_GAME_OPTIONS);
       },
     });
   };
@@ -143,6 +153,8 @@ function Lobby() {
         currentUser={currentUser}
         onCreateRoom={handleCreateRoom}
         isGameSupported={isGameSupported}
+        gameOptions={gameOptions}
+        setGameOptions={setGameOptions}
       />
 
       <Sidebar
@@ -212,6 +224,12 @@ function Lobby() {
                           <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
                             {room.game}
                           </span>
+
+                          {room.gameOptions && room.gameId === "cs16" && (
+                            <p className="text-xs text-zinc-500 mt-2">
+                              {room.gameOptions.map} · {room.gameOptions.maxPlayers} players
+                            </p>
+                          )}
 
                           <div className="flex flex-wrap gap-4 text-zinc-400 text-sm mt-4">
                             <div className="flex items-center gap-2">

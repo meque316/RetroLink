@@ -12,6 +12,8 @@ export default function CreateRoomModal({
   currentUser,
   onCreateRoom,
   isGameSupported,
+  gameOptions,
+  setGameOptions,
 }) {
   if (!isOpen) return null;
 
@@ -98,6 +100,95 @@ export default function CreateRoomModal({
             ✅ Juegos soportados: Quake III Arena, Counter-Strike 1.6,
             Carmageddon 2
           </p>
+
+          {selectedGame?.id === "cs16" && (
+            <div className="mt-6 border-t border-zinc-800 pt-5 space-y-4">
+              <h3 className="text-sm font-semibold text-green-400">
+                Opciones de Counter-Strike 1.6
+              </h3>
+
+              <div>
+                <label className="text-sm text-zinc-400 mb-2 block">
+                  Mapa
+                </label>
+
+                <select
+                  value={gameOptions.map}
+                  onChange={(e) =>
+                    setGameOptions((prev) => ({
+                      ...prev,
+                      map: e.target.value,
+                    }))
+                  }
+                  className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                >
+                  <option value="de_dust2">de_dust2</option>
+                  <option value="de_inferno">de_inferno</option>
+                  <option value="de_nuke">de_nuke</option>
+                  <option value="de_train">de_train</option>
+                  <option value="cs_assault">cs_assault</option>
+                  <option value="cs_office">cs_office</option>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Max players
+                  </label>
+
+                  <input
+                    type="number"
+                    min="2"
+                    max="32"
+                    value={gameOptions.maxPlayers}
+                    onChange={(e) =>
+                      setGameOptions((prev) => ({
+                        ...prev,
+                        maxPlayers: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Time limit
+                  </label>
+
+                  <input
+                    type="number"
+                    min="0"
+                    max="120"
+                    value={gameOptions.timeLimit}
+                    onChange={(e) =>
+                      setGameOptions((prev) => ({
+                        ...prev,
+                        timeLimit: Number(e.target.value),
+                      }))
+                    }
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
+              </div>
+
+              <label className="flex items-center gap-3 text-sm text-zinc-300">
+                <input
+                  type="checkbox"
+                  checked={gameOptions.friendlyFire}
+                  onChange={(e) =>
+                    setGameOptions((prev) => ({
+                      ...prev,
+                      friendlyFire: e.target.checked,
+                    }))
+                  }
+                />
+
+                Friendly fire
+              </label>
+            </div>
+          )}
         </div>
 
         <button

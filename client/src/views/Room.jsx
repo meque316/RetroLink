@@ -168,6 +168,44 @@ function Room({ room, leaveRoom }) {
             readyPlayers={readyPlayers}
           />
 
+          {currentRoom?.gameOptions && currentRoom?.gameId === "cs16" && (
+            <div className="bg-green-500/10 border border-green-500/20 rounded-2xl p-4 mb-4 text-sm text-zinc-300">
+              <p className="text-green-400 font-semibold mb-2">
+                CS 1.6 Match Options
+              </p>
+
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <p>
+                  Map:{" "}
+                  <span className="text-white">
+                    {currentRoom.gameOptions.map}
+                  </span>
+                </p>
+
+                <p>
+                  Max players:{" "}
+                  <span className="text-white">
+                    {currentRoom.gameOptions.maxPlayers}
+                  </span>
+                </p>
+
+                <p>
+                  Time limit:{" "}
+                  <span className="text-white">
+                    {currentRoom.gameOptions.timeLimit} min
+                  </span>
+                </p>
+
+                <p>
+                  Friendly fire:{" "}
+                  <span className="text-white">
+                    {currentRoom.gameOptions.friendlyFire ? "On" : "Off"}
+                  </span>
+                </p>
+              </div>
+            </div>
+          )}
+
           <GamePathPanel
             game={currentRoom?.game}
             gamePath={gamePath}
