@@ -2,9 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
+html, body, #root {
+  height: 100%;
   margin: 0;
+}
+
+body {
   background-color: #0b0b0f;
   color: white;
   font-family: monospace;
+  overflow: hidden; /* evita que el body scrollee, el scroll vive en los paneles internos */
 }
