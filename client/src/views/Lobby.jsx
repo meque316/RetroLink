@@ -44,6 +44,13 @@ const DEFAULT_GAME_OPTIONS = {
   maxPlayers: 16,
   timeLimit: 30,
   friendlyFire: false,
+
+  // NUEVAS OPCIONES
+  startMoney: 800,
+  freezeTime: 5,
+  buyTime: 0.25,
+  allTalk: false,
+  password: "",
 };
 
 const isGameSupported = (gameIdOrName) => {

@@ -17,6 +17,13 @@ export default function CreateRoomModal({
 }) {
   if (!isOpen) return null;
 
+  const updateGameOption = (key, value) => {
+    setGameOptions((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-[#121821] border border-zinc-800 rounded-3xl p-8 w-full max-w-lg max-h-[90vh] overflow-y-auto">
@@ -114,18 +121,15 @@ export default function CreateRoomModal({
 
                 <select
                   value={gameOptions.map}
-                  onChange={(e) =>
-                    setGameOptions((prev) => ({
-                      ...prev,
-                      map: e.target.value,
-                    }))
-                  }
+                  onChange={(e) => updateGameOption("map", e.target.value)}
                   className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
                 >
                   <option value="de_dust2">de_dust2</option>
                   <option value="de_inferno">de_inferno</option>
                   <option value="de_nuke">de_nuke</option>
                   <option value="de_train">de_train</option>
+                  <option value="de_aztec">de_aztec</option>
+                  <option value="de_cbble">de_cbble</option>
                   <option value="cs_assault">cs_assault</option>
                   <option value="cs_office">cs_office</option>
                 </select>
@@ -143,10 +147,7 @@ export default function CreateRoomModal({
                     max="32"
                     value={gameOptions.maxPlayers}
                     onChange={(e) =>
-                      setGameOptions((prev) => ({
-                        ...prev,
-                        maxPlayers: Number(e.target.value),
-                      }))
+                      updateGameOption("maxPlayers", Number(e.target.value))
                     }
                     className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
                   />
@@ -163,30 +164,107 @@ export default function CreateRoomModal({
                     max="120"
                     value={gameOptions.timeLimit}
                     onChange={(e) =>
-                      setGameOptions((prev) => ({
-                        ...prev,
-                        timeLimit: Number(e.target.value),
-                      }))
+                      updateGameOption("timeLimit", Number(e.target.value))
                     }
                     className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
                   />
                 </div>
+
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Start money
+                  </label>
+
+                  <input
+                    type="number"
+                    min="800"
+                    max="16000"
+                    step="100"
+                    value={gameOptions.startMoney}
+                    onChange={(e) =>
+                      updateGameOption("startMoney", Number(e.target.value))
+                    }
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Freeze time
+                  </label>
+
+                  <input
+                    type="number"
+                    min="0"
+                    max="30"
+                    value={gameOptions.freezeTime}
+                    onChange={(e) =>
+                      updateGameOption("freezeTime", Number(e.target.value))
+                    }
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Buy time
+                  </label>
+
+                  <input
+                    type="number"
+                    min="0"
+                    max="5"
+                    step="0.25"
+                    value={gameOptions.buyTime}
+                    onChange={(e) =>
+                      updateGameOption("buyTime", Number(e.target.value))
+                    }
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-sm text-zinc-400 mb-2 block">
+                    Password
+                  </label>
+
+                  <input
+                    type="text"
+                    value={gameOptions.password}
+                    onChange={(e) =>
+                      updateGameOption("password", e.target.value)
+                    }
+                    placeholder="Optional"
+                    className="w-full bg-zinc-900 px-4 py-3 rounded-xl text-white placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-green-500"
+                  />
+                </div>
               </div>
 
-              <label className="flex items-center gap-3 text-sm text-zinc-300">
-                <input
-                  type="checkbox"
-                  checked={gameOptions.friendlyFire}
-                  onChange={(e) =>
-                    setGameOptions((prev) => ({
-                      ...prev,
-                      friendlyFire: e.target.checked,
-                    }))
-                  }
-                />
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <label className="flex items-center gap-3 text-sm text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={gameOptions.friendlyFire}
+                    onChange={(e) =>
+                      updateGameOption("friendlyFire", e.target.checked)
+                    }
+                  />
 
-                Friendly fire
-              </label>
+                  Friendly fire
+                </label>
+
+                <label className="flex items-center gap-3 text-sm text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={gameOptions.allTalk}
+                    onChange={(e) =>
+                      updateGameOption("allTalk", e.target.checked)
+                    }
+                  />
+
+                  All talk
+                </label>
+              </div>
             </div>
           )}
         </div>
