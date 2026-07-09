@@ -4,7 +4,7 @@ module.exports = {
   defaultPort: 27015,
   clientPortBase: 27016,
   clientGamePort: 27005,
-  serverWarmupMs: 5000,
+  serverWarmupMs: 7000,
   supportsRoomOptions: true,
 
   getHostArgs(options = {}, extraArgs = []) {
@@ -42,12 +42,16 @@ module.exports = {
     return [
       "-console",
       "-game", "cstrike",
-      "+connect", `127.0.0.1:${this.defaultPort}`,
+
+      "+clientport", String(this.clientGamePort),
       "+port", String(port),
+      "+connect", `127.0.0.1:${this.defaultPort}`,
+
       "+rate", "25000",
       "+cl_updaterate", "20",
       "+cl_cmdrate", "20",
       "+fps_max", "100",
+
       ...extraArgs,
     ];
   },
