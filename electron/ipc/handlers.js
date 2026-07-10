@@ -1,7 +1,7 @@
 const { ipcMain, dialog, BrowserWindow } = require("electron");
 const path = require("path");
 const os = require("os");
-const { execFile } = require("child_process");
+const { execFile, spawn } = require("child_process");
 
 const gamesPath = path.join(__dirname, "../games/index.js");
 console.log("[Handlers] Cargando juegos desde:", gamesPath);
@@ -21,17 +21,9 @@ let activeBridge = null;
 function getBridge(gameId) {
   const realGameId = getRealGameId(gameId);
 
-  if (realGameId === "cs16") {
-    console.log("[Handlers] Usando bridge para CS 1.6");
-    return relayCS;
-  }
+  if (realGameId === "cs16") return relayCS;
+  if (realGameId === "carmageddon2") return relayC2;
 
-  if (realGameId === "carmageddon2") {
-    console.log("[Handlers] Usando bridge para Carmageddon 2");
-    return relayC2;
-  }
-
-  console.log("[Handlers] Usando bridge para Quake III");
   return relayQuake;
 }
 
@@ -41,11 +33,9 @@ function getActiveBridge() {
 
 function buildGameArgs({ game, bridge, isHost, gameOptions, extraArgs }) {
   if (isHost) {
-    if (game.supportsRoomOptions) {
-      return game.getHostArgs(gameOptions, extraArgs || []);
-    }
-
-    return game.getHostArgs(extraArgs || []);
+    return game.supportsRoomOptions
+      ? game.getHostArgs(gameOptions, extraArgs || [])
+      : game.getHostArgs(extraArgs || []);
   }
 
   const port =
@@ -54,11 +44,31 @@ function buildGameArgs({ game, bridge, isHost, gameOptions, extraArgs }) {
     game.defaultPort ||
     27961;
 
-  if (game.supportsRoomOptions) {
-    return game.getClientArgs(port, gameOptions, extraArgs || []);
+  return game.supportsRoomOptions
+    ? game.getClientArgs(port, gameOptions, extraArgs || [])
+    : game.getClientArgs(port, extraArgs || []);
+}
+
+function launchProcess({ gamePath, args, gameDir, realGameId }) {
+  const isCarmageddon2 = realGameId === "carmageddon2";
+
+  if (isCarmageddon2) {
+    const proc = spawn(gamePath, args, {
+      cwd: gameDir,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+
+    proc.unref();
+    return proc;
   }
 
-  return game.getClientArgs(port, extraArgs || []);
+  return execFile(gamePath, args, { cwd: gameDir }, (err) => {
+    if (err && err.code !== null) {
+      console.error("[Game Process Error]:", err.message);
+    }
+  });
 }
 
 function registerIPCHandlers() {
@@ -185,7 +195,6 @@ function registerIPCHandlers() {
             ];
           } else {
             const port = bridge.getClientPort() || 27961;
-
             args = ["+connect", `127.0.0.1:${port}`, ...extraArgs];
           }
         }
@@ -194,34 +203,30 @@ function registerIPCHandlers() {
           `[Game Launcher] Executing ${gamePath} with args: ${args.join(" ")}`
         );
 
-        const proc = execFile(gamePath, args, { cwd: gameDir }, (err) => {
-          if (err && err.code !== null) {
-            console.error("[Game Process Error]:", err.message);
-          }
+        const proc = launchProcess({
+          gamePath,
+          args,
+          gameDir,
+          realGameId,
         });
 
         gameProcess = proc;
 
-        if (isHost && roomId) {
-          proc.on("close", (code) => {
-            console.log(
-              `[Game] Host closed game (${gameName}) — notifying clients, code: ${code}`
-            );
+        proc.on("close", (code) => {
+          console.log(
+            `[Game] ${isHost ? "Host" : "Client"} game (${gameName}) closed, code: ${code}`
+          );
 
+          if (isHost && roomId) {
             const win = BrowserWindow.getAllWindows()[0];
 
             if (win && !win.webContents.isDestroyed()) {
               win.webContents.send("host-game-closed", { roomId });
             }
+          }
 
-            gameProcess = null;
-          });
-        } else {
-          proc.on("close", (code) => {
-            console.log(`[Game] Client game (${gameName}) closed, code: ${code}`);
-            gameProcess = null;
-          });
-        }
+          gameProcess = null;
+        });
 
         proc.on("error", (err) => {
           console.error(`[Game] Error ejecutando ${gameName}:`, err.message);
