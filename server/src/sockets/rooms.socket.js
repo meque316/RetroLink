@@ -5,6 +5,17 @@ const readyStates = {};
 const onlineUsers = {};
 const userGames = {}; // socket.id -> { gameId: boolean }
 
+function hasConfiguredGame(socketId, room) {
+  const configuredGames = userGames[socketId] || {};
+
+  return Boolean(
+    configuredGames[room.gameId] ||
+      configuredGames[room.game] ||
+      configuredGames[String(room.gameId || "").toLowerCase()] ||
+      configuredGames[String(room.game || "").toLowerCase()]
+  );
+}
+
 export default function roomsSocket(io) {
   io.on("connection", (socket) => {
     console.log("Usuario conectado:", socket.id);
@@ -29,22 +40,20 @@ export default function roomsSocket(io) {
       socket.emit("users-online", Object.values(onlineUsers));
     });
 
-    /*
-    REPORT GAME CONFIG
-    */
     socket.on("report-game-config", ({ gameId, hasGame }) => {
       if (!userGames[socket.id]) userGames[socket.id] = {};
 
       userGames[socket.id][gameId] = hasGame;
+
+      if (typeof gameId === "string") {
+        userGames[socket.id][gameId.toLowerCase()] = hasGame;
+      }
 
       console.log(
         `[User] ${socket.id} (${user.username}) game ${gameId} configured: ${hasGame}`
       );
     });
 
-    /*
-    CREATE ROOM
-    */
     socket.on("create-room", (roomData) => {
       const room = {
         id: crypto.randomUUID(),
@@ -76,9 +85,6 @@ export default function roomsSocket(io) {
       io.to(room.id).emit("room-ready-state", readyStates[room.id]);
     });
 
-    /*
-    JOIN ROOM
-    */
     socket.on("join-room", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
       if (!room) return;
@@ -86,8 +92,7 @@ export default function roomsSocket(io) {
       const alreadyInside = room.members.some((m) => m.id === socket.id);
       if (alreadyInside) return;
 
-      const gameKey = room.gameId || room.game;
-      const hasGame = userGames[socket.id]?.[gameKey] || false;
+      const hasGame = hasConfiguredGame(socket.id, room);
 
       room.members.push({
         id: socket.id,
@@ -120,9 +125,6 @@ export default function roomsSocket(io) {
       io.to(roomId).emit("room-ready-state", readyStates[roomId] || []);
     });
 
-    /*
-    TOGGLE READY
-    */
     socket.on("toggle-ready", (roomId) => {
       if (!readyStates[roomId]) readyStates[roomId] = [];
 
@@ -139,9 +141,6 @@ export default function roomsSocket(io) {
       io.to(roomId).emit("room-ready-state", readyStates[roomId]);
     });
 
-    /*
-    START MATCH
-    */
     socket.on("start-match", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
       if (!room || room.host !== socket.id) return;
@@ -158,17 +157,15 @@ export default function roomsSocket(io) {
         return;
       }
 
-      const gameKey = room.gameId || room.game;
-
       const missingGame = room.members.filter(
-        (m) => !userGames[m.id]?.[gameKey]
+        (member) => !hasConfiguredGame(member.id, room)
       );
 
       if (missingGame.length > 0) {
         const names = missingGame.map((m) => m.username).join(", ");
 
         socket.emit("match-error", {
-          message: `❌ Los siguientes jugadores no tienen ${room.game} configurado: ${names}`,
+          message: `Los siguientes jugadores no tienen ${room.game} configurado: ${names}`,
         });
 
         console.log(
@@ -190,9 +187,6 @@ export default function roomsSocket(io) {
       });
     });
 
-    /*
-    ROOM CHAT
-    */
     socket.on("room-chat", ({ roomId, message, username }) => {
       io.to(roomId).emit("room-chat", {
         username,
@@ -201,9 +195,6 @@ export default function roomsSocket(io) {
       });
     });
 
-    /*
-    WEBRTC SIGNALING
-    */
     socket.on("webrtc-join", ({ roomId, isHost, hostIP }, ack) => {
       console.log(
         `[WebRTC] ${socket.id} sincronizando señales en la sala principal ${roomId} como ${
@@ -252,9 +243,6 @@ export default function roomsSocket(io) {
       }
     });
 
-    /*
-    RENAME ROOM
-    */
     socket.on("rename-room", ({ roomId, name }) => {
       const room = rooms.find((r) => r.id === roomId);
       if (!room || room.host !== socket.id) return;
@@ -264,9 +252,6 @@ export default function roomsSocket(io) {
       io.emit("rooms-list", rooms);
     });
 
-    /*
-    LEAVE ROOM
-    */
     socket.on("leave-room", (roomId) => {
       const room = rooms.find((r) => r.id === roomId);
       if (!room) return;
@@ -309,9 +294,6 @@ export default function roomsSocket(io) {
       io.to(roomId).emit("room-ready-state", readyStates[roomId] || []);
     });
 
-    /*
-    DISCONNECT
-    */
     socket.on("disconnect", () => {
       console.log("Usuario desconectado:", socket.id);
 
