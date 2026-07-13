@@ -62,6 +62,10 @@ function createGenericRelay({
     pendingCandidates: [],
     remoteDescSet: false,
     clientPort: null,
+    // Puerto UDP real usado por el ejecutable del cliente.
+    //UT99 abre un puerto dinámico distinto de 7777.
+    clientGamePort: null,
+    clientGameAddress: "127.0.0.1",
   };
 
   const keepAliveIntervals = new Map();
@@ -251,6 +255,8 @@ function createGenericRelay({
     state.pendingCandidates = [];
     state.remoteDescSet = false;
     state.clientPort = null;
+    state.clientGamePort = null;
+    state.clientGameAddress = "127.0.0.1";
 
     log("Reset complete");
   }
@@ -394,6 +400,20 @@ function createGenericRelay({
     state.udpLocal.on(
       "message",
       (message, remoteInfo) => {
+        const endpointChanged =
+          state.clientGamePort !== remoteInfo.port ||
+          state.clientGameAddress !== remoteInfo.address;
+
+        state.clientGamePort = remoteInfo.port;
+        state.clientGameAddress = remoteInfo.address;
+
+        if (endpointChanged) {
+          log(
+            `Cliente del juego detectado en ` +
+              `${state.clientGameAddress}:${state.clientGamePort}`
+          );
+        }
+
         if (debugPackets) {
           log(
             `Cliente UDP recibió ${message.length} bytes desde ` +
@@ -476,23 +496,35 @@ function createGenericRelay({
       return;
     }
 
+    if (!state.clientGamePort) {
+      if (debugPackets) {
+        warn(
+          "Se recibió una respuesta antes de detectar " +
+            "el puerto UDP del cliente del juego."
+        );
+      }
+
+      return;
+    }
+
     state.udpLocal.send(
       buffer,
       0,
       buffer.length,
-      gamePort,
-      targetAddress,
+      state.clientGamePort,
+      state.clientGameAddress,
       (err) => {
         if (err) {
           error(
-            `DataChannel → juego cliente (${gamePort}):`,
+            `DataChannel → cliente local ` +
+              `${state.clientGameAddress}:${state.clientGamePort}:`,
             err.message
           );
         } else if (debugPackets) {
           log(
-            `DataChannel → juego cliente: ` +
+            `DataChannel → cliente local: ` +
               `${buffer.length} bytes a ` +
-              `${targetAddress}:${gamePort}`
+              `${state.clientGameAddress}:${state.clientGamePort}`
           );
         }
       }

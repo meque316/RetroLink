@@ -4,8 +4,9 @@ module.exports = createGenericRelay({
   label: "UT99",
   gamePort: 7777,
   clientPortBase: 7801,
-  serverWarmupMs: 3000,
   maxClients: 16,
   ordered: true,
-  debugPackets: false,
+
+  // Temporalmente activado para depuración.
+  debugPackets: true,
 });
