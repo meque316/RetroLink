@@ -20,32 +20,72 @@ import useAvatar from "../hooks/useAvatar";
 import useLobbySocket from "../hooks/useLobbySocket";
 
 const SUPPORTED_GAMES = [
-  { id: "quake3", name: "Quake III Arena", year: "1999" },
-  { id: "cs16", name: "Counter-Strike 1.6", year: "2000" },
-  { id: "carmageddon2", name: "Carmageddon II: Carpocalypse Now", year: "1998" },
+  {
+    id: "quake3",
+    name: "Quake III Arena",
+    year: "1999",
+  },
+  {
+    id: "cs16",
+    name: "Counter-Strike 1.6",
+    year: "2000",
+  },
+  {
+    id: "ut99",
+    name: "Unreal Tournament",
+    year: "1999",
+  },
+  {
+    id: "carmageddon2",
+    name: "Carmageddon II: Carpocalypse Now",
+    year: "1998",
+  },
 ];
 
 const GAMES_IN_DEVELOPMENT = [
-  { id: "quake2", name: "Quake II", year: "1997" },
-  { id: "quake1", name: "Quake", year: "1996" },
-  { id: "ut99", name: "Unreal Tournament", year: "1999" },
-  { id: "ut2004", name: "Unreal Tournament 2004", year: "2004" },
-  { id: "hl1", name: "Half-Life", year: "1998" },
-  { id: "doom2", name: "Doom II", year: "1994" },
+  {
+    id: "quake2",
+    name: "Quake II",
+    year: "1997",
+  },
+  {
+    id: "quake1",
+    name: "Quake",
+    year: "1996",
+  },
+  {
+    id: "ut2004",
+    name: "Unreal Tournament 2004",
+    year: "2004",
+  },
+  {
+    id: "hl1",
+    name: "Half-Life",
+    year: "1998",
+  },
+  {
+    id: "doom2",
+    name: "Doom II",
+    year: "1994",
+  },
 ];
 
 const GAMES = [
-  ...SUPPORTED_GAMES.map((g) => ({ ...g, supported: true })),
-  ...GAMES_IN_DEVELOPMENT.map((g) => ({ ...g, supported: false })),
+  ...SUPPORTED_GAMES.map((game) => ({
+    ...game,
+    supported: true,
+  })),
+  ...GAMES_IN_DEVELOPMENT.map((game) => ({
+    ...game,
+    supported: false,
+  })),
 ];
 
-const DEFAULT_GAME_OPTIONS = {
+const DEFAULT_CS16_OPTIONS = {
   map: "de_dust2",
   maxPlayers: 16,
   timeLimit: 30,
   friendlyFire: false,
-
-  // NUEVAS OPCIONES
   startMoney: 800,
   freezeTime: 5,
   buyTime: 0.25,
@@ -53,18 +93,63 @@ const DEFAULT_GAME_OPTIONS = {
   password: "",
 };
 
-const isGameSupported = (gameIdOrName) => {
-  if (SUPPORTED_GAMES.some((g) => g.id === gameIdOrName)) return true;
-  return SUPPORTED_GAMES.some((g) => g.name === gameIdOrName);
+const DEFAULT_UT99_OPTIONS = {
+  map: "DM-Deck16][",
+  gameType: "deathmatch",
+  maxPlayers: 16,
+  fragLimit: 30,
+  timeLimit: 20,
+  minPlayers: 0,
+  difficulty: 3,
+  friendlyFire: 0,
+  password: "",
+  serverName: "RetroLink UT99",
 };
+
+const DEFAULT_GAME_OPTIONS = {
+  ...DEFAULT_CS16_OPTIONS,
+};
+
+const isGameSupported = (gameIdOrName) => {
+  if (!gameIdOrName) return false;
+
+  if (
+    SUPPORTED_GAMES.some(
+      (game) => game.id === gameIdOrName
+    )
+  ) {
+    return true;
+  }
+
+  return SUPPORTED_GAMES.some(
+    (game) => game.name === gameIdOrName
+  );
+};
+
+function getDefaultOptionsForGame(gameId) {
+  if (gameId === "ut99") {
+    return {
+      ...DEFAULT_UT99_OPTIONS,
+    };
+  }
+
+  return {
+    ...DEFAULT_CS16_OPTIONS,
+  };
+}
 
 function Lobby() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("lobby");
   const [showModal, setShowModal] = useState(false);
   const [roomName, setRoomName] = useState("");
-  const [selectedGame, setSelectedGame] = useState(SUPPORTED_GAMES[0]);
-  const [gameOptions, setGameOptions] = useState(DEFAULT_GAME_OPTIONS);
+  const [selectedGame, setSelectedGame] = useState(
+    SUPPORTED_GAMES[0]
+  );
+
+  const [gameOptions, setGameOptions] = useState({
+    ...DEFAULT_GAME_OPTIONS,
+  });
 
   const {
     rooms,
@@ -114,17 +199,28 @@ function Lobby() {
     fetchFriends();
   }, []);
 
+  useEffect(() => {
+    setGameOptions(
+      getDefaultOptionsForGame(selectedGame?.id)
+    );
+  }, [selectedGame?.id]);
+
   const handleCreateRoom = () => {
     createRoom({
       roomName,
       selectedGame,
       currentUser,
       gameOptions,
+
       onSuccess: () => {
+        const defaultGame = SUPPORTED_GAMES[0];
+
         setShowModal(false);
         setRoomName("");
-        setSelectedGame(SUPPORTED_GAMES[0]);
-        setGameOptions(DEFAULT_GAME_OPTIONS);
+        setSelectedGame(defaultGame);
+        setGameOptions(
+          getDefaultOptionsForGame(defaultGame.id)
+        );
       },
     });
   };
@@ -132,6 +228,7 @@ function Lobby() {
   const logout = () => {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
+
     disconnectSocket();
     window.location.reload();
   };
@@ -178,7 +275,10 @@ function Lobby() {
           <>
             <div className="flex items-center justify-between mb-8">
               <div>
-                <h2 className="text-3xl font-semibold">Game Rooms</h2>
+                <h2 className="text-3xl font-semibold">
+                  Game Rooms
+                </h2>
+
                 <p className="text-zinc-400 mt-1">
                   Join or host retro multiplayer sessions
                 </p>
@@ -187,6 +287,7 @@ function Lobby() {
               <button
                 onClick={() => setShowModal(true)}
                 className="flex items-center gap-2 bg-green-500 hover:bg-green-400 text-black px-5 py-3 rounded-xl font-semibold transition"
+                type="button"
               >
                 <Plus size={18} />
                 Host Match
@@ -200,14 +301,23 @@ function Lobby() {
                 </div>
               ) : (
                 rooms.map((room) => {
-                  const gameIdentifier = room.gameId || room.game;
-                  const isSupported = isGameSupported(gameIdentifier);
+                  const gameIdentifier =
+                    room.gameId || room.game;
+
+                  const supported =
+                    isGameSupported(gameIdentifier);
+
+                  const isCS16 =
+                    room.gameId === "cs16";
+
+                  const isUT99 =
+                    room.gameId === "ut99";
 
                   return (
                     <div
                       key={room.id}
                       className={`bg-[#11161d] border rounded-2xl p-5 hover:border-green-500 transition flex flex-col sm:flex-row items-center justify-between gap-6 ${
-                        isSupported
+                        supported
                           ? "border-zinc-800"
                           : "border-zinc-800/50 opacity-60"
                       }`}
@@ -221,7 +331,7 @@ function Lobby() {
                           <h3 className="text-xl font-semibold flex items-center gap-2 flex-wrap">
                             {room.name}
 
-                            {!isSupported && (
+                            {!supported && (
                               <span className="text-[10px] bg-yellow-500/20 text-yellow-500 px-2 py-0.5 rounded-full">
                                 No soportado
                               </span>
@@ -232,11 +342,30 @@ function Lobby() {
                             {room.game}
                           </span>
 
-                          {room.gameOptions && room.gameId === "cs16" && (
-                            <p className="text-xs text-zinc-500 mt-2">
-                              {room.gameOptions.map} · {room.gameOptions.maxPlayers} players
-                            </p>
-                          )}
+                          {room.gameOptions &&
+                            isCS16 && (
+                              <p className="text-xs text-zinc-500 mt-2">
+                                {room.gameOptions.map} ·{" "}
+                                {
+                                  room.gameOptions
+                                    .maxPlayers
+                                }{" "}
+                                players
+                              </p>
+                            )}
+
+                          {room.gameOptions &&
+                            isUT99 && (
+                              <p className="text-xs text-zinc-500 mt-2">
+                                {room.gameOptions.map} ·{" "}
+                                {room.gameOptions.gameType} ·{" "}
+                                {
+                                  room.gameOptions
+                                    .maxPlayers
+                                }{" "}
+                                players
+                              </p>
+                            )}
 
                           <div className="flex flex-wrap gap-4 text-zinc-400 text-sm mt-4">
                             <div className="flex items-center gap-2">
@@ -253,15 +382,20 @@ function Lobby() {
                       </div>
 
                       <button
-                        onClick={() => isSupported && joinRoom(room)}
-                        disabled={!isSupported}
+                        onClick={() =>
+                          supported && joinRoom(room)
+                        }
+                        disabled={!supported}
                         className={`px-5 py-2 rounded-xl font-semibold transition w-full sm:w-auto ${
-                          isSupported
+                          supported
                             ? "bg-green-500 hover:bg-green-400 text-black"
                             : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
                         }`}
+                        type="button"
                       >
-                        {isSupported ? "Join Room" : "No disponible"}
+                        {supported
+                          ? "Join Room"
+                          : "No disponible"}
                       </button>
                     </div>
                   );
