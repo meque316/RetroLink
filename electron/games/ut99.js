@@ -55,25 +55,30 @@ function sanitizeText(value, fallback = "") {
   return value.trim();
 }
 
+function normalizeGameType(gameType) {
+  return GAME_TYPES[gameType]
+    ? gameType
+    : DEFAULT_OPTIONS.gameType;
+}
+
 function getGameClass(gameType) {
-  return GAME_TYPES[gameType] || GAME_TYPES.deathmatch;
+  const normalizedGameType = normalizeGameType(gameType);
+  return GAME_TYPES[normalizedGameType];
 }
 
 function getCompatibleMap(gameType, requestedMap) {
-  const normalizedGameType = GAME_TYPES[gameType]
-    ? gameType
-    : "deathmatch";
+  const normalizedGameType = normalizeGameType(gameType);
 
-  const map = sanitizeText(
-    requestedMap,
-    DEFAULT_MAPS[normalizedGameType]
-  );
+  const map =
+    sanitizeText(
+      requestedMap,
+      DEFAULT_MAPS[normalizedGameType]
+    ) || DEFAULT_MAPS[normalizedGameType];
 
   const expectedPrefix =
     MAP_PREFIXES[normalizedGameType];
 
   if (
-    map &&
     map.toUpperCase().startsWith(
       expectedPrefix.toUpperCase()
     )
@@ -82,6 +87,82 @@ function getCompatibleMap(gameType, requestedMap) {
   }
 
   return DEFAULT_MAPS[normalizedGameType];
+}
+
+function normalizeOptions(options = {}) {
+  const mergedOptions = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+  };
+
+  const gameType = normalizeGameType(
+    mergedOptions.gameType
+  );
+
+  const maxPlayers = sanitizeNumber(
+    mergedOptions.maxPlayers,
+    DEFAULT_OPTIONS.maxPlayers,
+    1,
+    32
+  );
+
+  return {
+    map: getCompatibleMap(
+      gameType,
+      mergedOptions.map
+    ),
+
+    gameType,
+
+    gameClass: getGameClass(gameType),
+
+    maxPlayers,
+
+    fragLimit: sanitizeNumber(
+      mergedOptions.fragLimit,
+      DEFAULT_OPTIONS.fragLimit,
+      0,
+      999
+    ),
+
+    timeLimit: sanitizeNumber(
+      mergedOptions.timeLimit,
+      DEFAULT_OPTIONS.timeLimit,
+      0,
+      999
+    ),
+
+    minPlayers: sanitizeNumber(
+      mergedOptions.minPlayers,
+      DEFAULT_OPTIONS.minPlayers,
+      0,
+      maxPlayers
+    ),
+
+    difficulty: sanitizeNumber(
+      mergedOptions.difficulty,
+      DEFAULT_OPTIONS.difficulty,
+      0,
+      7
+    ),
+
+    friendlyFire: sanitizeNumber(
+      mergedOptions.friendlyFire,
+      DEFAULT_OPTIONS.friendlyFire,
+      0,
+      100
+    ),
+
+    password: sanitizeText(
+      mergedOptions.password
+    ),
+
+    serverName:
+      sanitizeText(
+        mergedOptions.serverName,
+        DEFAULT_OPTIONS.serverName
+      ) || DEFAULT_OPTIONS.serverName,
+  };
 }
 
 module.exports = {
@@ -111,92 +192,53 @@ module.exports = {
     ...DEFAULT_MAPS,
   },
 
-  getServerArgs(options = {}, extraArgs = []) {
-    const mergedOptions = {
-      ...DEFAULT_OPTIONS,
-      ...options,
+  normalizeOptions,
+
+  /*
+  Configuración que handlers.js debe escribir en los INI
+  antes de iniciar UCC.exe.
+  */
+  getServerConfig(options = {}) {
+    const normalized = normalizeOptions(options);
+
+    return {
+      gameType: normalized.gameType,
+      gameClass: normalized.gameClass,
+      minPlayers: normalized.minPlayers,
+      difficulty: normalized.difficulty,
+      serverName: normalized.serverName,
     };
+  },
 
-    const gameType = GAME_TYPES[
-      mergedOptions.gameType
-    ]
-      ? mergedOptions.gameType
-      : "deathmatch";
-
-    const gameClass = getGameClass(gameType);
-
-    const map = getCompatibleMap(
-      gameType,
-      mergedOptions.map
-    );
-
-    const maxPlayers = sanitizeNumber(
-      mergedOptions.maxPlayers,
-      DEFAULT_OPTIONS.maxPlayers,
-      1,
-      32
-    );
-
-    const fragLimit = sanitizeNumber(
-      mergedOptions.fragLimit,
-      DEFAULT_OPTIONS.fragLimit,
-      0,
-      999
-    );
-
-    const timeLimit = sanitizeNumber(
-      mergedOptions.timeLimit,
-      DEFAULT_OPTIONS.timeLimit,
-      0,
-      999
-    );
-
-    const minPlayers = sanitizeNumber(
-      mergedOptions.minPlayers,
-      DEFAULT_OPTIONS.minPlayers,
-      0,
-      maxPlayers
-    );
-
-    const difficulty = sanitizeNumber(
-      mergedOptions.difficulty,
-      DEFAULT_OPTIONS.difficulty,
-      0,
-      7
-    );
-
-    const friendlyFirePercent = sanitizeNumber(
-      mergedOptions.friendlyFire,
-      DEFAULT_OPTIONS.friendlyFire,
-      0,
-      100
-    );
+  getServerArgs(options = {}, extraArgs = []) {
+    const normalized = normalizeOptions(options);
 
     const friendlyFireScale =
-      friendlyFirePercent / 100;
-
-    const password = sanitizeText(
-      mergedOptions.password
-    );
+      normalized.friendlyFire / 100;
 
     const serverUrlOptions = [
-      `Game=${gameClass}`,
-      `MaxPlayers=${maxPlayers}`,
-      `FragLimit=${fragLimit}`,
-      `TimeLimit=${timeLimit}`,
-      `MinPlayers=${minPlayers}`,
-      `Difficulty=${difficulty}`,
+      `Game=${normalized.gameClass}`,
+      `MaxPlayers=${normalized.maxPlayers}`,
+      `FragLimit=${normalized.fragLimit}`,
+      `TimeLimit=${normalized.timeLimit}`,
       `FriendlyFireScale=${friendlyFireScale}`,
     ];
 
-    if (password) {
+    /*
+    MinPlayers y Difficulty no se incluyen aquí.
+    UT99 los toma desde UnrealTournament.ini/User.ini.
+    */
+
+    if (normalized.password) {
       serverUrlOptions.push(
-        `GamePassword=${encodeURIComponent(password)}`
+        `GamePassword=${encodeURIComponent(
+          normalized.password
+        )}`
       );
     }
 
     const serverUrl =
-      `${map}?${serverUrlOptions.join("?")}`;
+      `${normalized.map}?${serverUrlOptions.join("?")}`;
 
     return [
       "server",
@@ -209,13 +251,11 @@ module.exports = {
   },
 
   getHostArgs(options = {}, extraArgs = []) {
-    const password = sanitizeText(
-      options.password
-    );
+    const normalized = normalizeOptions(options);
 
-    const connectionUrl = password
+    const connectionUrl = normalized.password
       ? `127.0.0.1:${this.defaultPort}?Password=${encodeURIComponent(
-          password
+          normalized.password
         )}`
       : `127.0.0.1:${this.defaultPort}`;
 
@@ -240,13 +280,11 @@ module.exports = {
         ? parsedPort
         : this.defaultPort;
 
-    const password = sanitizeText(
-      options.password
-    );
+    const normalized = normalizeOptions(options);
 
-    const connectionUrl = password
+    const connectionUrl = normalized.password
       ? `127.0.0.1:${targetPort}?Password=${encodeURIComponent(
-          password
+          normalized.password
         )}`
       : `127.0.0.1:${targetPort}`;
 

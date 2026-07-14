@@ -8,5 +8,5 @@ module.exports = createGenericRelay({
   ordered: true,
 
   // Temporalmente activado para depuración.
-  debugPackets: true,
+  debugPackets: false,
 });
