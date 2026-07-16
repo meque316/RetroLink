@@ -7,6 +7,12 @@ const SIGNALING_URL = "https://retrolink-server.onrender.com";
 const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
+// Tiempo máximo esperando que un peer llegue a "connected" antes de reportar
+// timeout y limpiar. Antes no existía ningún watchdog: si STUN/TURN no eran
+// alcanzables, la conexión podía quedar "esperando" indefinidamente sin que
+// el usuario o los logs se enteraran de nada.
+const ICE_CONNECT_TIMEOUT_MS = 20000;
+
 let state = {
   signalingSocket: null,
   roomId: null,
@@ -23,36 +29,39 @@ let state = {
   remoteDescSet: false,
   clientPort: null,
   iceConnectionState: null,
+  iceTimeoutHandle: null,
+  gatheredCandidateTypes: new Set(),
 };
 
 let keepAliveIntervals = new Map();
 
-// ✅ ICE_SERVERS CORREGIDOS - Solo servidores válidos para node-datachannel
+// ✅ ICE_SERVERS CORREGIDOS - Formato real de node-datachannel
+//
+// FIX CRÍTICO: node-datachannel NO usa el formato RTCConfiguration del
+// navegador ({ urls, username, credential }). Su tipo real es
+// `iceServers: (string | IceServer)[]`, donde IceServer usa las claves
+// `hostname` / `port` / `username` / `password` (no `urls` / `credential`).
+// La forma más simple y la que usa la documentación oficial es directamente
+// un string: "stun:host:port" o "turn:USERNAME:PASSWORD@HOST:PORT".
+//
+// El objeto { urls, username, credential } que había antes no matchea
+// ninguno de los dos formatos válidos: el binding nativo lo descarta en
+// silencio (sin excepción JS visible), por lo que STUN/TURN nunca se
+// registraban de verdad. Esto explica por qué nunca se reunían candidatos
+// srflx/relay y el ICE se quedaba en "checking" indefinidamente.
 const ICE_SERVERS = [
   // STUN servers
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
-  { urls: "stun:stun.services.mozilla.com" },
-  
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun2.l.google.com:19302",
+  "stun:stun3.l.google.com:19302",
+  "stun:stun4.l.google.com:19302",
+  "stun:stun.services.mozilla.com",
+
   // TURN servers - SOLO openrelay (funciona con node-datachannel)
-  {
-    urls: "turn:openrelay.metered.ca:80",
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  },
-  {
-    urls: "turn:openrelay.metered.ca:443",
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  },
-  {
-    urls: "turn:openrelay.metered.ca:5349",
-    username: "openrelayproject",
-    credential: "openrelayproject"
-  }
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80",
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:443",
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:5349",
 ];
 
 function buildIceServers() { return ICE_SERVERS; }
@@ -71,6 +80,17 @@ function sendToFrontend(channel, data) {
 function sendStatus(msg) {
   console.log(`[Bridge] Status: ${msg}`);
   sendToFrontend("bridge-status-update", msg);
+}
+
+// NUEVO: extrae el tipo de candidato ICE (host / srflx / relay) de la línea
+// SDP para poder diagnosticar si STUN/TURN están respondiendo realmente.
+// Esto es clave para el caso "se queda esperando indefinidamente": si nunca
+// aparece "srflx" ni "relay" en los logs, es NAT/firewall bloqueando UDP
+// saliente hacia STUN/TURN, no un bug de señalización.
+function getCandidateType(candidateStr) {
+  if (typeof candidateStr !== "string") return "unknown";
+  const match = candidateStr.match(/\styp\s+(\w+)/);
+  return match ? match[1] : "unknown";
 }
 
 function getLocalIP() {
@@ -99,27 +119,55 @@ function getNextClientPort() {
   return null;
 }
 
+function cleanupClient(socketId) {
+  const client = state.clients.get(socketId);
+  if (!client) return;
+
+  // FIX (memory leak): el watchdog de ICE debe limpiarse siempre que se
+  // destruye un cliente, o el timer queda vivo referenciando un peer/canal
+  // ya cerrado y dispara un timeout falso más tarde.
+  if (client.iceTimeoutHandle) {
+    clearTimeout(client.iceTimeoutHandle);
+    client.iceTimeoutHandle = null;
+  }
+
+  try { client.channel?.close(); } catch (e) {}
+  try { client.peer?.close(); } catch (e) {}
+  try { client.udpProxy?.close(); } catch (e) {}
+
+  const interval = keepAliveIntervals.get(socketId);
+  if (interval) {
+    clearInterval(interval);
+    keepAliveIntervals.delete(socketId);
+  }
+
+  state.clients.delete(socketId);
+}
+
 function resetBridge() {
   for (const [, interval] of keepAliveIntervals) clearInterval(interval);
   keepAliveIntervals.clear();
+
+  if (state.iceTimeoutHandle) {
+    clearTimeout(state.iceTimeoutHandle);
+    state.iceTimeoutHandle = null;
+  }
 
   try {
     if (state.signalingSocket && state.roomId) {
       state.signalingSocket.emit("webrtc-leave", { roomId: state.roomId });
     }
-  } catch(e) {}
+  } catch (e) {}
 
-  for (const [socketId, client] of state.clients) {
-    try { client.channel?.close(); } catch(e) {}
-    try { client.peer?.close(); } catch(e) {}
-    try { client.udpProxy?.close(); } catch(e) {}
+  for (const [socketId] of state.clients) {
+    cleanupClient(socketId);
   }
   state.clients.clear();
 
-  try { state.channel?.close(); } catch(e) {}
-  try { state.peer?.close(); } catch(e) {}
-  try { state.signalingSocket?.disconnect(); } catch(e) {}
-  try { state.udpLocal?.close(); } catch(e) {}
+  try { state.channel?.close(); } catch (e) {}
+  try { state.peer?.close(); } catch (e) {}
+  try { state.signalingSocket?.disconnect(); } catch (e) {}
+  try { state.udpLocal?.close(); } catch (e) {}
 
   state.signalingSocket = null;
   state.peer = null;
@@ -132,6 +180,7 @@ function resetBridge() {
   state.hostIP = null;
   state.clientPort = null;
   state.iceConnectionState = null;
+  state.gatheredCandidateTypes = new Set();
 
   console.log("[Bridge] Reset complete");
 }
@@ -152,7 +201,7 @@ function createHostUDPProxy(socketId, clientPort, channel) {
     if (channel?.isOpen()) {
       try {
         channel.sendMessageBinary(Buffer.from(msg));
-      } catch(e) {
+      } catch (e) {
         console.error(`[Bridge] Host proxy send error (client ${socketId}):`, e.message);
       }
     }
@@ -172,7 +221,9 @@ function onHostChannelOpen(socketId, channel, clientPort) {
 
   const interval = setInterval(() => {
     if (channel?.isOpen()) {
-      try { channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
+      try {
+        channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping"));
+      } catch (e) {
         clearInterval(interval);
         keepAliveIntervals.delete(socketId);
       }
@@ -206,13 +257,15 @@ function onClientChannelOpen() {
 
   state.udpLocal.on("message", (msg) => {
     if (state.channel?.isOpen()) {
-      try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch(e) {}
+      try { state.channel.sendMessageBinary(Buffer.from(msg)); } catch (e) {}
     }
   });
 
   const interval = setInterval(() => {
     if (state.channel?.isOpen()) {
-      try { state.channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping")); } catch(e) {
+      try {
+        state.channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping"));
+      } catch (e) {
         clearInterval(interval);
         keepAliveIntervals.delete("self");
       }
@@ -243,20 +296,39 @@ function onChannelMessage(msg, socketId = null) {
   }
 }
 
+// FIX CRÍTICO: antes, si addRemoteCandidate() lanzaba una excepción, el
+// candidato se logueaba y se perdía para siempre (el array se vaciaba
+// igual). Si ese candidato era justo el único candidato "relay" (TURN)
+// viable para atravesar el NAT, el ICE se quedaba en "checking" para
+// siempre sin ningún error visible — exactamente el síntoma reportado
+// ("Procesando oferta de conexión..." colgado). Ahora los candidatos que
+// fallan se re-encolan y se reintentan en el siguiente flush.
 function flushCandidates(socketId = null) {
   if (state.isHost) {
     const client = state.clients.get(socketId);
     if (!client?.peer || !client.remoteDescSet) return;
+    const stillPending = [];
     client.pendingCandidates.forEach(({ candidate, mid }) => {
-      try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+      try {
+        client.peer.addRemoteCandidate(candidate, mid);
+      } catch (e) {
+        console.warn(`[Bridge] No se pudo aplicar candidato ICE pendiente (host, cliente ${socketId}), se reintentará:`, e.message || e);
+        stillPending.push({ candidate, mid });
+      }
     });
-    client.pendingCandidates = [];
+    client.pendingCandidates = stillPending;
   } else {
     if (!state.peer || !state.remoteDescSet) return;
+    const stillPending = [];
     state.pendingCandidates.forEach(({ candidate, mid }) => {
-      try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+      try {
+        state.peer.addRemoteCandidate(candidate, mid);
+      } catch (e) {
+        console.warn("[Bridge] No se pudo aplicar candidato ICE pendiente (cliente), se reintentará:", e.message || e);
+        stillPending.push({ candidate, mid });
+      }
     });
-    state.pendingCandidates = [];
+    state.pendingCandidates = stillPending;
   }
 }
 
@@ -269,22 +341,64 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const client = state.clients.get(clientSocketId);
   client.peer = peer;
 
-  peer.onStateChange((state) => {
-    console.log(`[Bridge] Host peer state (${clientSocketId}):`, state);
-    state.iceConnectionState = state;
-    
-    if (state === "connected") {
+  // NUEVO: watchdog de ICE. Si en ICE_CONNECT_TIMEOUT_MS no llegamos a
+  // "connected", reportamos el problema con diagnóstico (estado actual +
+  // qué tipos de candidato local se reunieron) y limpiamos, en vez de
+  // dejar la UI colgada indefinidamente en "Enviando oferta..." / esperando.
+  client.iceTimeoutHandle = setTimeout(() => {
+    if (client.iceConnectionState === "connected" || client.iceConnectionState === "completed") return;
+    const gathered = client.gatheredCandidateTypes && client.gatheredCandidateTypes.size
+      ? [...client.gatheredCandidateTypes].join(", ")
+      : "ninguno";
+    console.error(
+      `[Bridge] ⏱️ Timeout de ICE esperando al cliente ${clientSocketId} tras ${ICE_CONNECT_TIMEOUT_MS / 1000}s. ` +
+      `Estado actual: ${client.iceConnectionState || "desconocido"}. Tipos de candidato local reunidos: ${gathered}.`
+    );
+    sendStatus("❌ Tiempo de espera agotado buscando conexión P2P con el rival. Puede ser un bloqueo de NAT/firewall o STUN/TURN inalcanzable.");
+    cleanupClient(clientSocketId);
+  }, ICE_CONNECT_TIMEOUT_MS);
+
+  // FIX: parámetro renombrado de "state" a "connState". Antes tapaba
+  // (shadowing) el objeto global "state" del módulo, haciendo que
+  // "state.iceConnectionState = state" intentara asignarle una propiedad
+  // a un string primitivo (ej. "connected") en vez de al objeto real.
+  peer.onStateChange((connState) => {
+    console.log(`[Bridge] Host peer state (${clientSocketId}):`, connState);
+    state.iceConnectionState = connState;
+    if (client) client.iceConnectionState = connState;
+
+    if (connState === "connected" || connState === "completed") {
+      if (client.iceTimeoutHandle) {
+        clearTimeout(client.iceTimeoutHandle);
+        client.iceTimeoutHandle = null;
+      }
       sendStatus(`✅ Conexión P2P establecida con cliente`);
-    } else if (state === "failed") {
+    } else if (connState === "failed") {
+      if (client.iceTimeoutHandle) {
+        clearTimeout(client.iceTimeoutHandle);
+        client.iceTimeoutHandle = null;
+      }
       console.error(`[Bridge] ICE failed for client ${clientSocketId}`);
       sendStatus(`❌ Falló conexión P2P con cliente`);
-    } else if (state === "disconnected") {
+    } else if (connState === "disconnected") {
       sendStatus(`⚠️ Conexión P2P perdida`);
     }
   });
 
-  peer.onGatheringStateChange((state) => {
-    console.log(`[Bridge] Host gathering (${clientSocketId}):`, state);
+  peer.onGatheringStateChange((gatherState) => {
+    console.log(`[Bridge] Host gathering (${clientSocketId}):`, gatherState);
+    // NUEVO: diagnóstico de NAT/STUN/TURN. Si al completar el gathering
+    // nunca se reunió un candidato srflx o relay, es una señal fuerte de
+    // que el tráfico UDP saliente hacia STUN/TURN está bloqueado.
+    if (gatherState === "complete") {
+      const types = client.gatheredCandidateTypes && client.gatheredCandidateTypes.size
+        ? [...client.gatheredCandidateTypes].join(", ")
+        : "ninguno";
+      console.log(`[Bridge] Host: gathering completo para ${clientSocketId}. Tipos de candidato reunidos: ${types}.`);
+      if (!client.gatheredCandidateTypes?.has("relay") && !client.gatheredCandidateTypes?.has("srflx")) {
+        console.warn(`[Bridge] ⚠️ No se reunió ningún candidato srflx/relay para ${clientSocketId}. Verificá conectividad UDP saliente hacia STUN/TURN (posible firewall bloqueando UDP).`);
+      }
+    }
   });
 
   peer.onLocalDescription((sdp, type) => {
@@ -294,7 +408,9 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   });
 
   peer.onLocalCandidate((candidate, mid) => {
-    console.log(`[Bridge] Host candidate for ${clientSocketId}:`, candidate);
+    const candType = getCandidateType(candidate);
+    client.gatheredCandidateTypes?.add(candType);
+    console.log(`[Bridge] Host candidate for ${clientSocketId} [${candType}]:`, candidate);
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid, toSocketId: clientSocketId });
   });
 
@@ -308,6 +424,12 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
 
   channel.onClosed(() => {
     console.log(`[Bridge] DataChannel closed for ${clientSocketId}`);
+    // FIX: antes esto no limpiaba nada. Si el canal se caía sin que el socket
+    // de señalización se desconectara, el cliente quedaba "fantasma" en el Map,
+    // con su intervalo de keepalive y proxy UDP colgados.
+    cleanupClient(clientSocketId);
+    const remaining = state.clients.size;
+    sendStatus(remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores...");
   });
 
   channel.onMessage((msg) => {
@@ -321,7 +443,18 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   setTimeout(() => {
     console.log(`[Bridge] Host creating offer for ${clientSocketId}...`);
     sendStatus(`Enviando oferta de conexión al rival...`);
-    peer.setLocalDescription();
+    // FIX: antes esta llamada no tenía try/catch (el lado cliente sí lo
+    // tenía para su setLocalDescription() de la respuesta). Si esto
+    // lanzaba una excepción acá, quedaba sin manejar y sin ningún status
+    // para el usuario — otra vía posible hacia el "queda esperando
+    // indefinidamente".
+    try {
+      peer.setLocalDescription();
+    } catch (err) {
+      console.error(`[Bridge] Error creando oferta para ${clientSocketId}:`, err.message);
+      sendStatus(`❌ Error creando oferta de conexión: ${err.message}`);
+      cleanupClient(clientSocketId);
+    }
   }, 200);
 }
 
@@ -332,20 +465,58 @@ function createClientPeer(NDC, sig, roomId) {
   });
   state.peer = peer;
 
-  peer.onStateChange((state) => {
-    console.log("[Bridge] Client peer state:", state);
-    state.iceConnectionState = state;
-    
-    if (state === "connected") {
+  // NUEVO: mismo watchdog de ICE que en el host, para el lado cliente.
+  state.iceTimeoutHandle = setTimeout(() => {
+    if (state.iceConnectionState === "connected" || state.iceConnectionState === "completed") return;
+    const gathered = state.gatheredCandidateTypes && state.gatheredCandidateTypes.size
+      ? [...state.gatheredCandidateTypes].join(", ")
+      : "ninguno";
+    console.error(
+      `[Bridge] ⏱️ Timeout de ICE en el cliente tras ${ICE_CONNECT_TIMEOUT_MS / 1000}s. ` +
+      `Estado actual: ${state.iceConnectionState || "desconocido"}. Tipos de candidato local reunidos: ${gathered}.`
+    );
+    sendStatus("❌ Tiempo de espera agotado estableciendo conexión P2P con el host. Puede ser un bloqueo de NAT/firewall o STUN/TURN inalcanzable.");
+    try { state.channel?.close(); } catch (e) {}
+    try { state.peer?.close(); } catch (e) {}
+    state.peer = null;
+    state.channel = null;
+    state.remoteDescSet = false;
+    state.pendingCandidates = [];
+  }, ICE_CONNECT_TIMEOUT_MS);
+
+  // Mismo fix que en createHostPeer: parámetro renombrado para no tapar
+  // el objeto "state" global.
+  peer.onStateChange((connState) => {
+    console.log("[Bridge] Client peer state:", connState);
+    state.iceConnectionState = connState;
+
+    if (connState === "connected" || connState === "completed") {
+      if (state.iceTimeoutHandle) {
+        clearTimeout(state.iceTimeoutHandle);
+        state.iceTimeoutHandle = null;
+      }
       sendStatus("✅ Conexión P2P establecida!");
-    } else if (state === "failed") {
+    } else if (connState === "failed") {
+      if (state.iceTimeoutHandle) {
+        clearTimeout(state.iceTimeoutHandle);
+        state.iceTimeoutHandle = null;
+      }
       console.error("[Bridge] ICE failed for client");
       sendStatus("❌ Falló conexión P2P");
     }
   });
 
-  peer.onGatheringStateChange((state) => {
-    console.log("[Bridge] Client gathering:", state);
+  peer.onGatheringStateChange((gatherState) => {
+    console.log("[Bridge] Client gathering:", gatherState);
+    if (gatherState === "complete") {
+      const types = state.gatheredCandidateTypes && state.gatheredCandidateTypes.size
+        ? [...state.gatheredCandidateTypes].join(", ")
+        : "ninguno";
+      console.log(`[Bridge] Cliente: gathering completo. Tipos de candidato reunidos: ${types}.`);
+      if (!state.gatheredCandidateTypes?.has("relay") && !state.gatheredCandidateTypes?.has("srflx")) {
+        console.warn("[Bridge] ⚠️ No se reunió ningún candidato srflx/relay en el cliente. Verificá conectividad UDP saliente hacia STUN/TURN (posible firewall bloqueando UDP).");
+      }
+    }
   });
 
   peer.onLocalDescription((sdp, type) => {
@@ -354,7 +525,9 @@ function createClientPeer(NDC, sig, roomId) {
   });
 
   peer.onLocalCandidate((candidate, mid) => {
-    console.log("[Bridge] Client candidate:", candidate);
+    const candType = getCandidateType(candidate);
+    state.gatheredCandidateTypes.add(candType);
+    console.log(`[Bridge] Client candidate [${candType}]:`, candidate);
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
@@ -392,6 +565,12 @@ async function startBridge(roomId, isHost) {
   state.iceConnectionStart = Date.now();
 
   const NDC = require("node-datachannel");
+
+  // Diagnóstico opcional: si necesitás ver el detalle interno de
+  // libdatachannel (negociación SDP, ICE checks candidato por candidato),
+  // descomentá la siguiente línea. Se deja apagado por defecto para no
+  // saturar la consola en uso normal.
+  // NDC.initLogger("Debug");
 
   console.log(`[Bridge] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`);
   sendStatus("Conectando al servidor de señales...");
@@ -452,6 +631,9 @@ async function startBridge(roomId, isHost) {
       clientPort,
       pendingCandidates: [],
       remoteDescSet: false,
+      iceConnectionState: null,
+      iceTimeoutHandle: null,
+      gatheredCandidateTypes: new Set(),
     });
 
     createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
@@ -475,13 +657,13 @@ async function startBridge(roomId, isHost) {
           client.remoteDescSet = true;
           flushCandidates(fromSocketId);
         } else if (type === "candidate") {
-          if (client.peer && client.remoteDescSet) {
-            try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {
-              console.warn("[Bridge] Error adding remote candidate:", e);
-            }
-          } else {
-            client.pendingCandidates.push({ candidate, mid });
-          }
+          // FIX: antes, si remoteDescSet ya era true y addRemoteCandidate()
+          // fallaba, el candidato se perdía para siempre (solo un
+          // console.warn). Ahora siempre pasa por la cola + flushCandidates,
+          // que reintenta automáticamente y nunca descarta un candidato en
+          // silencio.
+          client.pendingCandidates.push({ candidate, mid });
+          flushCandidates(fromSocketId);
         }
       } else {
         if (type === "offer") {
@@ -504,13 +686,10 @@ async function startBridge(roomId, isHost) {
           }, 500);
 
         } else if (type === "candidate") {
-          if (state.peer && state.remoteDescSet) {
-            try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {
-              console.warn("[Bridge] Error adding remote candidate:", e);
-            }
-          } else {
-            state.pendingCandidates.push({ candidate, mid });
-          }
+          // Mismo fix que en la rama host: encolar y reintentar vía
+          // flushCandidates en vez de arriesgarse a perder el candidato.
+          state.pendingCandidates.push({ candidate, mid });
+          flushCandidates();
         }
       }
     } catch (err) {
@@ -521,16 +700,10 @@ async function startBridge(roomId, isHost) {
 
   sig.on("webrtc-client-left", ({ socketId: leftSocketId }) => {
     if (!isHost) return;
-    const client = state.clients.get(leftSocketId);
-    if (!client) return;
+    if (!state.clients.has(leftSocketId)) return;
 
     console.log(`[Bridge] Client ${leftSocketId} disconnected`);
-    try { client.channel?.close(); } catch(e) {}
-    try { client.peer?.close(); } catch(e) {}
-    try { client.udpProxy?.close(); } catch(e) {}
-    const interval = keepAliveIntervals.get(leftSocketId);
-    if (interval) { clearInterval(interval); keepAliveIntervals.delete(leftSocketId); }
-    state.clients.delete(leftSocketId);
+    cleanupClient(leftSocketId);
 
     const remaining = state.clients.size;
     sendStatus(remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores...");
@@ -553,5 +726,13 @@ module.exports = {
     clientPort: state.clientPort,
     hostIP: state.hostIP,
     iceConnectionState: state.iceConnectionState,
+    // NUEVO: estado por-cliente (útil para depurar el caso de múltiples
+    // clientes en el host, donde antes un solo campo global se pisaba
+    // entre clientes).
+    clients: [...state.clients.entries()].map(([socketId, c]) => ({
+      socketId,
+      iceConnectionState: c.iceConnectionState,
+      connected: !!c.udpProxy,
+    })),
   })
 };
