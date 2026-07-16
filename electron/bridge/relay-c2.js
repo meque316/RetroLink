@@ -1,32 +1,36 @@
-const { io: socketClient } = require("socket.io-client");
+// electron/bridge/relay-c2.js
+
+const {
+  io: socketClient,
+} = require("socket.io-client");
+
 const os = require("os");
-const dgram = require("dgram");
 const { BrowserWindow } = require("electron");
 
-const SIGNALING_URL = "https://retrolink-server.onrender.com";
-const CLIENT_PORT_BASE = 8056;
-const MAX_CLIENTS = 8;
-const C2_GAME_PORT = 8055;
-const DEBUG_UDP = true;
+const {
+  createIPXBroadcastTransport,
+  DEFAULT_IPX_PORT,
+} = require("./ipx/ipx-broadcast-transport");
 
-let state = {
-  signalingSocket: null,
-  roomId: null,
-  isHost: false,
-  iceConnectionStart: null,
-  hostIP: null,
-  gameProcess: null,
-  gameRoomId: null,
-  clients: new Map(),
-  peer: null,
-  channel: null,
-  udpLocal: null,
-  pendingCandidates: [],
-  remoteDescSet: false,
-  clientPort: null,
-};
+const SIGNALING_URL =
+  "https://retrolink-server.onrender.com";
 
-let keepAliveIntervals = new Map();
+const MAX_CLIENTS = 16;
+
+/*
+ * Activar con:
+ * $env:RETROLINK_DEBUG_IPX="1"
+ *
+ * En producción queda desactivado para evitar
+ * llenar la consola con cada paquete IPX.
+ */
+const DEBUG_IPX =
+  process.env.RETROLINK_DEBUG_IPX === "1";
+
+const CONTROL_PREFIX =
+  "__RETROLINK_C2_CONTROL__:";
+
+const KEEPALIVE_INTERVAL_MS = 10000;
 
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
@@ -34,98 +38,409 @@ const ICE_SERVERS = [
   "stun:stun2.l.google.com:19302",
   "stun:stun3.l.google.com:19302",
   "stun:stun4.l.google.com:19302",
+
   "turn:openrelay.metered.ca:80",
   "turn:openrelay.metered.ca:443",
   "turn:openrelay.metered.ca:5349",
 ];
 
+function createInitialState() {
+  return {
+    signalingSocket: null,
+
+    roomId: null,
+    isHost: false,
+
+    iceConnectionStart: null,
+    hostIP: null,
+
+    clients: new Map(),
+
+    peer: null,
+    channel: null,
+
+    pendingCandidates: [],
+    remoteDescSet: false,
+
+    ipxTransport: null,
+  };
+}
+
+let state = createInitialState();
+const keepAliveIntervals = new Map();
+
+function debugLog(...args) {
+  if (DEBUG_IPX) {
+    console.log("[Bridge-C2]", ...args);
+  }
+}
+
 function buildIceServers() {
-  return ICE_SERVERS;
+  /*
+   * node-datachannel trabaja correctamente con
+   * una lista de URLs ICE como cadenas.
+   */
+  return [...ICE_SERVERS];
 }
 
 function sendToFrontend(channel, data) {
   try {
-    const wins = BrowserWindow.getAllWindows();
+    const windows =
+      BrowserWindow.getAllWindows();
 
-    if (wins[0] && !wins[0].webContents.isDestroyed()) {
-      wins[0].webContents.send(channel, data);
+    const mainWindow = windows[0];
+
+    if (
+      mainWindow &&
+      !mainWindow.webContents.isDestroyed()
+    ) {
+      mainWindow.webContents.send(
+        channel,
+        data
+      );
     }
   } catch (error) {
-    console.error("[Bridge-C2] Error sending to frontend:", error.message);
+    console.error(
+      "[Bridge-C2] Error enviando al frontend:",
+      error.message
+    );
   }
 }
 
-function sendStatus(msg) {
-  console.log(`[Bridge-C2] Status: ${msg}`);
-  sendToFrontend("bridge-status-update", msg);
+function sendStatus(message) {
+  console.log(
+    `[Bridge-C2] Status: ${message}`
+  );
+
+  sendToFrontend(
+    "bridge-status-update",
+    message
+  );
 }
 
 function getLocalIP() {
-  const interfaces = os.networkInterfaces();
+  const interfaces =
+    os.networkInterfaces();
+
   const results = [];
 
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        results.push({ name, address: iface.address });
+  for (const [
+    interfaceName,
+    networks,
+  ] of Object.entries(interfaces)) {
+    for (const network of networks || []) {
+      if (
+        network.family === "IPv4" &&
+        !network.internal
+      ) {
+        results.push({
+          name: interfaceName,
+          address: network.address,
+        });
       }
     }
   }
 
+  /*
+   * Conservamos la prioridad histórica de RetroLink:
+   * VPN primero y luego red LAN.
+   */
   const vpnIP = results.find(
-    (ip) => ip.address.startsWith("26.") || ip.address.startsWith("10.")
+    ({ address }) =>
+      address.startsWith("26.") ||
+      address.startsWith("10.")
   );
 
-  if (vpnIP) return vpnIP.address;
+  if (vpnIP) {
+    return vpnIP.address;
+  }
 
-  const lanIP = results.find((ip) => ip.address.startsWith("192.168."));
+  const lanIP = results.find(
+    ({ address }) =>
+      address.startsWith("192.168.")
+  );
 
-  if (lanIP) return lanIP.address;
+  if (lanIP) {
+    return lanIP.address;
+  }
 
   return results[0]?.address || "127.0.0.1";
 }
 
-function getNextClientPort() {
-  const usedPorts = new Set(
-    [...state.clients.values()].map((client) => client.clientPort)
+function encodeControlMessage(
+  type,
+  data = {}
+) {
+  return Buffer.from(
+    `${CONTROL_PREFIX}${JSON.stringify({
+      type,
+      data,
+    })}`,
+    "utf8"
   );
+}
 
-  for (let i = 0; i < MAX_CLIENTS; i++) {
-    const port = CLIENT_PORT_BASE + i;
+function decodeControlMessage(buffer) {
+  const text = buffer.toString("utf8");
 
-    if (!usedPorts.has(port)) {
-      return port;
+  if (!text.startsWith(CONTROL_PREFIX)) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(
+      text.slice(CONTROL_PREFIX.length)
+    );
+  } catch (error) {
+    debugLog(
+      "Mensaje de control inválido:",
+      error.message
+    );
+
+    return null;
+  }
+}
+
+function normalizeBuffer(value) {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value);
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(
+      value.buffer,
+      value.byteOffset,
+      value.byteLength
+    );
+  }
+
+  return Buffer.from(value);
+}
+
+function sendBinary(channel, value) {
+  if (!channel?.isOpen()) {
+    return false;
+  }
+
+  try {
+    const buffer = normalizeBuffer(value);
+
+    channel.sendMessageBinary(buffer);
+
+    return true;
+  } catch (error) {
+    console.error(
+      "[Bridge-C2] Error enviando por DataChannel:",
+      error.message
+    );
+
+    return false;
+  }
+}
+
+function broadcastToClients(
+  buffer,
+  exceptSocketId = null
+) {
+  let sentCount = 0;
+
+  for (const [
+    socketId,
+    client,
+  ] of state.clients) {
+    if (socketId === exceptSocketId) {
+      continue;
+    }
+
+    if (
+      sendBinary(
+        client.channel,
+        buffer
+      )
+    ) {
+      sentCount += 1;
     }
   }
 
-  return null;
+  return sentCount;
+}
+
+function forwardLocalIPXPacket(
+  message,
+  remoteInfo
+) {
+  const buffer = normalizeBuffer(message);
+
+  debugLog(
+    `IPX local: ${buffer.length} bytes`,
+    `desde ${remoteInfo.address}:${remoteInfo.port}`
+  );
+
+  if (state.isHost) {
+    const sentCount =
+      broadcastToClients(buffer);
+
+    if (sentCount > 0) {
+      debugLog(
+        `Host → ${sentCount} cliente(s):`,
+        `${buffer.length} bytes`
+      );
+    }
+
+    return;
+  }
+
+  if (
+    sendBinary(
+      state.channel,
+      buffer
+    )
+  ) {
+    debugLog(
+      `Cliente → host: ${buffer.length} bytes`
+    );
+  }
+}
+
+async function injectRemoteIPXPacket(
+  buffer
+) {
+  if (!state.ipxTransport) {
+    debugLog(
+      "Paquete remoto ignorado: transporte IPX no disponible"
+    );
+
+    return;
+  }
+
+  try {
+    await state.ipxTransport.injectPacket(
+      normalizeBuffer(buffer)
+    );
+  } catch (error) {
+    console.error(
+      "[Bridge-C2] Error reinyectando paquete IPX:",
+      error.message
+    );
+  }
+}
+
+function startIPXTransport() {
+  if (state.ipxTransport) {
+    return state.ipxTransport.start();
+  }
+
+  state.ipxTransport =
+    createIPXBroadcastTransport({
+      label: "Bridge-C2-IPX",
+      port: DEFAULT_IPX_PORT,
+      debug: DEBUG_IPX,
+      onPacket: forwardLocalIPXPacket,
+    });
+
+  return state.ipxTransport.start();
+}
+
+function getActiveIPXPort() {
+  const transportState =
+    state.ipxTransport?.getState?.();
+
+  return (
+    transportState?.port ??
+    DEFAULT_IPX_PORT
+  );
+}
+
+function stopKeepAlive(key) {
+  const interval =
+    keepAliveIntervals.get(key);
+
+  if (!interval) {
+    return;
+  }
+
+  clearInterval(interval);
+  keepAliveIntervals.delete(key);
+}
+
+function startKeepAlive(
+  key,
+  channel
+) {
+  stopKeepAlive(key);
+
+  const interval = setInterval(() => {
+    if (!channel?.isOpen()) {
+      stopKeepAlive(key);
+      return;
+    }
+
+    sendBinary(
+      channel,
+      encodeControlMessage(
+        "keepalive",
+        {
+          timestamp: Date.now(),
+        }
+      )
+    );
+  }, KEEPALIVE_INTERVAL_MS);
+
+  keepAliveIntervals.set(
+    key,
+    interval
+  );
+}
+
+function closeClientConnection(
+  socketId,
+  client
+) {
+  stopKeepAlive(socketId);
+
+  try {
+    client?.channel?.close();
+  } catch {}
+
+  try {
+    client?.peer?.close();
+  } catch {}
 }
 
 function resetBridge() {
-  for (const [, interval] of keepAliveIntervals) {
+  for (const interval of
+    keepAliveIntervals.values()) {
     clearInterval(interval);
   }
 
   keepAliveIntervals.clear();
 
   try {
-    if (state.signalingSocket && state.roomId) {
-      state.signalingSocket.emit("webrtc-leave", { roomId: state.roomId });
+    if (
+      state.signalingSocket &&
+      state.roomId
+    ) {
+      state.signalingSocket.emit(
+        "webrtc-leave",
+        {
+          roomId: state.roomId,
+        }
+      );
     }
   } catch {}
 
-  for (const [, client] of state.clients) {
-    try {
-      client.channel?.close();
-    } catch {}
-
-    try {
-      client.peer?.close();
-    } catch {}
-
-    try {
-      client.udpProxy?.close();
-    } catch {}
+  for (const [
+    socketId,
+    client,
+  ] of state.clients) {
+    closeClientConnection(
+      socketId,
+      client
+    );
   }
 
   state.clients.clear();
@@ -143,507 +458,828 @@ function resetBridge() {
   } catch {}
 
   try {
-    state.udpLocal?.close();
+    state.ipxTransport?.stop();
   } catch {}
 
-  state.signalingSocket = null;
-  state.peer = null;
-  state.channel = null;
-  state.udpLocal = null;
-  state.roomId = null;
-  state.pendingCandidates = [];
-  state.remoteDescSet = false;
-  state.iceConnectionStart = null;
-  state.hostIP = null;
-  state.clientPort = null;
+  state = createInitialState();
 
-  console.log("[Bridge-C2] Reset complete");
+  console.log(
+    "[Bridge-C2] Reset complete"
+  );
 }
 
-function createHostUDPProxy(socketId, clientPort, channel) {
-  const udpProxy = dgram.createSocket("udp4");
+function handleChannelMessage(
+  message,
+  sourceSocketId = null
+) {
+  const buffer =
+    normalizeBuffer(message);
 
-  udpProxy.on("error", (err) => {
-    console.error(
-      `[Bridge-C2] Host proxy error (client ${socketId}):`,
-      err.message
-    );
-  });
+  const control =
+    decodeControlMessage(buffer);
 
-  udpProxy.bind(0, "127.0.0.1", () => {
-    const addr = udpProxy.address();
-
-    console.log(
-      `[Bridge-C2] Host proxy for client ${socketId} bound on port ${addr.port} (C2 client port: ${clientPort})`
-    );
-  });
-
-  udpProxy.on("message", (msg, rinfo) => {
-    if (DEBUG_UDP) {
-      console.log(
-        `[Bridge-C2] Host proxy recibió ${msg.length} bytes desde ${rinfo.address}:${rinfo.port}`
+  if (control) {
+    if (
+      control.type !== "keepalive"
+    ) {
+      debugLog(
+        "Mensaje de control:",
+        control
       );
     }
 
-    if (channel?.isOpen()) {
-      try {
-        channel.sendMessageBinary(Buffer.from(msg));
+    return;
+  }
 
-        if (DEBUG_UDP) {
-          console.log(
-            `[Bridge-C2] Host proxy envió ${msg.length} bytes al DataChannel`
-          );
-        }
+  debugLog(
+    `DataChannel → IPX local: ${buffer.length} bytes`
+  );
+
+  /*
+   * El paquete se reinyecta mediante broadcast
+   * para que IPXWrapper lo reciba localmente.
+   */
+  void injectRemoteIPXPacket(buffer);
+
+  /*
+   * El host actúa como concentrador:
+   * un paquete recibido desde un cliente también
+   * se entrega a los demás clientes de la sala.
+   */
+  if (
+    state.isHost &&
+    sourceSocketId
+  ) {
+    const sentCount =
+      broadcastToClients(
+        buffer,
+        sourceSocketId
+      );
+
+    debugLog(
+      `Paquete del cliente ${sourceSocketId} reenviado a ${sentCount} cliente(s)`
+    );
+  }
+}
+
+function onHostChannelOpen(
+  socketId,
+  channel
+) {
+  console.log(
+    `[Bridge-C2] DataChannel del host abierto para ${socketId}`
+  );
+
+  startKeepAlive(
+    socketId,
+    channel
+  );
+
+  const connectedCount = [
+    ...state.clients.values(),
+  ].filter(
+    (client) =>
+      client.channel?.isOpen()
+  ).length;
+
+  sendStatus(
+    `¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`
+  );
+}
+
+function onClientChannelOpen() {
+  console.log(
+    "[Bridge-C2] DataChannel del cliente abierto"
+  );
+
+  startKeepAlive(
+    "self",
+    state.channel
+  );
+
+  sendStatus(
+    "¡Conexión P2P establecida! Listos para jugar."
+  );
+}
+
+function flushCandidates(
+  socketId = null
+) {
+  if (state.isHost) {
+    const client =
+      state.clients.get(socketId);
+
+    if (
+      !client?.peer ||
+      !client.remoteDescSet
+    ) {
+      return;
+    }
+
+    for (const {
+      candidate,
+      mid,
+    } of client.pendingCandidates) {
+      try {
+        client.peer.addRemoteCandidate(
+          candidate,
+          mid
+        );
       } catch (error) {
-        console.error(
-          `[Bridge-C2] Host proxy send error (client ${socketId}):`,
+        debugLog(
+          "No se pudo agregar candidato ICE del cliente:",
           error.message
         );
       }
     }
-  });
-
-  return udpProxy;
-}
-
-function onHostChannelOpen(socketId, channel, clientPort) {
-  console.log(
-    `[Bridge-C2] Host DataChannel open for client ${socketId} on port ${clientPort}`
-  );
-
-  const client = state.clients.get(socketId);
-  if (!client) return;
-
-  const udpProxy = createHostUDPProxy(socketId, clientPort, channel);
-  client.udpProxy = udpProxy;
-
-  const interval = setInterval(() => {
-    if (channel?.isOpen()) {
-      try {
-        channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping"));
-      } catch {
-        clearInterval(interval);
-        keepAliveIntervals.delete(socketId);
-      }
-    } else {
-      clearInterval(interval);
-      keepAliveIntervals.delete(socketId);
-    }
-  }, 10000);
-
-  keepAliveIntervals.set(socketId, interval);
-
-  const connectedCount = [...state.clients.values()].filter(
-    (clientData) => clientData.udpProxy
-  ).length;
-
-  sendStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
-}
-
-function onClientChannelOpen() {
-  console.log(`[Bridge-C2] Client DataChannel open (port: ${state.clientPort})`);
-  sendStatus("¡Conexión P2P establecida! Listos para jugar.");
-
-  state.udpLocal = dgram.createSocket("udp4");
-
-  state.udpLocal.on("error", (err) => {
-    console.error("[Bridge-C2] Client UDP error:", err.message);
-
-    if (err.code === "EADDRINUSE") {
-      sendStatus(
-        `Puerto ${state.clientPort} ocupado. Cierra RetroLink y vuelve a abrirlo.`
-      );
-    }
-  });
-
-  state.udpLocal.bind(state.clientPort, "127.0.0.1", () => {
-    console.log(
-      `[Bridge-C2] Client UDP listening on 127.0.0.1:${state.clientPort}`
-    );
-  });
-
-  state.udpLocal.on("message", (msg, rinfo) => {
-    if (DEBUG_UDP) {
-      console.log(
-        `[Bridge-C2] Cliente UDP recibió ${msg.length} bytes desde ${rinfo.address}:${rinfo.port}`
-      );
-    }
-
-    if (state.channel?.isOpen()) {
-      try {
-        state.channel.sendMessageBinary(Buffer.from(msg));
-
-        if (DEBUG_UDP) {
-          console.log(
-            `[Bridge-C2] Cliente UDP envió ${msg.length} bytes al DataChannel`
-          );
-        }
-      } catch {}
-    }
-  });
-
-  const interval = setInterval(() => {
-    if (state.channel?.isOpen()) {
-      try {
-        state.channel.sendMessageBinary(Buffer.from("\xFF\xFF\xFF\xFFping"));
-      } catch {
-        clearInterval(interval);
-        keepAliveIntervals.delete("self");
-      }
-    } else {
-      clearInterval(interval);
-      keepAliveIntervals.delete("self");
-    }
-  }, 10000);
-
-  keepAliveIntervals.set("self", interval);
-}
-
-function onChannelMessage(msg, socketId = null) {
-  const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
-
-  if (buf.length <= 12 && buf.toString("latin1").includes("ping")) {
-    return;
-  }
-
-  if (state.isHost) {
-    const client = state.clients.get(socketId);
-
-    if (!client?.udpProxy) return;
-
-    client.udpProxy.send(buf, 0, buf.length, C2_GAME_PORT, "127.0.0.1", (err) => {
-      if (err) {
-        console.error("[Bridge-C2] Host→C2 error:", err.message);
-      } else if (DEBUG_UDP) {
-        console.log(
-          `[Bridge-C2] DataChannel → Host C2 ${buf.length} bytes a 127.0.0.1:${C2_GAME_PORT}`
-        );
-      }
-    });
-
-    return;
-  }
-
-  if (!state.udpLocal) return;
-
-  state.udpLocal.send(buf, 0, buf.length, C2_GAME_PORT, "127.0.0.1", (err) => {
-    if (err) {
-      console.error("[Bridge-C2] Client→C2 error:", err.message);
-    } else if (DEBUG_UDP) {
-      console.log(
-        `[Bridge-C2] DataChannel → Cliente C2 ${buf.length} bytes a 127.0.0.1:${C2_GAME_PORT}`
-      );
-    }
-  });
-}
-
-function flushCandidates(socketId = null) {
-  if (state.isHost) {
-    const client = state.clients.get(socketId);
-
-    if (!client?.peer || !client.remoteDescSet) return;
-
-    client.pendingCandidates.forEach(({ candidate, mid }) => {
-      try {
-        client.peer.addRemoteCandidate(candidate, mid);
-      } catch {}
-    });
 
     client.pendingCandidates = [];
     return;
   }
 
-  if (!state.peer || !state.remoteDescSet) return;
+  if (
+    !state.peer ||
+    !state.remoteDescSet
+  ) {
+    return;
+  }
 
-  state.pendingCandidates.forEach(({ candidate, mid }) => {
+  for (const {
+    candidate,
+    mid,
+  } of state.pendingCandidates) {
     try {
-      state.peer.addRemoteCandidate(candidate, mid);
-    } catch {}
-  });
+      state.peer.addRemoteCandidate(
+        candidate,
+        mid
+      );
+    } catch (error) {
+      debugLog(
+        "No se pudo agregar candidato ICE del host:",
+        error.message
+      );
+    }
+  }
 
   state.pendingCandidates = [];
 }
 
-function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
-  const peer = new NDC.PeerConnection(`RetroLink-Host-${clientSocketId}`, {
-    iceServers: buildIceServers(),
-    iceTransportPolicy: "all",
-  });
+function createHostPeer(
+  NDC,
+  signaling,
+  roomId,
+  clientSocketId
+) {
+  const client =
+    state.clients.get(clientSocketId);
 
-  const client = state.clients.get(clientSocketId);
+  if (!client) {
+    return;
+  }
+
+  const peer =
+    new NDC.PeerConnection(
+      `RetroLink-C2-Host-${clientSocketId}`,
+      {
+        iceServers:
+          buildIceServers(),
+
+        iceTransportPolicy: "all",
+      }
+    );
+
   client.peer = peer;
 
-  peer.onLocalDescription((sdp, type) => {
-    sig.emit("webrtc-signal", {
-      roomId,
-      type,
-      sdp,
-      toSocketId: clientSocketId,
-    });
+  peer.onLocalDescription(
+    (sdp, type) => {
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId,
+          type,
+          sdp,
+          toSocketId:
+            clientSocketId,
+        }
+      );
+    }
+  );
 
-    sig.emit("webrtc-client-port", {
-      roomId,
-      port: clientPort,
-      toSocketId: clientSocketId,
-    });
-  });
+  peer.onLocalCandidate(
+    (candidate, mid) => {
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId,
+          type: "candidate",
+          candidate,
+          mid,
+          toSocketId:
+            clientSocketId,
+        }
+      );
+    }
+  );
 
-  peer.onLocalCandidate((candidate, mid) => {
-    sig.emit("webrtc-signal", {
-      roomId,
-      type: "candidate",
-      candidate,
-      mid,
-      toSocketId: clientSocketId,
-    });
-  });
+  const channel =
+    peer.createDataChannel(
+      "carmageddon2-ipx",
+      {
+        ordered: true,
+      }
+    );
 
-  const channel = peer.createDataChannel("game", { ordered: true });
   client.channel = channel;
 
-  channel.onOpen(() => onHostChannelOpen(clientSocketId, channel, clientPort));
-  channel.onMessage((msg) => onChannelMessage(msg, clientSocketId));
+  channel.onOpen(() => {
+    onHostChannelOpen(
+      clientSocketId,
+      channel
+    );
+  });
+
+  channel.onMessage((message) => {
+    handleChannelMessage(
+      message,
+      clientSocketId
+    );
+  });
+
+  channel.onClosed(() => {
+    console.log(
+      `[Bridge-C2] DataChannel cerrado para ${clientSocketId}`
+    );
+
+    stopKeepAlive(clientSocketId);
+  });
+
+  channel.onError((error) => {
+    console.error(
+      `[Bridge-C2] Error de DataChannel para ${clientSocketId}:`,
+      error
+    );
+  });
 
   setTimeout(() => {
-    peer.setLocalDescription();
+    try {
+      peer.setLocalDescription();
+    } catch (error) {
+      console.error(
+        "[Bridge-C2] Error creando oferta:",
+        error.message
+      );
+    }
   }, 200);
 }
 
-function createClientPeer(NDC, sig, roomId) {
-  const peer = new NDC.PeerConnection("RetroLink-Client", {
-    iceServers: buildIceServers(),
-    iceTransportPolicy: "all",
-  });
+function createClientPeer(
+  NDC,
+  signaling,
+  roomId
+) {
+  const peer =
+    new NDC.PeerConnection(
+      "RetroLink-C2-Client",
+      {
+        iceServers:
+          buildIceServers(),
+
+        iceTransportPolicy: "all",
+      }
+    );
 
   state.peer = peer;
 
-  peer.onLocalDescription((sdp, type) => {
-    sig.emit("webrtc-signal", { roomId, type, sdp });
-  });
+  peer.onLocalDescription(
+    (sdp, type) => {
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId,
+          type,
+          sdp,
+        }
+      );
+    }
+  );
 
-  peer.onLocalCandidate((candidate, mid) => {
-    sig.emit("webrtc-signal", {
-      roomId,
-      type: "candidate",
-      candidate,
-      mid,
-    });
-  });
+  peer.onLocalCandidate(
+    (candidate, mid) => {
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId,
+          type: "candidate",
+          candidate,
+          mid,
+        }
+      );
+    }
+  );
 
   peer.onDataChannel((channel) => {
     state.channel = channel;
-    channel.onOpen(() => onClientChannelOpen());
-    channel.onMessage((msg) => onChannelMessage(msg));
+
+    channel.onOpen(() => {
+      onClientChannelOpen();
+    });
+
+    channel.onMessage((message) => {
+      handleChannelMessage(message);
+    });
+
+    channel.onClosed(() => {
+      console.log(
+        "[Bridge-C2] DataChannel del cliente cerrado"
+      );
+
+      stopKeepAlive("self");
+
+      sendStatus(
+        "La conexión P2P se cerró."
+      );
+    });
+
+    channel.onError((error) => {
+      console.error(
+        "[Bridge-C2] Error en DataChannel del cliente:",
+        error
+      );
+    });
   });
 }
 
-async function startBridge(roomId, isHost) {
+async function startBridge(
+  roomId,
+  isHost
+) {
   resetBridge();
 
-  state.roomId = roomId;
-  state.isHost = isHost;
-  state.iceConnectionStart = Date.now();
+  if (!roomId) {
+    return {
+      success: false,
+      error:
+        "No se proporcionó un identificador de sala.",
+    };
+  }
 
-  const NDC = require("node-datachannel");
+  state.roomId = roomId;
+  state.isHost = Boolean(isHost);
+  state.iceConnectionStart =
+    Date.now();
+
+  const NDC =
+    require("node-datachannel");
 
   console.log(
-    `[Bridge-C2] Starting — room: ${roomId}, role: ${isHost ? "HOST" : "CLIENT"}`
+    `[Bridge-C2] Starting — room: ${roomId}, role: ${
+      state.isHost
+        ? "HOST"
+        : "CLIENT"
+    }, IPX UDP: ${DEFAULT_IPX_PORT}, max clients: ${MAX_CLIENTS}`
   );
 
-  sendStatus("Conectando al servidor de señales...");
+  sendStatus(
+    "Preparando transporte IPX..."
+  );
 
-  const sig = socketClient(SIGNALING_URL, {
-    transports: ["websocket"],
-    reconnection: false,
-  });
+  try {
+    await startIPXTransport();
+  } catch (error) {
+    console.error(
+      "[Bridge-C2] No se pudo iniciar el transporte IPX:",
+      error
+    );
 
-  state.signalingSocket = sig;
+    sendStatus(
+      `No se pudo abrir el transporte IPX (${DEFAULT_IPX_PORT}): ${error.message}`
+    );
 
-  sig.on("connect_error", (err) => {
-    console.error("[Bridge-C2] Signaling error:", err.message);
-    sendStatus("Error al conectar al servidor de señales.");
-  });
+    resetBridge();
 
-  sig.on("connect", () => {
-    console.log("[Bridge-C2] Signaling connected:", sig.id);
-    sendStatus("Uniéndose a la sala...");
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
 
-    if (isHost) {
+  sendStatus(
+    "Conectando al servidor de señales..."
+  );
+
+  const signaling =
+    socketClient(
+      SIGNALING_URL,
+      {
+        transports: ["websocket"],
+        reconnection: false,
+      }
+    );
+
+  state.signalingSocket =
+    signaling;
+
+  signaling.on(
+    "connect_error",
+    (error) => {
+      console.error(
+        "[Bridge-C2] Error de señalización:",
+        error.message
+      );
+
+      sendStatus(
+        "Error al conectar al servidor de señales."
+      );
+    }
+  );
+
+  signaling.on("connect", () => {
+    console.log(
+      "[Bridge-C2] Signaling connected:",
+      signaling.id
+    );
+
+    sendStatus(
+      "Uniéndose a la sala..."
+    );
+
+    if (state.isHost) {
       state.hostIP = getLocalIP();
-      console.log(`[Bridge-C2] Host IP: ${state.hostIP}`);
+
+      console.log(
+        `[Bridge-C2] Host IP: ${state.hostIP}`
+      );
     }
 
-    sig.emit(
+    signaling.emit(
       "webrtc-join",
       {
         roomId,
-        isHost,
+        isHost: state.isHost,
         hostIP: state.hostIP,
       },
       (response) => {
-        console.log("[Bridge-C2] webrtc-join acknowledged:", response);
+        console.log(
+          "[Bridge-C2] webrtc-join acknowledged:",
+          response
+        );
+
         sendStatus(
-          isHost ? "Esperando jugadores..." : "Buscando rival en la sala..."
+          state.isHost
+            ? "Esperando jugadores..."
+            : "Buscando al host en la sala..."
         );
       }
     );
   });
 
-  sig.on("webrtc-host-ip", ({ hostIP }) => {
-    if (!isHost) {
+  signaling.on(
+    "webrtc-host-ip",
+    ({ hostIP } = {}) => {
+      if (
+        state.isHost ||
+        !hostIP
+      ) {
+        return;
+      }
+
       state.hostIP = hostIP;
-      console.log(`[Bridge-C2] Host IP received: ${hostIP}`);
+
+      console.log(
+        `[Bridge-C2] Host IP received: ${hostIP}`
+      );
     }
-  });
+  );
 
-  sig.on("webrtc-peer-ready", ({ fromSocketId } = {}) => {
-    if (!isHost) return;
+  signaling.on(
+    "webrtc-peer-ready",
+    ({ fromSocketId } = {}) => {
+      if (!state.isHost) {
+        return;
+      }
 
-    const clientSocketId = fromSocketId || "unknown";
-
-    if (state.clients.has(clientSocketId)) return;
-
-    const clientPort = getNextClientPort();
-
-    if (!clientPort) {
-      console.warn("[Bridge-C2] Sala llena");
-      return;
-    }
-
-    console.log(`[Bridge-C2] New client ${clientSocketId} → port ${clientPort}`);
-    sendStatus("Rival encontrado — creando conexión P2P...");
-
-    state.clients.set(clientSocketId, {
-      peer: null,
-      channel: null,
-      udpProxy: null,
-      clientPort,
-      pendingCandidates: [],
-      remoteDescSet: false,
-    });
-
-    createHostPeer(NDC, sig, roomId, clientSocketId, clientPort);
-  });
-
-  sig.on("webrtc-client-port", ({ port }) => {
-    if (isHost) return;
-
-    state.clientPort = port;
-    console.log(`[Bridge-C2] Assigned client port: ${port}`);
-  });
-
-  sig.on("webrtc-signal", ({ type, sdp, candidate, mid, fromSocketId }) => {
-    try {
-      if (isHost) {
-        const client = state.clients.get(fromSocketId);
-
-        if (!client) return;
-
-        if (type === "answer") {
-          client.peer.setRemoteDescription(sdp, "answer");
-          client.remoteDescSet = true;
-          flushCandidates(fromSocketId);
-          console.log(`[Bridge-C2] Host received answer from ${fromSocketId}`);
-        } else if (type === "candidate") {
-          if (client.peer && client.remoteDescSet) {
-            try {
-              client.peer.addRemoteCandidate(candidate, mid);
-            } catch {}
-          } else {
-            client.pendingCandidates.push({ candidate, mid });
-          }
-        }
+      if (!fromSocketId) {
+        console.warn(
+          "[Bridge-C2] webrtc-peer-ready sin fromSocketId"
+        );
 
         return;
       }
 
-      if (type === "offer") {
-        if (!state.peer) createClientPeer(NDC, sig, roomId);
-
-        console.log("[Bridge-C2] Client received offer");
-        sendStatus("Procesando oferta de conexión...");
-
-        state.peer.setRemoteDescription(sdp, "offer");
-        state.remoteDescSet = true;
-        flushCandidates();
-
-        setTimeout(() => {
-          try {
-            state.peer.setLocalDescription();
-            console.log("[Bridge-C2] Client answer sent");
-          } catch (err) {
-            console.error("[Bridge-C2] setLocalDescription error:", err.message);
-            sendStatus("Error respondiendo conexión: " + err.message);
-          }
-        }, 500);
-      } else if (type === "candidate") {
-        if (state.peer && state.remoteDescSet) {
-          try {
-            state.peer.addRemoteCandidate(candidate, mid);
-          } catch {}
-        } else {
-          state.pendingCandidates.push({ candidate, mid });
-        }
+      if (
+        state.clients.has(
+          fromSocketId
+        )
+      ) {
+        return;
       }
-    } catch (err) {
-      console.error("[Bridge-C2] Signal error:", err.message);
-      sendStatus("Error procesando señal: " + err.message);
+
+      if (
+        state.clients.size >=
+        MAX_CLIENTS
+      ) {
+        console.warn(
+          `[Bridge-C2] Sala llena (${MAX_CLIENTS} clientes)`
+        );
+
+        sendStatus(
+          `La sala alcanzó el máximo de ${MAX_CLIENTS} clientes.`
+        );
+
+        return;
+      }
+
+      console.log(
+        `[Bridge-C2] Nuevo cliente: ${fromSocketId}`
+      );
+
+      sendStatus(
+        "Rival encontrado — creando conexión P2P..."
+      );
+
+      state.clients.set(
+        fromSocketId,
+        {
+          peer: null,
+          channel: null,
+
+          pendingCandidates: [],
+          remoteDescSet: false,
+        }
+      );
+
+      createHostPeer(
+        NDC,
+        signaling,
+        roomId,
+        fromSocketId
+      );
     }
-  });
+  );
 
-  sig.on("webrtc-client-left", ({ socketId: leftSocketId }) => {
-    if (!isHost) return;
+  signaling.on(
+    "webrtc-signal",
+    ({
+      type,
+      sdp,
+      candidate,
+      mid,
+      fromSocketId,
+    } = {}) => {
+      try {
+        if (state.isHost) {
+          const client =
+            state.clients.get(
+              fromSocketId
+            );
 
-    const client = state.clients.get(leftSocketId);
+          if (!client) {
+            debugLog(
+              `Señal ignorada de cliente desconocido: ${fromSocketId}`
+            );
 
-    if (!client) return;
+            return;
+          }
 
-    console.log(`[Bridge-C2] Client ${leftSocketId} disconnected`);
+          if (type === "answer") {
+            client.peer.setRemoteDescription(
+              sdp,
+              "answer"
+            );
 
-    try {
-      client.channel?.close();
-    } catch {}
+            client.remoteDescSet =
+              true;
 
-    try {
-      client.peer?.close();
-    } catch {}
+            flushCandidates(
+              fromSocketId
+            );
 
-    try {
-      client.udpProxy?.close();
-    } catch {}
+            console.log(
+              `[Bridge-C2] Host recibió respuesta de ${fromSocketId}`
+            );
 
-    const interval = keepAliveIntervals.get(leftSocketId);
+            return;
+          }
 
-    if (interval) {
-      clearInterval(interval);
-      keepAliveIntervals.delete(leftSocketId);
+          if (type === "candidate") {
+            if (
+              client.peer &&
+              client.remoteDescSet
+            ) {
+              try {
+                client.peer.addRemoteCandidate(
+                  candidate,
+                  mid
+                );
+              } catch (error) {
+                debugLog(
+                  "Error agregando candidato remoto del cliente:",
+                  error.message
+                );
+              }
+            } else {
+              client.pendingCandidates.push({
+                candidate,
+                mid,
+              });
+            }
+          }
+
+          return;
+        }
+
+        if (type === "offer") {
+          if (!state.peer) {
+            createClientPeer(
+              NDC,
+              signaling,
+              roomId
+            );
+          }
+
+          console.log(
+            "[Bridge-C2] Cliente recibió oferta"
+          );
+
+          sendStatus(
+            "Procesando oferta de conexión..."
+          );
+
+          state.peer.setRemoteDescription(
+            sdp,
+            "offer"
+          );
+
+          state.remoteDescSet = true;
+
+          flushCandidates();
+
+          setTimeout(() => {
+            try {
+              state.peer.setLocalDescription();
+
+              console.log(
+                "[Bridge-C2] Cliente envió respuesta"
+              );
+            } catch (error) {
+              console.error(
+                "[Bridge-C2] Error creando respuesta:",
+                error.message
+              );
+
+              sendStatus(
+                `Error respondiendo conexión: ${error.message}`
+              );
+            }
+          }, 500);
+
+          return;
+        }
+
+        if (type === "candidate") {
+          if (
+            state.peer &&
+            state.remoteDescSet
+          ) {
+            try {
+              state.peer.addRemoteCandidate(
+                candidate,
+                mid
+              );
+            } catch (error) {
+              debugLog(
+                "Error agregando candidato remoto del host:",
+                error.message
+              );
+            }
+          } else {
+            state.pendingCandidates.push({
+              candidate,
+              mid,
+            });
+          }
+        }
+      } catch (error) {
+        console.error(
+          "[Bridge-C2] Error procesando señal:",
+          error.message
+        );
+
+        sendStatus(
+          `Error procesando señal: ${error.message}`
+        );
+      }
     }
+  );
 
-    state.clients.delete(leftSocketId);
+  signaling.on(
+    "webrtc-client-left",
+    ({ socketId } = {}) => {
+      if (
+        !state.isHost ||
+        !socketId
+      ) {
+        return;
+      }
 
-    const remaining = state.clients.size;
+      const client =
+        state.clients.get(socketId);
 
-    sendStatus(
-      remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores..."
+      if (!client) {
+        return;
+      }
+
+      console.log(
+        `[Bridge-C2] Cliente desconectado: ${socketId}`
+      );
+
+      closeClientConnection(
+        socketId,
+        client
+      );
+
+      state.clients.delete(socketId);
+
+      const remaining =
+        state.clients.size;
+
+      sendStatus(
+        remaining > 0
+          ? `${remaining} jugador(es) conectado(s)`
+          : "Esperando jugadores..."
+      );
+    }
+  );
+
+  console.log(
+    "[Bridge-C2] Túnel IPX activo"
+  );
+
+  return {
+    success: true,
+    ipxPort: getActiveIPXPort(),
+  };
+}
+
+function getBridgeState() {
+  const connectedClients = [
+    ...state.clients.values(),
+  ].filter(
+    (client) =>
+      client.channel?.isOpen()
+  ).length;
+
+  const clientReady =
+    Boolean(
+      state.channel?.isOpen()
     );
-  });
 
-  console.log("[Bridge-C2] Tunnel running");
+  return {
+    isReady: state.isHost
+      ? connectedClients > 0
+      : clientReady,
 
-  return { success: true };
+    isHost: state.isHost,
+    roomId: state.roomId,
+
+    clientCount: state.isHost
+      ? connectedClients
+      : clientReady
+        ? 1
+        : 0,
+
+    clientPort:
+      getActiveIPXPort(),
+
+    hostIP:
+      state.hostIP,
+
+    maxClients:
+      MAX_CLIENTS,
+
+    debugIPX:
+      DEBUG_IPX,
+
+    signalingConnected:
+      Boolean(
+        state.signalingSocket?.connected
+      ),
+
+    ipx:
+      state.ipxTransport?.getState?.() ||
+      null,
+  };
 }
 
 module.exports = {
   startBridge,
   resetBridge,
-  getClientPort: () => state.clientPort,
-  getHostIP: () => state.hostIP,
-  getBridgeState: () => ({
-    isReady: state.clients.size > 0,
-    isHost: state.isHost,
-    roomId: state.roomId,
-    clientCount: state.clients.size,
-    clientPort: state.clientPort,
-    hostIP: state.hostIP,
-  }),
+
+  getClientPort:
+    getActiveIPXPort,
+
+  getHostIP: () =>
+    state.hostIP,
+
+  getBridgeState,
 };

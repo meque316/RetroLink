@@ -66,6 +66,12 @@ function attachGameProcessEvents({
   gameName,
   isUT99,
 }) {
+  if (!process || typeof process.on !== "function") {
+    throw new Error(
+      `No se recibió un proceso válido para ${gameName}`
+    );
+  }
+
   process.on("close", (code) => {
     console.log(
       `[Game] ${
@@ -185,13 +191,21 @@ function registerGameHandlers() {
               extraArgs,
             });
 
+          if (!result?.gameProcess) {
+            throw new Error(
+              `No se pudo iniciar el proceso de ${game.name}`
+            );
+          }
+
           processManager.setGameProcess(
             result.gameProcess
           );
 
-          processManager.setServerProcess(
-            result.serverProcess
-          );
+          if (result.serverProcess) {
+            processManager.setServerProcess(
+              result.serverProcess
+            );
+          }
 
           attachGameProcessEvents({
             process: result.gameProcess,
@@ -214,11 +228,18 @@ function registerGameHandlers() {
             game,
             bridge,
             gamePath,
+            hostIp,
             isHost,
             realGameId,
             gameOptions,
             extraArgs,
           });
+
+        if (!result?.process) {
+          throw new Error(
+            `No se pudo iniciar el proceso de ${game.name}`
+          );
+        }
 
         processManager.setGameProcess(
           result.process
