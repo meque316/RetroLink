@@ -27,9 +27,9 @@ let state = {
 
 let keepAliveIntervals = new Map();
 
-// ✅ MEJORES ICE_SERVERS - Más STUN y TURN confiables
+// ✅ ICE_SERVERS CORREGIDOS - Solo servidores válidos para node-datachannel
 const ICE_SERVERS = [
-  // STUN servers (para descubrir IP pública)
+  // STUN servers
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
   { urls: "stun:stun2.l.google.com:19302" },
@@ -37,21 +37,21 @@ const ICE_SERVERS = [
   { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:stun.services.mozilla.com" },
   
-  // TURN servers (para relay cuando STUN no funciona)
+  // TURN servers - SOLO openrelay (funciona con node-datachannel)
   {
-    urls: [
-      "turn:openrelay.metered.ca:80",
-      "turn:openrelay.metered.ca:443",
-      "turn:openrelay.metered.ca:5349"
-    ],
+    urls: "turn:openrelay.metered.ca:80",
     username: "openrelayproject",
     credential: "openrelayproject"
   },
-  // TURN alternativo (más confiable)
   {
-    urls: "turn:turn.anyfirewall.com:443?transport=tcp",
-    username: "webrtc",
-    credential: "webrtc"
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  },
+  {
+    urls: "turn:openrelay.metered.ca:5349",
+    username: "openrelayproject",
+    credential: "openrelayproject"
   }
 ];
 
@@ -269,7 +269,6 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const client = state.clients.get(clientSocketId);
   client.peer = peer;
 
-  // ✅ Log de estado de ICE
   peer.onStateChange((state) => {
     console.log(`[Bridge] Host peer state (${clientSocketId}):`, state);
     state.iceConnectionState = state;
@@ -278,7 +277,7 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
       sendStatus(`✅ Conexión P2P establecida con cliente`);
     } else if (state === "failed") {
       console.error(`[Bridge] ICE failed for client ${clientSocketId}`);
-      sendStatus(`❌ Falló conexión P2P con cliente - intentando TURN...`);
+      sendStatus(`❌ Falló conexión P2P con cliente`);
     } else if (state === "disconnected") {
       sendStatus(`⚠️ Conexión P2P perdida`);
     }
@@ -333,7 +332,6 @@ function createClientPeer(NDC, sig, roomId) {
   });
   state.peer = peer;
 
-  // ✅ Log de estado de ICE en cliente
   peer.onStateChange((state) => {
     console.log("[Bridge] Client peer state:", state);
     state.iceConnectionState = state;
@@ -342,7 +340,7 @@ function createClientPeer(NDC, sig, roomId) {
       sendStatus("✅ Conexión P2P establecida!");
     } else if (state === "failed") {
       console.error("[Bridge] ICE failed for client");
-      sendStatus("❌ Falló conexión P2P - intentando TURN...");
+      sendStatus("❌ Falló conexión P2P");
     }
   });
 
@@ -400,7 +398,7 @@ async function startBridge(roomId, isHost) {
 
   const sig = socketClient(SIGNALING_URL, {
     transports: ["websocket"],
-    reconnection: true,  // ✅ Habilitar reconexión
+    reconnection: true,
     reconnectionAttempts: 3,
     reconnectionDelay: 1000,
   });
@@ -537,23 +535,6 @@ async function startBridge(roomId, isHost) {
     const remaining = state.clients.size;
     sendStatus(remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores...");
   });
-
-  // ✅ Timeout para la conexión ICE
-  const iceTimeout = setTimeout(() => {
-    if (state.iceConnectionState !== "connected" && state.iceConnectionState !== "completed") {
-      console.warn("[Bridge] ICE connection timeout - verificando TURN...");
-      sendStatus("⏳ La conexión P2P está tomando más tiempo de lo esperado...");
-    }
-  }, 15000);
-
-  // ✅ Limpiar timeout al finalizar
-  const cleanup = () => {
-    clearTimeout(iceTimeout);
-  };
-
-  // ✅ Manejar eventos de cierre
-  sig.on("disconnect", cleanup);
-  sig.on("connect_error", cleanup);
 
   console.log(`[Bridge] Tunnel running`);
   return { success: true };
