@@ -7,7 +7,6 @@ const SIGNALING_URL = "https://retrolink-server.onrender.com";
 const CLIENT_PORT_BASE = 27961;
 const MAX_CLIENTS = 8;
 
-// ✅ ESTADO IDÉNTICO AL MONOLÍTICO
 let state = {
   signalingSocket: null,
   roomId: null,
@@ -23,20 +22,37 @@ let state = {
   pendingCandidates: [],
   remoteDescSet: false,
   clientPort: null,
+  iceConnectionState: null,
 };
 
 let keepAliveIntervals = new Map();
 
-// ✅ MISMO ICE_SERVERS QUE EL MONOLÍTICO
+// ✅ MEJORES ICE_SERVERS - Más STUN y TURN confiables
 const ICE_SERVERS = [
-  "stun:stun.l.google.com:19302",
-  "stun:stun1.l.google.com:19302",
-  "stun:stun2.l.google.com:19302",
-  "stun:stun3.l.google.com:19302",
-  "stun:stun4.l.google.com:19302",
-  "turn:openrelay.metered.ca:80",
-  "turn:openrelay.metered.ca:443",
-  "turn:openrelay.metered.ca:5349",
+  // STUN servers (para descubrir IP pública)
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
+  { urls: "stun:stun.services.mozilla.com" },
+  
+  // TURN servers (para relay cuando STUN no funciona)
+  {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:5349"
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  },
+  // TURN alternativo (más confiable)
+  {
+    urls: "turn:turn.anyfirewall.com:443?transport=tcp",
+    username: "webrtc",
+    credential: "webrtc"
+  }
 ];
 
 function buildIceServers() { return ICE_SERVERS; }
@@ -115,11 +131,11 @@ function resetBridge() {
   state.iceConnectionStart = null;
   state.hostIP = null;
   state.clientPort = null;
+  state.iceConnectionState = null;
 
   console.log("[Bridge] Reset complete");
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createHostUDPProxy(socketId, clientPort, channel) {
   const udpProxy = dgram.createSocket("udp4");
 
@@ -145,7 +161,6 @@ function createHostUDPProxy(socketId, clientPort, channel) {
   return udpProxy;
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function onHostChannelOpen(socketId, channel, clientPort) {
   console.log(`[Bridge] Host DataChannel open for client ${socketId} on port ${clientPort}`);
 
@@ -172,7 +187,6 @@ function onHostChannelOpen(socketId, channel, clientPort) {
   sendStatus(`¡${connectedCount} jugador(es) conectado(s)! Listos para jugar.`);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function onClientChannelOpen() {
   console.log(`[Bridge] Client DataChannel open (port: ${state.clientPort})`);
   sendStatus("¡Conexión P2P establecida! Listos para jugar.");
@@ -210,7 +224,6 @@ function onClientChannelOpen() {
   keepAliveIntervals.set("self", interval);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO - PUERTO FIJO 27960 PARA QUAKE III
 function onChannelMessage(msg, socketId = null) {
   const buf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg);
 
@@ -247,7 +260,6 @@ function flushCandidates(socketId = null) {
   }
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const peer = new NDC.PeerConnection(`RetroLink-Host-${clientSocketId}`, {
     iceServers: buildIceServers(),
@@ -257,25 +269,63 @@ function createHostPeer(NDC, sig, roomId, clientSocketId, clientPort) {
   const client = state.clients.get(clientSocketId);
   client.peer = peer;
 
+  // ✅ Log de estado de ICE
+  peer.onStateChange((state) => {
+    console.log(`[Bridge] Host peer state (${clientSocketId}):`, state);
+    state.iceConnectionState = state;
+    
+    if (state === "connected") {
+      sendStatus(`✅ Conexión P2P establecida con cliente`);
+    } else if (state === "failed") {
+      console.error(`[Bridge] ICE failed for client ${clientSocketId}`);
+      sendStatus(`❌ Falló conexión P2P con cliente - intentando TURN...`);
+    } else if (state === "disconnected") {
+      sendStatus(`⚠️ Conexión P2P perdida`);
+    }
+  });
+
+  peer.onGatheringStateChange((state) => {
+    console.log(`[Bridge] Host gathering (${clientSocketId}):`, state);
+  });
+
   peer.onLocalDescription((sdp, type) => {
+    console.log(`[Bridge] Host offer ready for ${clientSocketId}, type: ${type}`);
     sig.emit("webrtc-signal", { roomId, type, sdp, toSocketId: clientSocketId });
     sig.emit("webrtc-client-port", { roomId, port: clientPort, toSocketId: clientSocketId });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
+    console.log(`[Bridge] Host candidate for ${clientSocketId}:`, candidate);
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid, toSocketId: clientSocketId });
   });
 
   const channel = peer.createDataChannel("game", { ordered: true });
   client.channel = channel;
 
-  channel.onOpen(() => onHostChannelOpen(clientSocketId, channel, clientPort));
-  channel.onMessage((msg) => onChannelMessage(msg, clientSocketId));
+  channel.onOpen(() => {
+    console.log(`[Bridge] channel.onOpen for ${clientSocketId}`);
+    onHostChannelOpen(clientSocketId, channel, clientPort);
+  });
 
-  setTimeout(() => { peer.setLocalDescription(); }, 200);
+  channel.onClosed(() => {
+    console.log(`[Bridge] DataChannel closed for ${clientSocketId}`);
+  });
+
+  channel.onMessage((msg) => {
+    onChannelMessage(msg, clientSocketId);
+  });
+
+  channel.onError((e) => {
+    console.error(`[Bridge] DataChannel error (${clientSocketId}):`, e);
+  });
+
+  setTimeout(() => {
+    console.log(`[Bridge] Host creating offer for ${clientSocketId}...`);
+    sendStatus(`Enviando oferta de conexión al rival...`);
+    peer.setLocalDescription();
+  }, 200);
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO
 function createClientPeer(NDC, sig, roomId) {
   const peer = new NDC.PeerConnection("RetroLink-Client", {
     iceServers: buildIceServers(),
@@ -283,22 +333,59 @@ function createClientPeer(NDC, sig, roomId) {
   });
   state.peer = peer;
 
+  // ✅ Log de estado de ICE en cliente
+  peer.onStateChange((state) => {
+    console.log("[Bridge] Client peer state:", state);
+    state.iceConnectionState = state;
+    
+    if (state === "connected") {
+      sendStatus("✅ Conexión P2P establecida!");
+    } else if (state === "failed") {
+      console.error("[Bridge] ICE failed for client");
+      sendStatus("❌ Falló conexión P2P - intentando TURN...");
+    }
+  });
+
+  peer.onGatheringStateChange((state) => {
+    console.log("[Bridge] Client gathering:", state);
+  });
+
   peer.onLocalDescription((sdp, type) => {
+    console.log(`[Bridge] Client local description ready (${type})`);
     sig.emit("webrtc-signal", { roomId, type, sdp });
   });
 
   peer.onLocalCandidate((candidate, mid) => {
+    console.log("[Bridge] Client candidate:", candidate);
     sig.emit("webrtc-signal", { roomId, type: "candidate", candidate, mid });
   });
 
   peer.onDataChannel((channel) => {
+    console.log("[Bridge] Client received DataChannel");
     state.channel = channel;
-    channel.onOpen(() => onClientChannelOpen());
-    channel.onMessage((msg) => onChannelMessage(msg));
+
+    channel.onOpen(() => {
+      console.log("[Bridge] channel.onOpen fired");
+      onClientChannelOpen();
+    });
+
+    channel.onClosed(() => {
+      console.log("[Bridge] DataChannel closed");
+      sendStatus("Conexión P2P cerrada.");
+      const interval = keepAliveIntervals.get("self");
+      if (interval) { clearInterval(interval); keepAliveIntervals.delete("self"); }
+    });
+
+    channel.onMessage((msg) => {
+      onChannelMessage(msg);
+    });
+
+    channel.onError((e) => {
+      console.error("[Bridge] DataChannel error:", e);
+    });
   });
 }
 
-// ✅ IDÉNTICO AL MONOLÍTICO - SIN gameId
 async function startBridge(roomId, isHost) {
   resetBridge();
 
@@ -313,7 +400,9 @@ async function startBridge(roomId, isHost) {
 
   const sig = socketClient(SIGNALING_URL, {
     transports: ["websocket"],
-    reconnection: false,
+    reconnection: true,  // ✅ Habilitar reconexión
+    reconnectionAttempts: 3,
+    reconnectionDelay: 1000,
   });
   state.signalingSocket = sig;
 
@@ -383,13 +472,15 @@ async function startBridge(roomId, isHost) {
         if (!client) return;
 
         if (type === "answer") {
+          console.log(`[Bridge] Host received answer from ${fromSocketId}`);
           client.peer.setRemoteDescription(sdp, "answer");
           client.remoteDescSet = true;
           flushCandidates(fromSocketId);
-          console.log(`[Bridge] Host received answer from ${fromSocketId}`);
         } else if (type === "candidate") {
           if (client.peer && client.remoteDescSet) {
-            try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+            try { client.peer.addRemoteCandidate(candidate, mid); } catch(e) {
+              console.warn("[Bridge] Error adding remote candidate:", e);
+            }
           } else {
             client.pendingCandidates.push({ candidate, mid });
           }
@@ -416,7 +507,9 @@ async function startBridge(roomId, isHost) {
 
         } else if (type === "candidate") {
           if (state.peer && state.remoteDescSet) {
-            try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {}
+            try { state.peer.addRemoteCandidate(candidate, mid); } catch(e) {
+              console.warn("[Bridge] Error adding remote candidate:", e);
+            }
           } else {
             state.pendingCandidates.push({ candidate, mid });
           }
@@ -445,6 +538,23 @@ async function startBridge(roomId, isHost) {
     sendStatus(remaining > 0 ? `${remaining} jugador(es) conectado(s)` : "Esperando jugadores...");
   });
 
+  // ✅ Timeout para la conexión ICE
+  const iceTimeout = setTimeout(() => {
+    if (state.iceConnectionState !== "connected" && state.iceConnectionState !== "completed") {
+      console.warn("[Bridge] ICE connection timeout - verificando TURN...");
+      sendStatus("⏳ La conexión P2P está tomando más tiempo de lo esperado...");
+    }
+  }, 15000);
+
+  // ✅ Limpiar timeout al finalizar
+  const cleanup = () => {
+    clearTimeout(iceTimeout);
+  };
+
+  // ✅ Manejar eventos de cierre
+  sig.on("disconnect", cleanup);
+  sig.on("connect_error", cleanup);
+
   console.log(`[Bridge] Tunnel running`);
   return { success: true };
 }
@@ -461,5 +571,6 @@ module.exports = {
     clientCount: state.clients.size,
     clientPort: state.clientPort,
     hostIP: state.hostIP,
+    iceConnectionState: state.iceConnectionState,
   })
 };
