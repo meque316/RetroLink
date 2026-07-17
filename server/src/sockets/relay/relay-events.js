@@ -1,6 +1,5 @@
 import {
   getRoom,
-  isRoomMember,
 } from "../rooms/room-utils.js";
 
 import {
@@ -9,12 +8,218 @@ import {
   consumeRelayQuota,
   createRelayParticipant,
   emitRelayPacket,
+  getRelayHost,
   getRelayParticipants,
   getRelayState,
   normalizeRelayPacket,
   notifyRelayState,
   removeRelayParticipant,
 } from "./relay-store.js";
+
+const RATE_LIMIT_NOTICE_INTERVAL_MS =
+  1000;
+
+function getRelayRoomName(
+  roomId
+) {
+  return `game-relay-${roomId}`;
+}
+
+function isBridgeJoinedToRoom(
+  socket,
+  roomId
+) {
+  return (
+    typeof roomId ===
+      "string" &&
+    roomId.length > 0 &&
+    socket.data.webrtcRoomId ===
+      roomId
+  );
+}
+
+function isSocketInRoom(
+  io,
+  socketId,
+  roomName
+) {
+  return Boolean(
+    io.sockets.adapter.rooms
+      .get(roomName)
+      ?.has(socketId)
+  );
+}
+
+function normalizeRelayReason(
+  reason
+) {
+  if (
+    typeof reason !==
+    "string"
+  ) {
+    return "ice-failed";
+  }
+
+  const cleanReason =
+    reason.trim();
+
+  return cleanReason
+    ? cleanReason.slice(
+        0,
+        100
+      )
+    : "ice-failed";
+}
+
+function registerDroppedPacket(
+  participant,
+  packetBytes = 0
+) {
+  if (!participant) {
+    return;
+  }
+
+  participant.packetsDropped =
+    (
+      participant
+        .packetsDropped ||
+      0
+    ) + 1;
+
+  participant.bytesDropped =
+    (
+      participant
+        .bytesDropped ||
+      0
+    ) +
+    Math.max(
+      0,
+      Number(packetBytes) ||
+        0
+    );
+}
+
+function emitRateLimitNotice({
+  socket,
+  roomId,
+  participant,
+}) {
+  const now =
+    Date.now();
+
+  const lastNoticeAt =
+    participant
+      .lastRateLimitNoticeAt ||
+    0;
+
+  if (
+    now - lastNoticeAt <
+    RATE_LIMIT_NOTICE_INTERVAL_MS
+  ) {
+    return;
+  }
+
+  participant
+    .lastRateLimitNoticeAt =
+    now;
+
+  socket.emit(
+    "game-relay-rate-limited",
+    {
+      roomId,
+
+      limitBytesPerSecond:
+        RELAY_BYTES_PER_SECOND,
+    }
+  );
+}
+
+function logFirstReceivedPacket({
+  socket,
+  roomId,
+  participant,
+  packetBytes,
+}) {
+  if (
+    participant
+      .firstPacketReceivedAt
+  ) {
+    return;
+  }
+
+  participant
+    .firstPacketReceivedAt =
+    Date.now();
+
+  console.log(
+    `[GameRelay] Primer paquete recibido de ${socket.id} en ${roomId}: ${packetBytes} bytes`
+  );
+}
+
+function logFirstForwardedPacket({
+  roomId,
+  participant,
+  sourceSocketId,
+  targetSocketId,
+  packetBytes,
+}) {
+  if (
+    participant
+      .firstPacketForwardedAt
+  ) {
+    return;
+  }
+
+  participant
+    .firstPacketForwardedAt =
+    Date.now();
+
+  console.log(
+    `[GameRelay] Primer paquete reenviado en ${roomId}: ${sourceSocketId} -> ${targetSocketId} (${packetBytes} bytes)`
+  );
+}
+
+function forwardRelayPacket({
+  io,
+  roomId,
+  sourceSocketId,
+  targetSocketId,
+  packet,
+  senderParticipant,
+}) {
+  const forwarded =
+    emitRelayPacket({
+      io,
+
+      targetSocketId,
+
+      roomId,
+
+      sourceSocketId,
+
+      packet,
+
+      senderParticipant,
+    });
+
+  if (forwarded) {
+    logFirstForwardedPacket({
+      roomId,
+
+      participant:
+        senderParticipant,
+
+      sourceSocketId,
+
+      targetSocketId,
+
+      packetBytes:
+        packet.length,
+    });
+  }
+
+  return forwarded;
+}
 
 export function registerRelayEvents({
   io,
@@ -44,9 +249,14 @@ export function registerRelayEvents({
         return;
       }
 
+      /*
+       * El socket del bridge es distinto al socket
+       * del lobby. Su pertenencia se valida usando
+       * socket.data.webrtcRoomId.
+       */
       if (
-        !isRoomMember(
-          socket.id,
+        !isBridgeJoinedToRoom(
+          socket,
           roomId
         )
       ) {
@@ -54,7 +264,7 @@ export function registerRelayEvents({
           success: false,
 
           error:
-            "No perteneces a esta sala.",
+            "El bridge no está unido a esta sala.",
         });
 
         return;
@@ -65,6 +275,80 @@ export function registerRelayEvents({
           roomId
         );
 
+      if (!participants) {
+        ack?.({
+          success: false,
+
+          error:
+            "No se pudo crear el estado del relay.",
+        });
+
+        return;
+      }
+
+      const isHost =
+        Boolean(
+          socket.data
+            .isWebrtcHost
+        );
+
+      /*
+       * Sólo puede existir un bridge host relay
+       * activo por sala.
+       */
+      if (isHost) {
+        const currentHost =
+          getRelayHost(
+            roomId
+          );
+
+        if (
+          currentHost &&
+          currentHost.socketId !==
+            socket.id
+        ) {
+          /*
+           * Si el supuesto host anterior ya no está
+           * conectado, eliminamos la referencia obsoleta.
+           */
+          const oldHostConnected =
+            isSocketInRoom(
+              io,
+              currentHost.socketId,
+              getRelayRoomName(
+                roomId
+              )
+            );
+
+          if (
+            oldHostConnected
+          ) {
+            ack?.({
+              success: false,
+
+              error:
+                "La sala ya tiene un bridge host relay activo.",
+
+              hostSocketId:
+                currentHost
+                  .socketId,
+            });
+
+            return;
+          }
+
+          removeRelayParticipant(
+            roomId,
+            currentHost.socketId
+          );
+        }
+      }
+
+      const cleanReason =
+        normalizeRelayReason(
+          reason
+        );
+
       const existing =
         participants.get(
           socket.id
@@ -72,41 +356,40 @@ export function registerRelayEvents({
 
       if (existing) {
         existing.isHost =
-          room.host ===
-          socket.id;
+          isHost;
 
         existing.reason =
-          reason;
+          cleanReason;
 
         existing.lastEnabledAt =
           Date.now();
       } else {
         participants.set(
           socket.id,
-
           createRelayParticipant({
             socketId:
               socket.id,
 
-            isHost:
-              room.host ===
-              socket.id,
+            isHost,
 
-            reason,
+            reason:
+              cleanReason,
           })
         );
       }
 
       socket.join(
-        `game-relay-${roomId}`
+        getRelayRoomName(
+          roomId
+        )
       );
 
       console.log(
         `[GameRelay] ${socket.id} activó relay en ${roomId} como ${
-          room.host === socket.id
+          isHost
             ? "HOST"
             : "CLIENT"
-        }`
+        }. Motivo: ${cleanReason}`
       );
 
       notifyRelayState(
@@ -114,15 +397,15 @@ export function registerRelayEvents({
         roomId
       );
 
+      const relayState =
+        getRelayState(
+          roomId
+        );
+
       ack?.({
         success: true,
 
-        ...getRelayState(
-          roomId
-        ),
-
-        hostSocketId:
-          room.host,
+        ...relayState,
       });
     }
   );
@@ -135,24 +418,32 @@ export function registerRelayEvents({
       } = {},
       ack
     ) => {
-      if (!roomId) {
+      if (
+        !isBridgeJoinedToRoom(
+          socket,
+          roomId
+        )
+      ) {
         ack?.({
           success: false,
 
           error:
-            "Sala inválida.",
+            "El bridge no está unido a esta sala.",
         });
 
         return;
       }
 
-      removeRelayParticipant(
-        roomId,
-        socket.id
-      );
+      const removed =
+        removeRelayParticipant(
+          roomId,
+          socket.id
+        );
 
       socket.leave(
-        `game-relay-${roomId}`
+        getRelayRoomName(
+          roomId
+        )
       );
 
       notifyRelayState(
@@ -160,8 +451,14 @@ export function registerRelayEvents({
         roomId
       );
 
+      console.log(
+        `[GameRelay] ${socket.id} desactivó relay en ${roomId}`
+      );
+
       ack?.({
         success: true,
+
+        removed,
 
         ...getRelayState(
           roomId
@@ -182,8 +479,8 @@ export function registerRelayEvents({
 
       if (
         !room ||
-        !isRoomMember(
-          socket.id,
+        !isBridgeJoinedToRoom(
+          socket,
           roomId
         )
       ) {
@@ -214,8 +511,13 @@ export function registerRelayEvents({
         );
 
       if (!buffer) {
-        sender.packetsDropped +=
-          1;
+        registerDroppedPacket(
+          sender
+        );
+
+        console.warn(
+          `[GameRelay] Formato de paquete inválido desde ${socket.id} en ${roomId}`
+        );
 
         return;
       }
@@ -225,11 +527,14 @@ export function registerRelayEvents({
         buffer.length >
           MAX_RELAY_PACKET_BYTES
       ) {
-        sender.packetsDropped +=
-          1;
+        registerDroppedPacket(
+          sender,
+          buffer.length
+        );
 
-        sender.bytesDropped +=
-          buffer.length;
+        console.warn(
+          `[GameRelay] Paquete inválido desde ${socket.id}: ${buffer.length} bytes`
+        );
 
         return;
       }
@@ -240,46 +545,75 @@ export function registerRelayEvents({
           buffer.length
         )
       ) {
-        socket.emit(
-          "game-relay-rate-limited",
-          {
-            roomId,
-
-            limitBytesPerSecond:
-              RELAY_BYTES_PER_SECOND,
-          }
-        );
+        emitRateLimitNotice({
+          socket,
+          roomId,
+          participant:
+            sender,
+        });
 
         return;
       }
 
+      logFirstReceivedPacket({
+        socket,
+        roomId,
+
+        participant:
+          sender,
+
+        packetBytes:
+          buffer.length,
+      });
+
+      const relayRoomName =
+        getRelayRoomName(
+          roomId
+        );
+
       const senderIsHost =
-        socket.id ===
-        room.host;
+        Boolean(
+          sender.isHost
+        );
 
       /*
-       * Un cliente sólo puede enviar
-       * paquetes al host.
+       * Un cliente sólo puede enviar paquetes
+       * al bridge host de la sala.
        */
       if (!senderIsHost) {
+        const relayHost =
+          getRelayHost(
+            roomId
+          );
+
         if (
-          !participants.has(
-            room.host
+          !relayHost ||
+          relayHost.socketId ===
+            socket.id ||
+          !isSocketInRoom(
+            io,
+            relayHost.socketId,
+            relayRoomName
           )
         ) {
+          registerDroppedPacket(
+            sender,
+            buffer.length
+          );
+
           return;
         }
 
-        emitRelayPacket({
+        forwardRelayPacket({
           io,
-
-          targetSocketId:
-            room.host,
 
           roomId,
 
           sourceSocketId:
             socket.id,
+
+          targetSocketId:
+            relayHost.socketId,
 
           packet:
             buffer,
@@ -292,34 +626,44 @@ export function registerRelayEvents({
       }
 
       /*
-       * El host puede responder a
-       * un cliente concreto.
+       * El host puede responder a un cliente
+       * relay específico.
        */
       if (toSocketId) {
+        const targetParticipant =
+          participants.get(
+            toSocketId
+          );
+
         if (
           toSocketId ===
             socket.id ||
-          !participants.has(
-            toSocketId
-          ) ||
-          !isRoomMember(
+          !targetParticipant ||
+          targetParticipant.isHost ||
+          !isSocketInRoom(
+            io,
             toSocketId,
-            roomId
+            relayRoomName
           )
         ) {
+          registerDroppedPacket(
+            sender,
+            buffer.length
+          );
+
           return;
         }
 
-        emitRelayPacket({
+        forwardRelayPacket({
           io,
-
-          targetSocketId:
-            toSocketId,
 
           roomId,
 
           sourceSocketId:
             socket.id,
+
+          targetSocketId:
+            toSocketId,
 
           packet:
             buffer,
@@ -332,38 +676,61 @@ export function registerRelayEvents({
       }
 
       /*
-       * Sin destino concreto, el host
-       * reenvía a todos los clientes.
+       * Sin destino explícito, el host replica
+       * el paquete a todos los clientes relay.
        */
-      for (const targetSocketId of
-        participants.keys()) {
+      let forwardedCount =
+        0;
+
+      for (const [
+        targetSocketId,
+        targetParticipant,
+      ] of participants) {
         if (
           targetSocketId ===
             socket.id ||
-          !isRoomMember(
+          targetParticipant.isHost ||
+          !isSocketInRoom(
+            io,
             targetSocketId,
-            roomId
+            relayRoomName
           )
         ) {
           continue;
         }
 
-        emitRelayPacket({
-          io,
+        const forwarded =
+          forwardRelayPacket({
+            io,
 
-          targetSocketId,
+            roomId,
 
-          roomId,
+            sourceSocketId:
+              socket.id,
 
-          sourceSocketId:
-            socket.id,
+            targetSocketId,
 
-          packet:
-            buffer,
+            packet:
+              buffer,
 
-          senderParticipant:
-            sender,
-        });
+            senderParticipant:
+              sender,
+          });
+
+        if (forwarded) {
+          forwardedCount +=
+            1;
+        }
+      }
+
+      if (
+        forwardedCount ===
+        0
+      ) {
+        registerDroppedPacket(
+          sender,
+          buffer.length
+        );
       }
     }
   );
@@ -376,11 +743,29 @@ export function registerRelayEvents({
       } = {},
       ack
     ) => {
+      if (
+        !isBridgeJoinedToRoom(
+          socket,
+          roomId
+        )
+      ) {
+        ack?.({
+          success: false,
+
+          error:
+            "El bridge no está unido a esta sala.",
+        });
+
+        return;
+      }
+
       const participant =
         getRelayParticipants(
           roomId,
           false
-        )?.get(socket.id);
+        )?.get(
+          socket.id
+        );
 
       if (!participant) {
         ack?.({
@@ -430,8 +815,25 @@ export function registerRelayEvents({
             participant
               .enabledAt,
 
+          lastEnabledAt:
+            participant
+              .lastEnabledAt,
+
+          firstPacketReceivedAt:
+            participant
+              .firstPacketReceivedAt ||
+            null,
+
+          firstPacketForwardedAt:
+            participant
+              .firstPacketForwardedAt ||
+            null,
+
           reason:
             participant.reason,
+
+          isHost:
+            participant.isHost,
         },
       });
     }

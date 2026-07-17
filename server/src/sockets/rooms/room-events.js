@@ -21,8 +21,6 @@ import {
 import {
   deleteRelayRoom,
   notifyRelayState,
-  removeRelayParticipant,
-  updateRelayHost,
 } from "../relay/relay-store.js";
 
 export function registerRoomEvents({
@@ -88,11 +86,31 @@ export function registerRoomEvents({
           roomData.gameOptions ||
           {},
 
+        /*
+         * Este ID corresponde exclusivamente
+         * al socket del frontend/lobby.
+         */
         host:
           socket.id,
 
+        /*
+         * Esta IP puede venir inicialmente desde
+         * el frontend, pero posteriormente el bridge
+         * host puede actualizarla mediante webrtc-join.
+         */
         hostPublicIp:
-          roomData.hostPublicIp ||
+          typeof roomData.hostPublicIp ===
+            "string" &&
+          roomData.hostPublicIp.trim()
+            ? roomData.hostPublicIp.trim()
+            : null,
+
+        /*
+         * Este campo corresponde al socket separado
+         * del bridge Electron y se completa cuando
+         * el host ejecuta webrtc-join.
+         */
+        webrtcHostSocketId:
           null,
 
         members: [
@@ -122,13 +140,18 @@ export function registerRoomEvents({
       readyStates[room.id] =
         [];
 
-      socket.join(room.id);
+      socket.join(
+        room.id
+      );
 
       console.log(
         `[Room] Creada "${room.name}" (${room.id}) para ${room.gameId}`
       );
 
-      emitRoomList(io);
+      emitRoomList(
+        io
+      );
+
       emitReadyState(
         io,
         room.id
@@ -187,8 +210,15 @@ export function registerRoomEvents({
       room.players =
         room.members.length;
 
-      socket.join(roomId);
+      socket.join(
+        roomId
+      );
 
+      /*
+       * Este evento pertenece al lobby.
+       * hostSocketId sigue siendo el socket del frontend,
+       * no el socket del bridge Electron.
+       */
       socket.emit(
         "host-peer-info",
         {
@@ -218,7 +248,10 @@ export function registerRoomEvents({
         );
       }
 
-      emitRoomList(io);
+      emitRoomList(
+        io
+      );
+
       emitReadyState(
         io,
         roomId
@@ -254,10 +287,13 @@ export function registerRoomEvents({
         readyStates[roomId];
 
       readyStates[roomId] =
-        ready.includes(socket.id)
+        ready.includes(
+          socket.id
+        )
           ? ready.filter(
               (id) =>
-                id !== socket.id
+                id !==
+                socket.id
             )
           : [
               ...ready,
@@ -279,7 +315,8 @@ export function registerRoomEvents({
 
       if (
         !room ||
-        room.host !== socket.id
+        room.host !==
+          socket.id
       ) {
         return;
       }
@@ -317,7 +354,10 @@ export function registerRoomEvents({
             )
         );
 
-      if (missing.length > 0) {
+      if (
+        missing.length >
+        0
+      ) {
         const names =
           missing
             .map(
@@ -410,7 +450,8 @@ export function registerRoomEvents({
 
       if (
         !room ||
-        room.host !== socket.id ||
+        room.host !==
+          socket.id ||
         typeof name !==
           "string" ||
         !name.trim()
@@ -424,7 +465,9 @@ export function registerRoomEvents({
           100
         );
 
-      emitRoomList(io);
+      emitRoomList(
+        io
+      );
     }
   );
 
@@ -444,37 +487,28 @@ export function registerRoomEvents({
         return;
       }
 
-      const wasHost =
-        room.host === socket.id;
+      const wasLobbyHost =
+        room.host ===
+        socket.id;
 
-      if (!wasHost) {
-        socket
-          .to(
-            `webrtc-${roomId}`
-          )
-          .emit(
-            "webrtc-client-left",
-            {
-              socketId:
-                socket.id,
-            }
-          );
-      }
-
-      removeRelayParticipant(
-        roomId,
-        socket.id
-      );
-
+      /*
+       * Esta salida afecta únicamente al socket
+       * del frontend/lobby.
+       *
+       * No emitimos webrtc-client-left,
+       * no eliminamos participantes relay y
+       * no salimos de las salas internas del bridge.
+       *
+       * El bridge tiene una conexión Socket.IO
+       * independiente y se limpia mediante:
+       *
+       * - webrtc-leave
+       * - game-relay-disable
+       * - disconnect
+       */
       socket.leave(
-        `game-relay-${roomId}`
+        roomId
       );
-
-      socket.leave(
-        `webrtc-${roomId}`
-      );
-
-      socket.leave(roomId);
 
       removeRoomMember(
         room,
@@ -487,25 +521,57 @@ export function registerRoomEvents({
       );
 
       if (
-        room.members.length === 0
+        room.members.length ===
+        0
       ) {
-        deleteRoom(roomId);
-        deleteRelayRoom(roomId);
-        emitRoomList(io);
+        deleteRoom(
+          roomId
+        );
+
+        deleteRelayRoom(
+          roomId
+        );
+
+        console.log(
+          `[Room] Sala ${roomId} eliminada porque quedó sin miembros`
+        );
+
+        emitRoomList(
+          io
+        );
 
         return;
       }
 
-      if (wasHost) {
-        promoteNextHost(room);
-
-        updateRelayHost(
-          roomId,
-          room.host
+      if (wasLobbyHost) {
+        promoteNextHost(
+          room
         );
+
+        /*
+         * Esto sólo promociona al host del lobby.
+         *
+         * No se modifica el host relay, porque éste
+         * se identifica mediante participant.isHost
+         * dentro de la conexión separada del bridge.
+         */
+        console.log(
+          `[Room] Nuevo host del lobby en ${roomId}: ${room.host}`
+        );
+
+        /*
+         * Si el frontend host abandonó pero su bridge
+         * sigue conectado momentáneamente, no tocamos
+         * aquí webrtcHostSocketId.
+         *
+         * Ese socket se limpiará al recibir webrtc-leave
+         * o disconnect desde Electron.
+         */
       }
 
-      emitRoomList(io);
+      emitRoomList(
+        io
+      );
 
       emitReadyState(
         io,

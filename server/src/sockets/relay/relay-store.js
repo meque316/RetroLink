@@ -4,7 +4,6 @@ import {
 
 import {
   getRoom,
-  isRoomMember,
 } from "../rooms/room-utils.js";
 
 export const MAX_RELAY_PACKET_BYTES =
@@ -20,6 +19,13 @@ export function getRelayParticipants(
   roomId,
   createIfMissing = true
 ) {
+  if (
+    !roomId ||
+    typeof roomId !== "string"
+  ) {
+    return null;
+  }
+
   let participants =
     gameRelayRooms.get(roomId);
 
@@ -27,8 +33,7 @@ export function getRelayParticipants(
     !participants &&
     createIfMissing
   ) {
-    participants =
-      new Map();
+    participants = new Map();
 
     gameRelayRooms.set(
       roomId,
@@ -44,6 +49,9 @@ export function createRelayParticipant({
   isHost,
   reason,
 }) {
+  const now =
+    Date.now();
+
   return {
     socketId,
 
@@ -51,20 +59,22 @@ export function createRelayParticipant({
       Boolean(isHost),
 
     reason:
-      reason ||
-      "ice-failed",
+      typeof reason === "string" &&
+      reason.trim()
+        ? reason.trim()
+        : "ice-failed",
 
     enabledAt:
-      Date.now(),
+      now,
 
     lastEnabledAt:
-      Date.now(),
+      now,
 
     availableBytes:
       RELAY_BURST_BYTES,
 
     lastRefillAt:
-      Date.now(),
+      now,
 
     packetsReceived: 0,
     bytesReceived: 0,
@@ -81,6 +91,13 @@ export function removeRelayParticipant(
   roomId,
   socketId
 ) {
+  if (
+    !roomId ||
+    !socketId
+  ) {
+    return false;
+  }
+
   const participants =
     getRelayParticipants(
       roomId,
@@ -92,12 +109,26 @@ export function removeRelayParticipant(
   }
 
   const removed =
-    participants.delete(socketId);
+    participants.delete(
+      socketId
+    );
+
+  if (removed) {
+    console.log(
+      `[GameRelay] ${socketId} salió del relay ${roomId}`
+    );
+  }
 
   if (
     participants.size === 0
   ) {
-    gameRelayRooms.delete(roomId);
+    gameRelayRooms.delete(
+      roomId
+    );
+
+    console.log(
+      `[GameRelay] Relay ${roomId} eliminado porque quedó vacío`
+    );
   }
 
   return removed;
@@ -106,22 +137,41 @@ export function removeRelayParticipant(
 export function removeSocketFromAllRelays(
   socketId
 ) {
+  if (!socketId) {
+    return [];
+  }
+
   const affectedRooms = [];
 
   for (const [
     roomId,
     participants,
   ] of gameRelayRooms) {
-    if (
-      participants.delete(socketId)
-    ) {
-      affectedRooms.push(roomId);
+    const removed =
+      participants.delete(
+        socketId
+      );
+
+    if (removed) {
+      affectedRooms.push(
+        roomId
+      );
+
+      console.log(
+        `[GameRelay] ${socketId} desconectado del relay ${roomId}`
+      );
     }
 
     if (
       participants.size === 0
     ) {
-      gameRelayRooms.delete(roomId);
+      gameRelayRooms.delete(
+        roomId
+      );
+
+      console.log(
+        `[GameRelay] Relay ${roomId} eliminado porque quedó vacío`
+      );
     }
   }
 
@@ -131,12 +181,33 @@ export function removeSocketFromAllRelays(
 export function deleteRelayRoom(
   roomId
 ) {
-  gameRelayRooms.delete(roomId);
+  if (!roomId) {
+    return false;
+  }
+
+  const deleted =
+    gameRelayRooms.delete(
+      roomId
+    );
+
+  if (deleted) {
+    console.log(
+      `[GameRelay] Estado relay eliminado para la sala ${roomId}`
+    );
+  }
+
+  return deleted;
 }
 
-export function updateRelayHost(
-  roomId,
-  hostSocketId
+/*
+ * El host relay se determina exclusivamente mediante
+ * participant.isHost, asignado por el socket del bridge.
+ *
+ * No debe sincronizarse usando room.host, porque ese ID
+ * corresponde al socket del lobby y no al bridge Electron.
+ */
+export function getRelayHost(
+  roomId
 ) {
   const participants =
     getRelayParticipants(
@@ -145,27 +216,36 @@ export function updateRelayHost(
     );
 
   if (!participants) {
-    return;
+    return null;
   }
 
   for (const [
     socketId,
     participant,
   ] of participants) {
-    participant.isHost =
-      socketId === hostSocketId;
+    if (participant.isHost) {
+      return {
+        socketId,
+        participant,
+      };
+    }
   }
+
+  return null;
 }
 
 export function normalizeRelayPacket(
   packet
 ) {
-  if (Buffer.isBuffer(packet)) {
+  if (
+    Buffer.isBuffer(packet)
+  ) {
     return packet;
   }
 
   if (
-    packet instanceof Uint8Array
+    packet instanceof
+    Uint8Array
   ) {
     return Buffer.from(
       packet.buffer,
@@ -174,13 +254,20 @@ export function normalizeRelayPacket(
     );
   }
 
-  if (Array.isArray(packet)) {
-    return Buffer.from(packet);
+  if (
+    Array.isArray(packet)
+  ) {
+    return Buffer.from(
+      packet
+    );
   }
 
   if (
-    packet?.type === "Buffer" &&
-    Array.isArray(packet.data)
+    packet?.type ===
+      "Buffer" &&
+    Array.isArray(
+      packet.data
+    )
   ) {
     return Buffer.from(
       packet.data
@@ -194,21 +281,43 @@ export function consumeRelayQuota(
   participant,
   packetBytes
 ) {
+  if (
+    !participant ||
+    !Number.isInteger(
+      packetBytes
+    ) ||
+    packetBytes <= 0
+  ) {
+    return false;
+  }
+
   const now =
     Date.now();
+
+  const lastRefillAt =
+    Number.isFinite(
+      participant.lastRefillAt
+    )
+      ? participant.lastRefillAt
+      : now;
 
   const elapsedSeconds =
     Math.max(
       0,
-      now -
-        participant.lastRefillAt
+      now - lastRefillAt
     ) / 1000;
+
+  const currentAvailableBytes =
+    Number.isFinite(
+      participant.availableBytes
+    )
+      ? participant.availableBytes
+      : RELAY_BURST_BYTES;
 
   participant.availableBytes =
     Math.min(
       RELAY_BURST_BYTES,
-
-      participant.availableBytes +
+      currentAvailableBytes +
         elapsedSeconds *
           RELAY_BYTES_PER_SECOND
     );
@@ -220,11 +329,19 @@ export function consumeRelayQuota(
     participant.availableBytes <
     packetBytes
   ) {
-    participant.packetsDropped +=
-      1;
+    participant.packetsDropped =
+      (
+        participant
+          .packetsDropped ||
+        0
+      ) + 1;
 
-    participant.bytesDropped +=
-      packetBytes;
+    participant.bytesDropped =
+      (
+        participant
+          .bytesDropped ||
+        0
+      ) + packetBytes;
 
     return false;
   }
@@ -232,11 +349,19 @@ export function consumeRelayQuota(
   participant.availableBytes -=
     packetBytes;
 
-  participant.packetsReceived +=
-    1;
+  participant.packetsReceived =
+    (
+      participant
+        .packetsReceived ||
+      0
+    ) + 1;
 
-  participant.bytesReceived +=
-    packetBytes;
+  participant.bytesReceived =
+    (
+      participant
+        .bytesReceived ||
+      0
+    ) + packetBytes;
 
   return true;
 }
@@ -249,7 +374,19 @@ export function emitRelayPacket({
   packet,
   senderParticipant,
 }) {
-  io.to(targetSocketId).emit(
+  if (
+    !io ||
+    !targetSocketId ||
+    !roomId ||
+    !sourceSocketId ||
+    !Buffer.isBuffer(packet)
+  ) {
+    return false;
+  }
+
+  io.to(
+    targetSocketId
+  ).emit(
     "game-relay-packet",
     {
       roomId,
@@ -263,12 +400,23 @@ export function emitRelayPacket({
 
   if (senderParticipant) {
     senderParticipant
-      .packetsForwarded += 1;
+      .packetsForwarded =
+      (
+        senderParticipant
+          .packetsForwarded ||
+        0
+      ) + 1;
 
     senderParticipant
-      .bytesForwarded +=
-      packet.length;
+      .bytesForwarded =
+      (
+        senderParticipant
+          .bytesForwarded ||
+        0
+      ) + packet.length;
   }
+
+  return true;
 }
 
 export function getRelayState(
@@ -287,54 +435,51 @@ export function getRelayState(
     return {
       roomId,
 
-      ready:
-        false,
+      ready: false,
 
-      hostEnabled:
-        false,
+      hostEnabled: false,
 
-      participantCount:
-        0,
+      hostSocketId: null,
 
-      clientCount:
-        0,
+      participantCount: 0,
+
+      clientCount: 0,
     };
   }
 
-  const participantIds =
+  const participantList =
     participants
-      ? [...participants.keys()]
+      ? [
+          ...participants
+            .values(),
+        ]
       : [];
 
-  const hostEnabled =
-    Boolean(
-      participants?.has(
-        room.host
-      )
-    );
+  const relayHost =
+    getRelayHost(roomId);
 
   const clientCount =
-    participantIds.filter(
-      (socketId) =>
-        socketId !==
-          room.host &&
-        isRoomMember(
-          socketId,
-          roomId
-        )
+    participantList.filter(
+      (participant) =>
+        !participant.isHost
     ).length;
 
   return {
     roomId,
 
     ready:
-      hostEnabled &&
+      Boolean(relayHost) &&
       clientCount > 0,
 
-    hostEnabled,
+    hostEnabled:
+      Boolean(relayHost),
+
+    hostSocketId:
+      relayHost?.socketId ||
+      null,
 
     participantCount:
-      participantIds.length,
+      participantList.length,
 
     clientCount,
   };
@@ -344,12 +489,32 @@ export function notifyRelayState(
   io,
   roomId
 ) {
-  if (!roomId) {
+  if (
+    !io ||
+    !roomId
+  ) {
     return;
   }
 
+  const relayState =
+    getRelayState(roomId);
+
+  /*
+   * Estado para la interfaz y los sockets del lobby.
+   */
   io.to(roomId).emit(
     "game-relay-state",
-    getRelayState(roomId)
+    relayState
+  );
+
+  /*
+   * Estado para las conexiones internas
+   * de los bridges Electron.
+   */
+  io.to(
+    `game-relay-${roomId}`
+  ).emit(
+    "game-relay-state",
+    relayState
   );
 }
