@@ -16,13 +16,55 @@ function debugLog(...args) {
   }
 }
 
+function normalizeMessage(message) {
+  if (Buffer.isBuffer(message)) {
+    return message;
+  }
+
+  return Buffer.from(message);
+}
+
+function safelyForwardGamePacket({
+  message,
+  onGamePacket,
+  label,
+}) {
+  if (
+    typeof onGamePacket !==
+    "function"
+  ) {
+    debugLog(
+      `${label}: no existe callback onGamePacket`
+    );
+
+    return false;
+  }
+
+  try {
+    return (
+      onGamePacket(
+        Buffer.from(message)
+      ) !== false
+    );
+  } catch (error) {
+    console.error(
+      `[Bridge-Q3-UDP] ${label}:`,
+      error.message
+    );
+
+    return false;
+  }
+}
+
 function createHostUDPProxy({
   socketId,
   clientPort,
-  channel,
+  onGamePacket,
 }) {
   const socket =
     dgram.createSocket("udp4");
+
+  let closed = false;
 
   socket.on("error", (error) => {
     console.error(
@@ -39,18 +81,17 @@ function createHostUDPProxy({
         `desde ${remoteInfo.address}:${remoteInfo.port}`
       );
 
-      if (!channel?.isOpen()) {
-        return;
-      }
+      const forwarded =
+        safelyForwardGamePacket({
+          message,
+          onGamePacket,
+          label:
+            `Host → transporte remoto (${socketId})`,
+        });
 
-      try {
-        channel.sendMessageBinary(
-          Buffer.from(message)
-        );
-      } catch (error) {
-        console.error(
-          `[Bridge-Q3-UDP] Error enviando al cliente ${socketId}:`,
-          error.message
+      if (!forwarded) {
+        debugLog(
+          `Paquete host descartado para ${socketId}: ${message.length} bytes`
         );
       }
     }
@@ -73,10 +114,12 @@ function createHostUDPProxy({
     socket,
 
     sendToGame(message) {
+      if (closed) {
+        return false;
+      }
+
       const buffer =
-        Buffer.isBuffer(message)
-          ? message
-          : Buffer.from(message);
+        normalizeMessage(message);
 
       socket.send(
         buffer,
@@ -87,19 +130,39 @@ function createHostUDPProxy({
         (error) => {
           if (error) {
             console.error(
-              "[Bridge-Q3-UDP] Host → Quake III:",
+              "[Bridge-Q3-UDP] Remoto → Quake III host:",
               error.message
             );
           } else {
             debugLog(
-              `DataChannel → host Quake III: ${buffer.length} bytes`
+              `Transporte remoto → host Quake III: ${buffer.length} bytes`
             );
           }
         }
       );
+
+      return true;
+    },
+
+    getLocalPort() {
+      try {
+        return socket.address().port;
+      } catch {
+        return null;
+      }
+    },
+
+    isOpen() {
+      return !closed;
     },
 
     close() {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+
       try {
         socket.close();
       } catch {}
@@ -109,10 +172,12 @@ function createHostUDPProxy({
 
 function createClientUDPTransport({
   localPort,
-  channel,
+  onGamePacket,
 }) {
   const socket =
     dgram.createSocket("udp4");
+
+  let closed = false;
 
   socket.on("error", (error) => {
     console.error(
@@ -129,18 +194,17 @@ function createClientUDPTransport({
         `desde ${remoteInfo.address}:${remoteInfo.port}`
       );
 
-      if (!channel?.isOpen()) {
-        return;
-      }
+      const forwarded =
+        safelyForwardGamePacket({
+          message,
+          onGamePacket,
+          label:
+            "Cliente → transporte remoto",
+        });
 
-      try {
-        channel.sendMessageBinary(
-          Buffer.from(message)
-        );
-      } catch (error) {
-        console.error(
-          "[Bridge-Q3-UDP] Cliente → DataChannel:",
-          error.message
+      if (!forwarded) {
+        debugLog(
+          `Paquete cliente descartado: ${message.length} bytes`
         );
       }
     }
@@ -160,10 +224,12 @@ function createClientUDPTransport({
     socket,
 
     sendToGame(message) {
+      if (closed) {
+        return false;
+      }
+
       const buffer =
-        Buffer.isBuffer(message)
-          ? message
-          : Buffer.from(message);
+        normalizeMessage(message);
 
       socket.send(
         buffer,
@@ -174,19 +240,39 @@ function createClientUDPTransport({
         (error) => {
           if (error) {
             console.error(
-              "[Bridge-Q3-UDP] Cliente → Quake III:",
+              "[Bridge-Q3-UDP] Remoto → Quake III cliente:",
               error.message
             );
           } else {
             debugLog(
-              `DataChannel → cliente Quake III: ${buffer.length} bytes`
+              `Transporte remoto → cliente Quake III: ${buffer.length} bytes`
             );
           }
         }
       );
+
+      return true;
+    },
+
+    getLocalPort() {
+      try {
+        return socket.address().port;
+      } catch {
+        return null;
+      }
+    },
+
+    isOpen() {
+      return !closed;
     },
 
     close() {
+      if (closed) {
+        return;
+      }
+
+      closed = true;
+
       try {
         socket.close();
       } catch {}
