@@ -27,17 +27,37 @@ const DEFAULT_OPTIONS = {
   hostname: "RetroLink Quake III",
 };
 
-function sanitizeNumber(value, fallback, min, max) {
+/*
+ * Convierte el valor en un número entero y lo limita
+ * entre los valores mínimo y máximo permitidos.
+ */
+function sanitizeInteger(
+  value,
+  fallback,
+  min,
+  max
+) {
   const parsed = Number(value);
 
   if (!Number.isFinite(parsed)) {
     return fallback;
   }
 
-  return Math.min(max, Math.max(min, parsed));
+  const integer = Math.trunc(parsed);
+
+  return Math.min(
+    max,
+    Math.max(min, integer)
+  );
 }
 
-function sanitizeText(value, fallback = "") {
+/*
+ * Normaliza campos de texto.
+ */
+function sanitizeText(
+  value,
+  fallback = ""
+) {
   if (typeof value !== "string") {
     return fallback;
   }
@@ -45,6 +65,54 @@ function sanitizeText(value, fallback = "") {
   return value.trim();
 }
 
+/*
+ * Convierte correctamente valores booleanos provenientes
+ * del frontend o de datos serializados.
+ *
+ * Evita que Boolean("false") dé como resultado true.
+ */
+function sanitizeBoolean(
+  value,
+  fallback = false
+) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized =
+      value.trim().toLowerCase();
+
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "on"
+    ) {
+      return true;
+    }
+
+    if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "off" ||
+      normalized === ""
+    ) {
+      return false;
+    }
+  }
+
+  return fallback;
+}
+
+/*
+ * Comprueba que el tipo de partida exista.
+ */
 function normalizeGameType(gameType) {
   return Object.prototype.hasOwnProperty.call(
     GAME_TYPES,
@@ -54,105 +122,165 @@ function normalizeGameType(gameType) {
     : DEFAULT_OPTIONS.gameType;
 }
 
-function normalizeMapName(map, gameType) {
+/*
+ * Normaliza el nombre del mapa.
+ *
+ * Permite mapas originales y mapas personalizados, pero
+ * impide introducir comandos mediante el nombre.
+ */
+function normalizeMapName(
+  map,
+  gameType
+) {
   const fallback =
     DEFAULT_MAPS[gameType] ||
     DEFAULT_MAPS.freeForAll;
 
   const sanitized =
-    sanitizeText(map, fallback) || fallback;
+    sanitizeText(map, fallback) ||
+    fallback;
 
   /*
-  Evita inyectar comandos mediante el campo mapa.
-  Los nombres normales de mapas de Quake III usan
-  letras, números, guiones y guiones bajos.
-  */
-  if (!/^[a-zA-Z0-9_-]+$/.test(sanitized)) {
+   * Los nombres normales de mapas de Quake III usan
+   * letras, números, guiones y guiones bajos.
+   */
+  if (
+    !/^[a-zA-Z0-9_-]+$/.test(
+      sanitized
+    )
+  ) {
     return fallback;
   }
 
   return sanitized;
 }
 
-function normalizeOptions(options = {}) {
+/*
+ * Normaliza todos los parámetros recibidos desde la sala
+ * o desde el frontend.
+ */
+function normalizeOptions(
+  options = {}
+) {
+  const sourceOptions =
+    options &&
+    typeof options === "object" &&
+    !Array.isArray(options)
+      ? options
+      : {};
+
   const merged = {
     ...DEFAULT_OPTIONS,
-    ...options,
+    ...sourceOptions,
   };
 
-  const gameType = normalizeGameType(
-    merged.gameType
-  );
+  const gameType =
+    normalizeGameType(
+      merged.gameType
+    );
 
-  const maxPlayers = sanitizeNumber(
-    merged.maxPlayers,
-    DEFAULT_OPTIONS.maxPlayers,
-    2,
-    32
-  );
+  const maxPlayers =
+    sanitizeInteger(
+      merged.maxPlayers,
+      DEFAULT_OPTIONS.maxPlayers,
+      2,
+      32
+    );
+
+  /*
+   * Si no se proporcionó explícitamente un mapa,
+   * seleccionamos el mapa predeterminado correspondiente
+   * al tipo de partida.
+   *
+   * Esto permite:
+   *
+   * freeForAll      -> q3dm17
+   * tournament      -> q3tourney2
+   * teamDeathmatch  -> q3dm7
+   * captureTheFlag  -> q3ctf1
+   */
+  const providedMap =
+    Object.prototype.hasOwnProperty.call(
+      sourceOptions,
+      "map"
+    )
+      ? sourceOptions.map
+      : DEFAULT_MAPS[gameType];
 
   return {
     gameType,
-    gameTypeId: GAME_TYPES[gameType],
+
+    gameTypeId:
+      GAME_TYPES[gameType],
 
     map: normalizeMapName(
-      merged.map,
+      providedMap,
       gameType
     ),
 
     maxPlayers,
 
-    fragLimit: sanitizeNumber(
-      merged.fragLimit,
-      DEFAULT_OPTIONS.fragLimit,
-      0,
-      999
-    ),
+    fragLimit:
+      sanitizeInteger(
+        merged.fragLimit,
+        DEFAULT_OPTIONS.fragLimit,
+        0,
+        999
+      ),
 
-    timeLimit: sanitizeNumber(
-      merged.timeLimit,
-      DEFAULT_OPTIONS.timeLimit,
-      0,
-      999
-    ),
+    timeLimit:
+      sanitizeInteger(
+        merged.timeLimit,
+        DEFAULT_OPTIONS.timeLimit,
+        0,
+        999
+      ),
 
-    minPlayers: sanitizeNumber(
-      merged.minPlayers,
-      DEFAULT_OPTIONS.minPlayers,
-      0,
-      maxPlayers
-    ),
+    minPlayers:
+      sanitizeInteger(
+        merged.minPlayers,
+        DEFAULT_OPTIONS.minPlayers,
+        0,
+        maxPlayers
+      ),
 
-    botSkill: sanitizeNumber(
-      merged.botSkill,
-      DEFAULT_OPTIONS.botSkill,
-      1,
-      5
-    ),
+    botSkill:
+      sanitizeInteger(
+        merged.botSkill,
+        DEFAULT_OPTIONS.botSkill,
+        1,
+        5
+      ),
 
-    friendlyFire: Boolean(
-      merged.friendlyFire
-    ),
+    friendlyFire:
+      sanitizeBoolean(
+        merged.friendlyFire,
+        DEFAULT_OPTIONS.friendlyFire
+      ),
 
-    password: sanitizeText(
-      merged.password
-    ),
+    password:
+      sanitizeText(
+        merged.password
+      ),
 
     hostname:
       sanitizeText(
         merged.hostname,
         DEFAULT_OPTIONS.hostname
-      ) || DEFAULT_OPTIONS.hostname,
+      ) ||
+      DEFAULT_OPTIONS.hostname,
   };
 }
 
 module.exports = {
   id: "quake3",
+
   name: "Quake III Arena",
 
   executable: "quake3.exe",
 
   defaultPort: 27960,
+
   clientPortBase: 27961,
 
   supportsRoomOptions: true,
@@ -178,6 +306,11 @@ module.exports = {
     const normalized =
       normalizeOptions(options);
 
+    const safeExtraArgs =
+      Array.isArray(extraArgs)
+        ? extraArgs
+        : [];
+
     const args = [
       "+set",
       "net_port",
@@ -197,7 +330,9 @@ module.exports = {
 
       "+set",
       "sv_maxclients",
-      String(normalized.maxPlayers),
+      String(
+        normalized.maxPlayers
+      ),
 
       "+set",
       "sv_hostname",
@@ -205,15 +340,21 @@ module.exports = {
 
       "+set",
       "g_gametype",
-      String(normalized.gameTypeId),
+      String(
+        normalized.gameTypeId
+      ),
 
       "+set",
       "fraglimit",
-      String(normalized.fragLimit),
+      String(
+        normalized.fragLimit
+      ),
 
       "+set",
       "timelimit",
-      String(normalized.timeLimit),
+      String(
+        normalized.timeLimit
+      ),
 
       "+set",
       "g_friendlyFire",
@@ -223,32 +364,25 @@ module.exports = {
 
       "+set",
       "bot_minplayers",
-      String(normalized.minPlayers),
+      String(
+        normalized.minPlayers
+      ),
 
       "+set",
       "g_spSkill",
-      String(normalized.botSkill),
-    ];
+      String(
+        normalized.botSkill
+      ),
 
-    if (normalized.password) {
-      args.push(
-        "+set",
-        "g_password",
-        normalized.password
-      );
-    } else {
-      args.push(
-        "+set",
-        "g_password",
-        ""
-      );
-    }
+      "+set",
+      "g_password",
+      normalized.password,
 
-    args.push(
       "+map",
       normalized.map,
-      ...extraArgs
-    );
+
+      ...safeExtraArgs,
+    ];
 
     return args;
   },
@@ -258,10 +392,13 @@ module.exports = {
     options = {},
     extraArgs = []
   ) {
-    const parsedPort = Number(port);
+    const parsedPort =
+      Number(port);
 
     const targetPort =
-      Number.isInteger(parsedPort) &&
+      Number.isInteger(
+        parsedPort
+      ) &&
       parsedPort > 0 &&
       parsedPort <= 65535
         ? parsedPort
@@ -269,6 +406,11 @@ module.exports = {
 
     const normalized =
       normalizeOptions(options);
+
+    const safeExtraArgs =
+      Array.isArray(extraArgs)
+        ? extraArgs
+        : [];
 
     const args = [];
 
@@ -283,7 +425,7 @@ module.exports = {
     args.push(
       "+connect",
       `127.0.0.1:${targetPort}`,
-      ...extraArgs
+      ...safeExtraArgs
     );
 
     return args;

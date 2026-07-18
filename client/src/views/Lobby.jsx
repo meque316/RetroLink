@@ -81,6 +81,19 @@ const GAMES = [
   })),
 ];
 
+const DEFAULT_QUAKE3_OPTIONS = {
+  map: "q3dm17",
+  gameType: "freeForAll",
+  maxPlayers: 16,
+  fragLimit: 20,
+  timeLimit: 15,
+  minPlayers: 0,
+  botSkill: 3,
+  friendlyFire: false,
+  password: "",
+  hostname: "RetroLink Quake III",
+};
+
 const DEFAULT_CS16_OPTIONS = {
   map: "de_dust2",
   maxPlayers: 16,
@@ -106,8 +119,11 @@ const DEFAULT_UT99_OPTIONS = {
   serverName: "RetroLink UT99",
 };
 
-const DEFAULT_GAME_OPTIONS = {
-  ...DEFAULT_CS16_OPTIONS,
+const DEFAULT_OPTIONS_BY_GAME = {
+  quake3: DEFAULT_QUAKE3_OPTIONS,
+  cs16: DEFAULT_CS16_OPTIONS,
+  ut99: DEFAULT_UT99_OPTIONS,
+  carmageddon2: {},
 };
 
 const isGameSupported = (gameIdOrName) => {
@@ -127,14 +143,8 @@ const isGameSupported = (gameIdOrName) => {
 };
 
 function getDefaultOptionsForGame(gameId) {
-  if (gameId === "ut99") {
-    return {
-      ...DEFAULT_UT99_OPTIONS,
-    };
-  }
-
   return {
-    ...DEFAULT_CS16_OPTIONS,
+    ...(DEFAULT_OPTIONS_BY_GAME[gameId] || {}),
   };
 }
 
@@ -147,9 +157,11 @@ function Lobby() {
     SUPPORTED_GAMES[0]
   );
 
-  const [gameOptions, setGameOptions] = useState({
-    ...DEFAULT_GAME_OPTIONS,
-  });
+  const [gameOptions, setGameOptions] = useState(() =>
+    getDefaultOptionsForGame(
+      SUPPORTED_GAMES[0].id
+    )
+  );
 
   const {
     rooms,
