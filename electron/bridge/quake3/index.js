@@ -24,7 +24,7 @@ const {
   describeCandidateTypes,
   flushCandidateQueue,
   logGatheringResult,
-} = require("./ice-utils");
+} = require("../core/ice-utils");
 
 const {
   createHostUDPProxy,
@@ -33,11 +33,11 @@ const {
 
 const {
   createTransportManager,
-} = require("./transport-manager");
+} = require("../core/transport-manager");
 
 const {
   createSocketRelayTransport,
-} = require("./socket-relay-transport");
+} = require("../core/socket-relay-transport");
 
 function createInitialState() {
   return {
