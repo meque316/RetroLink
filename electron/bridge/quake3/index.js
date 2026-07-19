@@ -4,14 +4,9 @@ const {
   io: socketClient,
 } = require("socket.io-client");
 
-const os = require("os");
-
 const {
   SIGNALING_URL,
-  CLIENT_PORT_BASE,
-  MAX_CLIENTS,
   ICE_CONNECT_TIMEOUT_MS,
-  KEEPALIVE_INTERVAL_MS,
   buildIceServers,
 } = require("./config");
 
@@ -45,168 +40,19 @@ const {
 
 let state = createInitialState();
 
-const keepAliveIntervals =
-  new Map();
+const {
+  getLocalIP,
+  getNextClientPort,
+} = require("./network-utils");
 
-function getLocalIP() {
-  const interfaces =
-    os.networkInterfaces();
+const {
+  normalizeMessage,
+  isKeepAlive,
+  startKeepAlive,
+  stopKeepAlive,
+  clearAllKeepAlives,
+} = require("./keepalive");
 
-  const addresses = [];
-
-  for (const [
-    name,
-    networks,
-  ] of Object.entries(interfaces)) {
-    for (const network of
-      networks || []) {
-      if (
-        network.family === "IPv4" &&
-        !network.internal
-      ) {
-        addresses.push({
-          name,
-          address: network.address,
-        });
-      }
-    }
-  }
-
-  const vpn = addresses.find(
-    ({ address }) =>
-      address.startsWith("26.") ||
-      address.startsWith("10.")
-  );
-
-  if (vpn) {
-    return vpn.address;
-  }
-
-  const lan = addresses.find(
-    ({ address }) =>
-      address.startsWith("192.168.")
-  );
-
-  if (lan) {
-    return lan.address;
-  }
-
-  return (
-    addresses[0]?.address ||
-    "127.0.0.1"
-  );
-}
-
-function getNextClientPort() {
-  const usedPorts =
-    new Set(
-      [...state.clients.values()].map(
-        (client) =>
-          client.clientPort
-      )
-    );
-
-  for (
-    let offset = 0;
-    offset < MAX_CLIENTS;
-    offset += 1
-  ) {
-    const port =
-      CLIENT_PORT_BASE + offset;
-
-    if (!usedPorts.has(port)) {
-      return port;
-    }
-  }
-
-  return null;
-}
-
-function normalizeMessage(message) {
-  return Buffer.isBuffer(message)
-    ? message
-    : Buffer.from(message);
-}
-
-function isKeepAlive(message) {
-  const buffer =
-    normalizeMessage(message);
-
-  return (
-    buffer.length <= 12 &&
-    buffer
-      .toString("latin1")
-      .includes("ping")
-  );
-}
-
-function sendKeepAlive(channel) {
-  if (!channel?.isOpen()) {
-    return false;
-  }
-
-  try {
-    channel.sendMessageBinary(
-      Buffer.from(
-        "\xFF\xFF\xFF\xFFping"
-      )
-    );
-
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function stopKeepAlive(key) {
-  const interval =
-    keepAliveIntervals.get(key);
-
-  if (!interval) {
-    return;
-  }
-
-  clearInterval(interval);
-  keepAliveIntervals.delete(key);
-}
-
-function startKeepAlive(
-  key,
-  channel
-) {
-  stopKeepAlive(key);
-
-  const interval =
-    setInterval(() => {
-      if (!sendKeepAlive(channel)) {
-        stopKeepAlive(key);
-      }
-    }, KEEPALIVE_INTERVAL_MS);
-
-  keepAliveIntervals.set(
-    key,
-    interval
-  );
-}
-
-function clearClientTimeout(client) {
-  if (!client?.iceTimeoutHandle) {
-    return;
-  }
-
-  clearTimeout(
-    client.iceTimeoutHandle
-  );
-
-  client.iceTimeoutHandle = null;
-}
-
-/*
- * Un relay se considera "activo o conectando" si el propio
- * transporte reporta isOpen(), o si su getState() todavía
- * está en "connecting" u "open". Un relay "closed"/"error"
- * (o inexistente) NUNCA se considera reutilizable.
- */
 function isRelayActiveOrConnecting(
   relayTransport
 ) {
@@ -342,12 +188,7 @@ function cleanupClient(socketId) {
 }
 
 function resetBridge() {
-  for (const interval of
-    keepAliveIntervals.values()) {
-    clearInterval(interval);
-  }
-
-  keepAliveIntervals.clear();
+  clearAllKeepAlives();
 
   if (state.iceTimeoutHandle) {
     clearTimeout(
@@ -1660,7 +1501,7 @@ function configureSignaling(
       }
 
       const clientPort =
-        getNextClientPort();
+        ggetNextClientPort(state);
 
       if (!clientPort) {
         sendStatus(
