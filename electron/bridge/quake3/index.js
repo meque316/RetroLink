@@ -39,34 +39,9 @@ const {
   createSocketRelayTransport,
 } = require("../core/socket-relay-transport");
 
-function createInitialState() {
-  return {
-    signalingSocket: null,
-
-    roomId: null,
-    isHost: false,
-    hostIP: null,
-
-    clients: new Map(),
-
-    peer: null,
-    channel: null,
-    udpTransport: null,
-    transportManager: null,
-    relayTransport: null,
-    switchingToRelay: false,
-
-    pendingCandidates: [],
-    remoteDescSet: false,
-
-    clientPort: null,
-
-    iceConnectionState: null,
-    iceTimeoutHandle: null,
-    gatheredCandidateTypes:
-      new Set(),
-  };
-}
+const {
+  createInitialState,
+} = require("./state");
 
 let state = createInitialState();
 
