@@ -1501,7 +1501,7 @@ function configureSignaling(
       }
 
       const clientPort =
-        ggetNextClientPort(state);
+        getNextClientPort(state);
 
       if (!clientPort) {
         sendStatus(
