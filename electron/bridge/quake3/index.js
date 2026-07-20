@@ -129,6 +129,14 @@ function closeClientWebRTCResources() {
   state.pendingCandidates = [];
 }
 
+function clearClientTimeout(client) {
+  if (!client?.iceTimeoutHandle) {
+    return;
+  }
+  clearTimeout(client.iceTimeoutHandle);
+  client.iceTimeoutHandle = null;
+}
+
 function clearClientResources(
   socketId,
   client
