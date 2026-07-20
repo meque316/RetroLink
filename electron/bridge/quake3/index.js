@@ -59,6 +59,21 @@ const {
   createClientWatchdog,
 } = require("./watchdog");
 
+const {
+  initializeCleanup,
+  closeHostWebRTCResources,
+  closeClientWebRTCResources,
+  clearClientResources,
+  cleanupClient,
+} = require("./cleanup");
+
+const {
+  initializeChannelHandlers,
+  handleChannelMessage,
+  onHostChannelOpen,
+  onClientChannelOpen,
+} = require("./channel-handlers");
+
 function isRelayActiveOrConnecting(
   relayTransport
 ) {
@@ -89,52 +104,6 @@ function normalizeErrorMessage(
   );
 }
 
-/*
- * Cierra WebRTC (channel + peer) de un cliente del host de
- * forma segura. Se usa únicamente DESPUÉS de haber iniciado
- * Relay con éxito, nunca antes.
- */
-function closeHostWebRTCResources(
-  socketId,
-  client
-) {
-  stopKeepAlive(socketId);
-
-  try {
-    client.channel?.close();
-  } catch {}
-
-  try {
-    client.peer?.close();
-  } catch {}
-
-  client.channel = null;
-  client.peer = null;
-  client.remoteDescSet = false;
-  client.pendingCandidates = [];
-}
-
-/*
- * Igual que closeHostWebRTCResources(), pero para el
- * cliente local.
- */
-function closeClientWebRTCResources() {
-  stopKeepAlive("self");
-
-  try {
-    state.channel?.close();
-  } catch {}
-
-  try {
-    state.peer?.close();
-  } catch {}
-
-  state.channel = null;
-  state.peer = null;
-  state.remoteDescSet = false;
-  state.pendingCandidates = [];
-}
-
 function clearClientTimeout(client) {
   if (!client?.iceTimeoutHandle) {
     return;
@@ -143,63 +112,11 @@ function clearClientTimeout(client) {
   client.iceTimeoutHandle = null;
 }
 
-function clearClientResources(
-  socketId,
-  client
-) {
-  clearClientTimeout(client);
-  stopKeepAlive(socketId);
-
-  /*
-   * Un solo propietario cierra el relay: si existe
-   * TransportManager, su close() ya cierra el relay
-   * internamente (relayTransport.close() emite
-   * game-relay-disable). Solo cerramos relayTransport
-   * directamente cuando no hay TransportManager.
-   */
-  if (client?.transportManager) {
-    try {
-      client.transportManager.close();
-    } catch {}
-  } else if (client?.relayTransport) {
-    try {
-      client.relayTransport.close?.();
-    } catch {}
-  }
-
-  if (client) {
-    client.relayTransport = null;
-    client.switchingToRelay = false;
-  }
-
-  try {
-    client?.udpTransport?.close();
-  } catch {}
-
-  try {
-    client?.channel?.close();
-  } catch {}
-
-  try {
-    client?.peer?.close();
-  } catch {}
-}
-
-function cleanupClient(socketId) {
-  const client =
-    state.clients.get(socketId);
-
-  if (!client) {
-    return;
-  }
-
-  clearClientResources(
-    socketId,
-    client
-  );
-
-  state.clients.delete(socketId);
-}
+initializeCleanup({
+  getState: () => state,
+  stopKeepAlive,
+  clearClientTimeout,
+});
 
 function resetBridge() {
   clearAllKeepAlives();
@@ -695,126 +612,15 @@ function activateClientRelay(
   return true;
 }
 
-function handleChannelMessage(
-  message,
-  socketId = null
-) {
-  const buffer =
-    normalizeMessage(message);
-
-  if (isKeepAlive(buffer)) {
-    return;
-  }
-
-  if (state.isHost) {
-    const client =
-      state.clients.get(socketId);
-
-    client?.transportManager
-      ?.handleWebRTCMessage(buffer);
-
-    return;
-  }
-
-  state.transportManager
-    ?.handleWebRTCMessage(buffer);
-}
-
-function onHostChannelOpen(
-  socketId,
-  channel
-) {
-  const client =
-    ensureHostTransportResources(
-      socketId
-    );
-
-  if (!client) {
-    return;
-  }
-
-  console.log(
-    `[Bridge-Q3] DataChannel host abierto para ${socketId}`
-  );
-
-  client.channel = channel;
-
-  client.transportManager.useWebRTC(
-    channel
-  );
-
-  /*
-   * WebRTC volvió a estar disponible: disableRelay() ya
-   * cierra el relayTransport internamente (una sola vez).
-   * Aquí solo soltamos la referencia local, sin volver a
-   * llamar close().
-   */
-  if (client.relayTransport) {
-    client.transportManager.disableRelay();
-    client.relayTransport = null;
-  }
-
-  client.switchingToRelay = false;
-
-  startKeepAlive(
-    socketId,
-    channel
-  );
-
-  const connected =
-    [...state.clients.values()].filter(
-      (item) =>
-        item.transportManager
-          ?.isWebRTCOpen() ||
-        item.transportManager
-          ?.isRelayOpen()
-    ).length;
-
-  sendStatus(
-    `¡${connected} jugador(es) conectado(s)! Listos para jugar.`
-  );
-}
-
-function onClientChannelOpen() {
-  console.log(
-    `[Bridge-Q3] DataChannel cliente abierto; puerto ${state.clientPort}`
-  );
-
-  if (!state.clientPort) {
-    sendStatus(
-      "Error: no se recibió el puerto local del cliente."
-    );
-
-    return;
-  }
-
-  ensureClientTransportResources();
-
-  state.transportManager.useWebRTC(
-    state.channel
-  );
-
-  /*
-   * Igual que en el host: disableRelay() ya cierra el
-   * relayTransport internamente. Solo soltamos la
-   * referencia local.
-   */
-  if (state.relayTransport) {
-    state.transportManager.disableRelay();
-    state.relayTransport = null;
-  }
-
-  state.switchingToRelay = false;
-
-  startKeepAlive(
-    "self",
-    state.channel
-  );
-
-  sendStatus(
-    "¡Conexión P2P establecida! Listos para jugar."
-  );
-}
+initializeChannelHandlers({
+  getState: () => state,
+  normalizeMessage,
+  isKeepAlive,
+  ensureHostTransportResources,
+  ensureClientTransportResources,
+  startKeepAlive,
+  sendStatus,
+});
 
 initializeWatchdog({
   getState: () => state,
