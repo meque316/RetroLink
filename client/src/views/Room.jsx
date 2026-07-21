@@ -1,12 +1,19 @@
-import React, {
+import {
   useEffect,
   useRef,
   useState,
 } from "react";
 
+import {
+  Gamepad2,
+  Radio,
+  Settings2,
+  Users,
+} from "lucide-react";
+
 import socket from "../socket";
 
-import { Play } from "lucide-react";
+import SectionCard from "../components/common/SectionCard";
 
 import RoomChat from "../components/room/RoomChat";
 import PlayersList from "../components/room/PlayersList";
@@ -14,34 +21,40 @@ import RoomHeader from "../components/room/RoomHeader";
 import RelayStatus from "../components/room/RelayStatus";
 import IPSelector from "../components/room/IPSelector";
 import GamePathPanel from "../components/room/GamePathPanel";
+import RoomActions from "../components/room/RoomActions";
+import SessionOverview from "../components/room/SessionOverview";
+
 import MatchInfoPanel from "../components/room/match-info/MatchInfoPanel";
 
 import useRoomSocket from "../hooks/useRoomSocket";
 import useRoomRelay from "../hooks/useRoomRelay";
 import useGamePath from "../hooks/useGamePath";
+import useHostIPSelector from "../hooks/useHostIPSelector";
 
-function Room({ room, leaveRoom }) {
+function getStoredUser() {
+  try {
+    return JSON.parse(
+      localStorage.getItem("user") || "{}"
+    );
+  } catch (error) {
+    console.error(
+      "[Room] Invalid stored user:",
+      error
+    );
+
+    return {};
+  }
+}
+
+function Room({
+  room,
+  leaveRoom,
+}) {
   const [editingName, setEditingName] =
     useState(false);
 
   const [newRoomName, setNewRoomName] =
     useState("");
-
-  const [availableIPs, setAvailableIPs] =
-    useState([]);
-
-  const [selectedIP, setSelectedIP] =
-    useState(null);
-
-  const [
-    showIPSelector,
-    setShowIPSelector,
-  ] = useState(false);
-
-  const [
-    isLoadingIPs,
-    setIsLoadingIPs,
-  ] = useState(false);
 
   const [messages, setMessages] =
     useState([]);
@@ -59,15 +72,14 @@ function Room({ room, leaveRoom }) {
 
   const chatEndRef = useRef(null);
 
-  const currentUser = JSON.parse(
-    localStorage.getItem("user") || "{}"
-  );
+  const currentUser = getStoredUser();
 
-  const isHostRef = useRef(
-    room?.host === socket.id
-  );
-
-  const isHost = isHostRef.current;
+  /*
+   * Se mantiene basado en la sala recibida por props
+   * para no cambiar el contrato actual de los hooks.
+   */
+  const isHost =
+    room?.host === socket.id;
 
   const {
     gamePath,
@@ -102,68 +114,32 @@ function Room({ room, leaveRoom }) {
     setMessages,
   });
 
-  const isReady = readyPlayers.includes(
-    socket.id
-  );
+  const {
+    availableIPs,
+    selectedIP,
+    showIPSelector,
+    setShowIPSelector,
+    isLoadingIPs,
+    handleIPSelect,
+  } = useHostIPSelector(isHost);
+
+  const activeRoom =
+    currentRoom ?? room;
+
+  const members =
+    activeRoom?.members ?? [];
+
+  const readyCount =
+    readyPlayers.length;
+
+  const isReady =
+    readyPlayers.includes(socket.id);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
       behavior: "smooth",
     });
   }, [messages]);
-
-  useEffect(() => {
-    const loadIPs = async () => {
-      if (!isHost) {
-        return;
-      }
-
-      setIsLoadingIPs(true);
-
-      try {
-        const ips =
-          await window.retroLink?.getLocalIPs();
-
-        if (ips && ips.length > 0) {
-          setAvailableIPs(ips);
-
-          const preferred =
-            ips.find(
-              (ip) =>
-                ip.address.startsWith("26.") ||
-                ip.address.startsWith("10.") ||
-                ip.address.startsWith(
-                  "192.168."
-                )
-            ) || ips[0];
-
-          setSelectedIP(
-            preferred.address
-          );
-
-          await window.retroLink?.setHostIP(
-            preferred.address
-          );
-        }
-      } catch (error) {
-        console.error(
-          "[Room] Error loading IPs:",
-          error
-        );
-      } finally {
-        setIsLoadingIPs(false);
-      }
-    };
-
-    loadIPs();
-  }, [isHost]);
-
-  const handleIPSelect = async (ip) => {
-    setSelectedIP(ip);
-    setShowIPSelector(false);
-
-    await window.retroLink?.setHostIP(ip);
-  };
 
   const handleSaveRoomName = () => {
     saveRoomName(
@@ -189,11 +165,11 @@ function Room({ room, leaveRoom }) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center bg-[#0b0f14] p-4 text-white md:p-8">
-      <div className="flex h-full max-h-[95vh] w-full max-w-5xl flex-col gap-6 overflow-hidden lg:flex-row">
-        <div className="flex-1 overflow-y-auto rounded-3xl border border-zinc-800 bg-[#121821] p-4 md:p-8">
+    <div className="h-full overflow-y-auto bg-[#080c11] text-white">
+      <div className="mx-auto flex min-h-full w-full max-w-[1500px] flex-col gap-4 p-4 md:p-6 xl:p-8">
+        <div className="rounded-2xl border border-zinc-800 bg-[#111821] px-4 py-4 shadow-2xl shadow-black/20 md:px-6 md:py-5">
           <RoomHeader
-            room={currentRoom}
+            room={activeRoom}
             isHost={isHost}
             editingName={editingName}
             setEditingName={setEditingName}
@@ -204,104 +180,147 @@ function Room({ room, leaveRoom }) {
             }
             onLeave={handleLeave}
           />
-
-          <IPSelector
-            isHost={isHost}
-            selectedIP={selectedIP}
-            availableIPs={availableIPs}
-            showIPSelector={
-              showIPSelector
-            }
-            setShowIPSelector={
-              setShowIPSelector
-            }
-            isLoadingIPs={isLoadingIPs}
-            onIPSelect={handleIPSelect}
-          />
-
-          {!isHost && (
-            <div
-              className={`mb-2 inline-block rounded-full px-3 py-1 text-xs ${
-                hostIPReceived
-                  ? "bg-green-500/10 text-green-400"
-                  : "bg-yellow-500/10 text-yellow-400"
-              }`}
-            >
-              {hostIPReceived
-                ? `✓ Host IP: ${hostIP}`
-                : "⏳ Obteniendo IP del host..."}
-            </div>
-          )}
-
-          <RelayStatus
-            relayStatus={relayStatus}
-            relayStep={relayStep}
-          />
-
-          <PlayersList
-            members={
-              currentRoom?.members || []
-            }
-            hostId={currentRoom?.host}
-            readyPlayers={readyPlayers}
-          />
-
-          <MatchInfoPanel
-            gameId={currentRoom?.gameId}
-            gameOptions={
-              currentRoom?.gameOptions
-            }
-          />
-
-          <GamePathPanel
-            game={currentRoom?.game}
-            gamePath={gamePath}
-            onBrowse={handleBrowseGame}
-          />
-
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <button
-              onClick={toggleReady}
-              className={`flex-1 rounded-2xl py-3 font-semibold transition ${
-                isReady
-                  ? "bg-green-500 hover:bg-green-600"
-                  : "bg-zinc-800 hover:bg-zinc-700"
-              }`}
-              type="button"
-            >
-              {isReady
-                ? "Ready ✓"
-                : "Ready Up"}
-            </button>
-
-            {isHost && (
-              <button
-                onClick={startMatch}
-                className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-indigo-600 py-3 font-semibold transition hover:bg-indigo-700"
-                type="button"
-              >
-                <Play size={18} />
-                Start Match
-              </button>
-            )}
-          </div>
         </div>
 
-        <RoomChat
-          messages={messages}
-          currentUser={currentUser}
-          chatInput={chatInput}
-          setChatInput={setChatInput}
-          showEmotes={showEmotes}
-          setShowEmotes={setShowEmotes}
-          emoteCategory={emoteCategory}
-          setEmoteCategory={
-            setEmoteCategory
-          }
-          sendMessage={handleSendMessage}
-          insertEmote={insertEmote}
-          chatEndRef={chatEndRef}
+        <SessionOverview
+          room={activeRoom}
+          readyPlayers={readyPlayers}
         />
+
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <main className="grid min-w-0 auto-rows-min grid-cols-1 gap-4 lg:grid-cols-2">
+            <SectionCard
+              title="Match"
+              description="Configuración de la partida"
+              icon={Gamepad2}
+              className="lg:col-span-2"
+            >
+              <MatchInfoPanel
+                gameId={activeRoom?.gameId}
+                gameOptions={
+                  activeRoom?.gameOptions
+                }
+              />
+            </SectionCard>
+
+            <SectionCard
+              title={`Players (${members.length})`}
+              description={`${readyCount} jugador${
+                readyCount === 1
+                  ? ""
+                  : "es"
+              } listo${
+                readyCount === 1
+                  ? ""
+                  : "s"
+              }`}
+              icon={Users}
+            >
+              <PlayersList
+                members={members}
+                hostId={activeRoom?.host}
+                readyPlayers={readyPlayers}
+              />
+            </SectionCard>
+
+            <SectionCard
+              title="Connection"
+              description="Estado de la red y del bridge"
+              icon={Radio}
+            >
+              <div className="space-y-4">
+                <IPSelector
+                  isHost={isHost}
+                  selectedIP={selectedIP}
+                  availableIPs={availableIPs}
+                  showIPSelector={
+                    showIPSelector
+                  }
+                  setShowIPSelector={
+                    setShowIPSelector
+                  }
+                  isLoadingIPs={
+                    isLoadingIPs
+                  }
+                  onIPSelect={
+                    handleIPSelect
+                  }
+                />
+
+                {!isHost && (
+                  <div
+                    className={`rounded-xl border px-4 py-3 text-sm ${
+                      hostIPReceived
+                        ? "border-green-500/20 bg-green-500/10 text-green-400"
+                        : "border-yellow-500/20 bg-yellow-500/10 text-yellow-400"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs font-semibold uppercase tracking-wider">
+                        Host IP
+                      </span>
+
+                      <span className="font-mono text-xs">
+                        {hostIPReceived
+                          ? hostIP
+                          : "Waiting..."}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <RelayStatus
+                  relayStatus={relayStatus}
+                  relayStep={relayStep}
+                />
+              </div>
+            </SectionCard>
+
+            <SectionCard
+              title="Game Installation"
+              description="Ejecutable utilizado para iniciar el juego"
+              icon={Settings2}
+              className="lg:col-span-2"
+            >
+              <GamePathPanel
+                game={activeRoom?.game}
+                gamePath={gamePath}
+                onBrowse={
+                  handleBrowseGame
+                }
+              />
+            </SectionCard>
+
+            <div className="lg:col-span-2">
+              <RoomActions
+                isReady={isReady}
+                isHost={isHost}
+                onToggleReady={toggleReady}
+                onStartMatch={startMatch}
+              />
+            </div>
+          </main>
+
+          <aside className="min-h-[420px] xl:min-h-0">
+            <RoomChat
+              messages={messages}
+              currentUser={currentUser}
+              chatInput={chatInput}
+              setChatInput={setChatInput}
+              showEmotes={showEmotes}
+              setShowEmotes={setShowEmotes}
+              emoteCategory={emoteCategory}
+              setEmoteCategory={
+                setEmoteCategory
+              }
+              sendMessage={
+                handleSendMessage
+              }
+              insertEmote={insertEmote}
+              chatEndRef={chatEndRef}
+            />
+          </aside>
+        </div>
       </div>
     </div>
   );
