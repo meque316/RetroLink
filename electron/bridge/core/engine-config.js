@@ -1,17 +1,10 @@
-// electron/bridge/quake3/config.js
+// electron/bridge/core/engine-config.js
 
 const SIGNALING_URL =
   "https://retrolink-server.onrender.com";
 
-const GAME_PORT = 27960;
-const CLIENT_PORT_BASE = 27961;
-const MAX_CLIENTS = 8;
-
 const ICE_CONNECT_TIMEOUT_MS = 45000;
 const KEEPALIVE_INTERVAL_MS = 10000;
-
-const DEBUG_UDP =
-  process.env.RETROLINK_DEBUG_UDP === "1";
 
 const ICE_SERVERS = [
   "stun:stun.l.google.com:19302",
@@ -37,12 +30,8 @@ function buildIceServers() {
 
 module.exports = {
   SIGNALING_URL,
-  GAME_PORT,
-  CLIENT_PORT_BASE,
-  MAX_CLIENTS,
   ICE_CONNECT_TIMEOUT_MS,
   KEEPALIVE_INTERVAL_MS,
-  DEBUG_UDP,
   ICE_SERVERS,
   buildIceServers,
 };

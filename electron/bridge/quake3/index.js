@@ -5,10 +5,18 @@ const {
 } = require("socket.io-client");
 
 const {
+  createSignalingSession,
+} = require("../core/signaling-session");
+
+const {
+  createGameNetworkEngine,
+} = require("../core/game-network-engine");
+
+const {
   SIGNALING_URL,
   ICE_CONNECT_TIMEOUT_MS,
   buildIceServers,
-} = require("./config");
+} = require("../core/engine-config");
 
 const {
   sendStatus,
@@ -22,9 +30,21 @@ const {
 } = require("../core/ice-utils");
 
 const {
+  createUDPTransportFactory,
+} = require("../core/udp-transport");
+
+const quake3Profile =
+  require("./profile");
+
+const {
   createHostUDPProxy,
   createClientUDPTransport,
-} = require("./udp-transport");
+} = createUDPTransportFactory({
+  gamePort: quake3Profile.gamePort,
+  debug: quake3Profile.debugUDP,
+  logPrefix: "Bridge-Q3-UDP",
+  gameName: quake3Profile.name,
+});
 
 const {
   createTransportManager,
@@ -36,9 +56,17 @@ const {
 
 const {
   createInitialState,
-} = require("./state");
+} = require("../core/state");
 
-let state = createInitialState();
+const engine =
+  createGameNetworkEngine({
+    name: "Bridge-Q3",
+    createState:
+      createInitialState,
+  });
+
+let state =
+  engine.getMutableState();
 
 const {
   getLocalIP,
@@ -78,7 +106,7 @@ const {
   initializeTransport,
   ensureHostTransportResources,
   ensureClientTransportResources,
-} = require("./transport");
+} = require("../core/transport");
 
 const {
   initializeRelay,
@@ -171,11 +199,10 @@ function resetBridge() {
     state.peer?.close();
   } catch {}
 
-  try {
-    state.signalingSocket?.disconnect();
-  } catch {}
+  engine.stopSignaling();
 
-  state = createInitialState();
+  state =
+    engine.resetOwnedState();
 
   console.log(
     "[Bridge-Q3] Reset complete"
@@ -541,27 +568,34 @@ async function startBridge(
     "Conectando al servidor de señales..."
   );
 
-  const signaling =
-    socketClient(
+  engine.startSignaling({
+    createSession:
+      createSignalingSession,
+
+    socketFactory:
+      socketClient,
+
+    url:
       SIGNALING_URL,
-      {
-        transports: [
-          "websocket",
-        ],
 
-        reconnection: true,
-        reconnectionAttempts: 3,
-        reconnectionDelay: 1000,
-      }
-    );
+    options: {
+      transports: [
+        "websocket",
+      ],
 
-  state.signalingSocket =
-    signaling;
+      reconnection: true,
+      reconnectionAttempts: 3,
+      reconnectionDelay: 1000,
+    },
 
-  configureSignaling(
-    NDC,
-    signaling
-  );
+    configure:
+      (signaling) => {
+        configureSignaling(
+          NDC,
+          signaling
+        );
+      },
+  });
 
   return {
     success: true,
@@ -660,15 +694,26 @@ function getBridgeState() {
   };
 }
 
-module.exports = {
-  startBridge,
-  resetBridge,
+engine.setHandlers({
+  start:
+    startBridge,
+
+  reset:
+    resetBridge,
+
+  getState:
+    getBridgeState,
 
   getClientPort: () =>
-    state.clientPort,
+    engine
+      .getMutableState()
+      .clientPort,
 
   getHostIP: () =>
-    state.hostIP,
+    engine
+      .getMutableState()
+      .hostIP,
+});
 
-  getBridgeState,
-};
+module.exports =
+  engine.toBridgeAPI();

@@ -5,7 +5,7 @@ const os = require("os");
 const {
   CLIENT_PORT_BASE,
   MAX_CLIENTS,
-} = require("./config");
+} = require("./profile");
 
 function getLocalIP() {
   const interfaces =

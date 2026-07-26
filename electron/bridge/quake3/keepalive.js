@@ -2,7 +2,7 @@
 
 const {
   KEEPALIVE_INTERVAL_MS,
-} = require("./config");
+} = require("../core/engine-config");
 
 const keepAliveIntervals =
   new Map();
@@ -90,12 +90,3 @@ module.exports = {
   stopKeepAlive,
   clearAllKeepAlives,
 };
-
-function clearAllKeepAlives() {
-  for (const interval of
-    keepAliveIntervals.values()) {
-    clearInterval(interval);
-  }
-
-  keepAliveIntervals.clear();
-}
