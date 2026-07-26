@@ -116,12 +116,12 @@ const {
 } = require("./relay");
 
 const {
-  initializePeer,
-  flushHostCandidates,
-  flushClientCandidates,
-  createHostPeer,
-  createClientPeer,
-} = require("./peer");
+  configureSignaling,
+} = require("../core/signaling");
+
+const {
+  peer,
+} = require("../core/peer");
 
 function clearClientTimeout(client) {
   if (!client?.iceTimeoutHandle) {
@@ -247,7 +247,7 @@ initializeWatchdog({
   ICE_CONNECT_TIMEOUT_MS,
 });
 
-initializePeer({
+peer.initialize({
   getState: () => state,
   buildIceServers,
   flushCandidateQueue,
@@ -267,273 +267,11 @@ initializePeer({
   onHostChannelOpen,
   onClientChannelOpen,
   handleChannelMessage,
+  // Config específica de Quake 3, inyectada hacia el módulo
+  // genérico del motor (electron/bridge/core/peer.js).
+  peerNamePrefix: "RetroLink-Q3",
+  logPrefix: "[Bridge-Q3]",
 });
-
-function configureSignaling(
-  NDC,
-  signaling
-) {
-  signaling.on(
-    "connect_error",
-    (error) => {
-      console.error(
-        "[Bridge-Q3] Error de señalización:",
-        error.message
-      );
-
-      sendStatus(
-        "Error al conectar al servidor de señales."
-      );
-    }
-  );
-
-  signaling.on("connect", () => {
-    console.log(
-      "[Bridge-Q3] Signaling conectado:",
-      signaling.id
-    );
-
-    if (state.isHost) {
-      state.hostIP =
-        getLocalIP();
-    }
-
-    signaling.emit(
-      "webrtc-join",
-      {
-        roomId:
-          state.roomId,
-        isHost:
-          state.isHost,
-        hostIP:
-          state.hostIP,
-      },
-      () => {
-        sendStatus(
-          state.isHost
-            ? "Esperando jugadores..."
-            : "Buscando rival en la sala..."
-        );
-      }
-    );
-  });
-
-  signaling.on(
-    "webrtc-host-ip",
-    ({ hostIP } = {}) => {
-      if (
-        !state.isHost &&
-        hostIP
-      ) {
-        state.hostIP = hostIP;
-      }
-    }
-  );
-
-  signaling.on(
-    "webrtc-peer-ready",
-    ({ fromSocketId } = {}) => {
-      if (
-        !state.isHost ||
-        !fromSocketId ||
-        state.clients.has(
-          fromSocketId
-        )
-      ) {
-        return;
-      }
-
-      const clientPort =
-        getNextClientPort(state);
-
-      if (!clientPort) {
-        sendStatus(
-          "La sala alcanzó su máximo de jugadores."
-        );
-
-        return;
-      }
-
-      state.clients.set(
-        fromSocketId,
-        {
-          peer: null,
-          channel: null,
-          udpTransport: null,
-          transportManager: null,
-          relayTransport: null,
-          switchingToRelay: false,
-
-          clientPort,
-
-          pendingCandidates: [],
-          remoteDescSet: false,
-
-          iceConnectionState:
-            null,
-          iceTimeoutHandle:
-            null,
-
-          gatheredCandidateTypes:
-            new Set(),
-        }
-      );
-
-      sendStatus(
-        "Rival encontrado. Creando conexión P2P..."
-      );
-
-      createHostPeer(
-        NDC,
-        signaling,
-        fromSocketId
-      );
-    }
-  );
-
-  signaling.on(
-    "webrtc-client-port",
-    ({ port } = {}) => {
-      if (
-        !state.isHost &&
-        Number.isInteger(port)
-      ) {
-        state.clientPort = port;
-
-        console.log(
-          `[Bridge-Q3] Puerto cliente asignado: ${port}`
-        );
-      }
-    }
-  );
-
-  signaling.on(
-    "webrtc-signal",
-    ({
-      type,
-      sdp,
-      candidate,
-      mid,
-      fromSocketId,
-    } = {}) => {
-      try {
-        if (state.isHost) {
-          const client =
-            state.clients.get(
-              fromSocketId
-            );
-
-          if (!client) {
-            return;
-          }
-
-          if (type === "answer") {
-            client.peer.setRemoteDescription(
-              sdp,
-              "answer"
-            );
-
-            client.remoteDescSet =
-              true;
-
-            flushHostCandidates(
-              fromSocketId
-            );
-
-            return;
-          }
-
-          if (
-            type === "candidate"
-          ) {
-            client.pendingCandidates.push({
-              candidate,
-              mid,
-            });
-
-            flushHostCandidates(
-              fromSocketId
-            );
-          }
-
-          return;
-        }
-
-        if (type === "offer") {
-          if (!state.peer) {
-            createClientPeer(
-              NDC,
-              signaling
-            );
-          }
-
-          sendStatus(
-            "Procesando oferta de conexión..."
-          );
-
-          /*
-           * Corrección importante:
-           *
-           * node-datachannel genera automáticamente
-           * la respuesta después de recibir la oferta.
-           * No debemos llamar después a
-           * setLocalDescription(), porque generaría
-           * una nueva oferta.
-           */
-          state.peer.setRemoteDescription(
-            sdp,
-            "offer"
-          );
-
-          state.remoteDescSet =
-            true;
-
-          flushClientCandidates();
-
-          return;
-        }
-
-        if (type === "candidate") {
-          state.pendingCandidates.push({
-            candidate,
-            mid,
-          });
-
-          flushClientCandidates();
-        }
-      } catch (error) {
-        console.error(
-          "[Bridge-Q3] Error procesando señal:",
-          error.message
-        );
-
-        sendStatus(
-          `Error procesando señal: ${error.message}`
-        );
-      }
-    }
-  );
-
-  signaling.on(
-    "webrtc-client-left",
-    ({ socketId } = {}) => {
-      if (
-        !state.isHost ||
-        !socketId
-      ) {
-        return;
-      }
-
-      cleanupClient(socketId);
-
-      sendStatus(
-        state.clients.size > 0
-          ? `${state.clients.size} jugador(es) conectado(s)`
-          : "Esperando jugadores..."
-      );
-    }
-  );
-}
 
 async function startBridge(
   roomId,
@@ -590,10 +328,23 @@ async function startBridge(
 
     configure:
       (signaling) => {
-        configureSignaling(
+        configureSignaling({
+          signaling,
           NDC,
-          signaling
-        );
+          getState: () => state,
+          sendStatus,
+          getLocalIP,
+          getNextClientPort,
+          createHostPeer:
+            peer.createHost,
+          createClientPeer:
+            peer.createClient,
+          flushHostCandidates:
+            peer.flushHostCandidates,
+          flushClientCandidates:
+            peer.flushClientCandidates,
+          cleanupClient,
+        });
       },
   });
 

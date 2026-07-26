@@ -1,8 +1,13 @@
 // electron/bridge/quake3/peer.js
+// (Módulo genérico del motor de peers WebRTC. Será trasladado a
+//  electron/bridge/core/peer.js — la API pública ya queda estable
+//  desde ahora. No contiene referencias específicas a ningún juego;
+//  los nombres de PeerConnection y el prefijo de logs se reciben
+//  mediante `deps`.)
 
 let deps = null;
 
-function initializePeer(injectedDeps) {
+function initialize(injectedDeps) {
   deps = injectedDeps;
 }
 
@@ -43,7 +48,7 @@ function flushClientCandidates() {
     });
 }
 
-function createHostPeer(
+function createHost(
   NDC,
   signaling,
   socketId
@@ -59,7 +64,7 @@ function createHostPeer(
 
   const peer =
     new NDC.PeerConnection(
-      `RetroLink-Q3-Host-${socketId}`,
+      `${deps.peerNamePrefix}-Host-${socketId}`,
       {
         iceServers:
           deps.buildIceServers(),
@@ -80,7 +85,7 @@ function createHostPeer(
         connectionState;
 
       console.log(
-        `[Bridge-Q3] Estado peer host ${socketId}: ${connectionState}`
+        `${deps.logPrefix} Estado peer host ${socketId}: ${connectionState}`
       );
 
       if (
@@ -145,7 +150,7 @@ function createHostPeer(
   peer.onGatheringStateChange(
     (gatheringState) => {
       console.log(
-        `[Bridge-Q3] Gathering host ${socketId}: ${gatheringState}`
+        `${deps.logPrefix} Gathering host ${socketId}: ${gatheringState}`
       );
 
       if (
@@ -198,7 +203,7 @@ function createHostPeer(
       );
 
       console.log(
-        `[Bridge-Q3] Candidato host ${socketId} [${type}]:`,
+        `${deps.logPrefix} Candidato host ${socketId} [${type}]:`,
         candidate
       );
 
@@ -243,7 +248,7 @@ function createHostPeer(
 
   channel.onClosed(() => {
     console.log(
-      `[Bridge-Q3] Canal cerrado: ${socketId}`
+      `${deps.logPrefix} Canal cerrado: ${socketId}`
     );
 
     deps.stopKeepAlive(socketId);
@@ -292,7 +297,7 @@ function createHostPeer(
 
   channel.onError((error) => {
     console.error(
-      `[Bridge-Q3] Error DataChannel ${socketId}:`,
+      `${deps.logPrefix} Error DataChannel ${socketId}:`,
       error
     );
   });
@@ -305,7 +310,7 @@ function createHostPeer(
       peer.setLocalDescription();
     } catch (error) {
       console.error(
-        `[Bridge-Q3] Error creando oferta para ${socketId}:`,
+        `${deps.logPrefix} Error creando oferta para ${socketId}:`,
         error.message
       );
 
@@ -314,7 +319,7 @@ function createHostPeer(
   }, 200);
 }
 
-function createClientPeer(
+function createClient(
   NDC,
   signaling
 ) {
@@ -322,7 +327,7 @@ function createClientPeer(
 
   const peer =
     new NDC.PeerConnection(
-      "RetroLink-Q3-Client",
+      `${deps.peerNamePrefix}-Client`,
       {
         iceServers:
           deps.buildIceServers(),
@@ -340,7 +345,7 @@ function createClientPeer(
         connectionState;
 
       console.log(
-        `[Bridge-Q3] Estado peer cliente: ${connectionState}`
+        `${deps.logPrefix} Estado peer cliente: ${connectionState}`
       );
 
       if (
@@ -419,7 +424,7 @@ function createClientPeer(
   peer.onGatheringStateChange(
     (gatheringState) => {
       console.log(
-        `[Bridge-Q3] Gathering cliente: ${gatheringState}`
+        `${deps.logPrefix} Gathering cliente: ${gatheringState}`
       );
 
       if (
@@ -437,7 +442,7 @@ function createClientPeer(
   peer.onLocalDescription(
     (sdp, type) => {
       console.log(
-        `[Bridge-Q3] Descripción local cliente: ${type}`
+        `${deps.logPrefix} Descripción local cliente: ${type}`
       );
 
       signaling.emit(
@@ -462,7 +467,7 @@ function createClientPeer(
       );
 
       console.log(
-        `[Bridge-Q3] Candidato cliente [${type}]:`,
+        `${deps.logPrefix} Candidato cliente [${type}]:`,
         candidate
       );
 
@@ -522,17 +527,21 @@ function createClientPeer(
 
     channel.onError((error) => {
       console.error(
-        "[Bridge-Q3] Error DataChannel cliente:",
+        `${deps.logPrefix} Error DataChannel cliente:`,
         error
       );
     });
   });
 }
 
-module.exports = {
-  initializePeer,
+const peer = {
+  initialize,
+  createHost,
+  createClient,
   flushHostCandidates,
   flushClientCandidates,
-  createHostPeer,
-  createClientPeer,
+};
+
+module.exports = {
+  peer,
 };
