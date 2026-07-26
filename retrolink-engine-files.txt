@@ -1,0 +1,6379 @@
+﻿RETROLINK - MOTOR, QUAKE 3 Y ADAPTADORES
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\bridge-registry.js
+==========================================================================================
+
+// electron/bridge/bridge-registry.js
+
+const path = require("path");
+
+const gamesPath = path.join(
+  __dirname,
+  "../games/index.js"
+);
+
+const { getRealGameId } = require(gamesPath);
+
+const bridgeProfiles = {
+  quake3: {
+    label: "Quake III",
+    bridge: require("./profiles/quake3"),
+  },
+
+  cs16: {
+    label: "CS 1.6",
+    bridge: require("./profiles/cs16"),
+  },
+
+  carmageddon2: {
+    label: "Carmageddon 2",
+    bridge: require("./profiles/carmageddon2"),
+  },
+
+  ut99: {
+    label: "UT99",
+    bridge: require("./profiles/ut99"),
+  },
+};
+
+const DEFAULT_GAME_ID = "quake3";
+
+let activeBridge = null;
+let activeGameId = null;
+
+function getBridgeProfile(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  if (realGameId && bridgeProfiles[realGameId]) {
+    return {
+      gameId: realGameId,
+      ...bridgeProfiles[realGameId],
+    };
+  }
+
+  console.warn(
+    `[Bridge Registry] No existe un perfil para "${gameId}". ` +
+      `Se usarÃ¡ ${bridgeProfiles[DEFAULT_GAME_ID].label}.`
+  );
+
+  return {
+    gameId: DEFAULT_GAME_ID,
+    ...bridgeProfiles[DEFAULT_GAME_ID],
+  };
+}
+
+function getBridge(gameId) {
+  const profile = getBridgeProfile(gameId);
+
+  console.log(
+    `[Handlers] Usando bridge para ${profile.label}`
+  );
+
+  return profile.bridge;
+}
+
+function setActiveBridge(bridge, gameId = null) {
+  activeBridge = bridge;
+  activeGameId = gameId
+    ? getRealGameId(gameId)
+    : null;
+}
+
+function getActiveBridge() {
+  return (
+    activeBridge ||
+    bridgeProfiles[DEFAULT_GAME_ID].bridge
+  );
+}
+
+function getActiveGameId() {
+  return activeGameId;
+}
+
+function clearActiveBridge() {
+  activeBridge = null;
+  activeGameId = null;
+}
+
+function hasBridgeProfile(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  return Boolean(
+    realGameId &&
+      bridgeProfiles[realGameId]
+  );
+}
+
+function getRegisteredBridgeIds() {
+  return Object.keys(bridgeProfiles);
+}
+
+module.exports = {
+  getBridge,
+  getBridgeProfile,
+
+  setActiveBridge,
+  getActiveBridge,
+  getActiveGameId,
+  clearActiveBridge,
+
+  hasBridgeProfile,
+  getRegisteredBridgeIds,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\bridge-reset.js
+==========================================================================================
+
+// electron/bridge/core/bridge-reset.js
+
+function createBridgeReset({
+  engine,
+  getState,
+  setState,
+  clearAllKeepAlives,
+  clearClientResources,
+  logPrefix = "Bridge",
+}) {
+  if (!engine) {
+    throw new Error(
+      "[BridgeReset] engine es obligatorio."
+    );
+  }
+
+  if (
+    typeof getState !== "function"
+  ) {
+    throw new Error(
+      "[BridgeReset] getState debe ser una funciÃ³n."
+    );
+  }
+
+  if (
+    typeof setState !== "function"
+  ) {
+    throw new Error(
+      "[BridgeReset] setState debe ser una funciÃ³n."
+    );
+  }
+
+  return function resetBridge() {
+    const state = getState();
+
+    clearAllKeepAlives();
+
+    if (state.iceTimeoutHandle) {
+      clearTimeout(
+        state.iceTimeoutHandle
+      );
+    }
+
+    try {
+      if (
+        state.signalingSocket &&
+        state.roomId
+      ) {
+        state.signalingSocket.emit(
+          "webrtc-leave",
+          {
+            roomId:
+              state.roomId,
+          }
+        );
+      }
+    } catch {}
+
+    for (const [
+      socketId,
+      client,
+    ] of state.clients) {
+      clearClientResources(
+        socketId,
+        client
+      );
+    }
+
+    state.clients.clear();
+
+    /*
+     * El TransportManager es el propietario
+     * principal de los transportes.
+     */
+    if (state.transportManager) {
+      try {
+        state.transportManager.close();
+      } catch {}
+    } else if (
+      state.relayTransport
+    ) {
+      try {
+        state.relayTransport.close?.();
+      } catch {}
+    }
+
+    state.relayTransport = null;
+
+    try {
+      state.udpTransport?.close();
+    } catch {}
+
+    try {
+      state.channel?.close();
+    } catch {}
+
+    try {
+      state.peer?.close();
+    } catch {}
+
+    engine.stopSignaling();
+
+    const nextState =
+      engine.resetOwnedState();
+
+    setState(nextState);
+
+    console.log(
+      `[${logPrefix}] Reset complete`
+    );
+  };
+}
+
+module.exports = {
+  createBridgeReset,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\engine-config.js
+==========================================================================================
+
+// electron/bridge/core/engine-config.js
+
+const SIGNALING_URL =
+  "https://retrolink-server.onrender.com";
+
+const ICE_CONNECT_TIMEOUT_MS = 45000;
+const KEEPALIVE_INTERVAL_MS = 10000;
+
+const ICE_SERVERS = [
+  "stun:stun.l.google.com:19302",
+  "stun:stun1.l.google.com:19302",
+  "stun:stun2.l.google.com:19302",
+  "stun:stun3.l.google.com:19302",
+  "stun:stun4.l.google.com:19302",
+
+  /*
+   * Estos servidores TURN pÃºblicos pueden no estar
+   * disponibles o no aceptar estas credenciales.
+   * Se dejan para diagnÃ³stico hasta instalar coturn.
+   */
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80?transport=udp",
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:80?transport=tcp",
+  "turn:openrelayproject:openrelayproject@openrelay.metered.ca:443?transport=tcp",
+  "turns:openrelayproject:openrelayproject@openrelay.metered.ca:5349",
+];
+
+function buildIceServers() {
+  return [...ICE_SERVERS];
+}
+
+module.exports = {
+  SIGNALING_URL,
+  ICE_CONNECT_TIMEOUT_MS,
+  KEEPALIVE_INTERVAL_MS,
+  ICE_SERVERS,
+  buildIceServers,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\game-network-engine.js
+==========================================================================================
+
+// electron/bridge/core/game-network-engine.js
+
+class GameNetworkEngine {
+  constructor({
+    name = "GameNetworkEngine",
+    createState,
+    handlers = {},
+  } = {}) {
+    this.name = name;
+
+    if (
+      typeof createState !==
+      "function"
+    ) {
+      throw new TypeError(
+        `[${this.name}] createState debe ser una funciÃ³n.`
+      );
+    }
+
+    this.createState =
+      createState;
+
+    this.state =
+      this.createState();
+
+    this.handlers = {};
+
+    this.setHandlers(
+      handlers,
+      {
+        validate: false,
+      }
+    );
+  }
+
+  setHandlers(
+    handlers = {},
+    {
+      validate = true,
+    } = {}
+  ) {
+    this.handlers = {
+      ...this.handlers,
+      ...handlers,
+    };
+
+    if (validate) {
+      this.validateHandlers();
+    }
+
+    return this;
+  }
+
+  validateHandlers() {
+    const requiredHandlers = [
+      "start",
+      "reset",
+      "getState",
+      "getClientPort",
+      "getHostIP",
+    ];
+
+    for (const handlerName of
+      requiredHandlers) {
+      if (
+        typeof this.handlers[
+          handlerName
+        ] !== "function"
+      ) {
+        throw new TypeError(
+          `[${this.name}] El handler "${handlerName}" debe ser una funciÃ³n.`
+        );
+      }
+    }
+  }
+
+  getMutableState() {
+    return this.state;
+  }
+
+  resetOwnedState() {
+    this.state =
+      this.createState();
+
+    return this.state;
+  }
+
+  replaceOwnedState(
+    nextState
+  ) {
+    if (
+      !nextState ||
+      typeof nextState !==
+        "object"
+    ) {
+      throw new TypeError(
+        `[${this.name}] El nuevo estado debe ser un objeto.`
+      );
+    }
+
+    this.state = nextState;
+
+    return this.state;
+  }
+
+  startSignaling({
+    createSession,
+    socketFactory,
+    url,
+    options,
+    configure,
+  } = {}) {
+    if (
+      typeof createSession !==
+      "function"
+    ) {
+      throw new TypeError(
+        `[${this.name}] createSession debe ser una funciÃ³n.`
+      );
+    }
+
+    this.stopSignaling();
+
+    const signalingSocket =
+      createSession({
+        socketFactory,
+        url,
+        options,
+        configure,
+      });
+
+    this.state.signalingSocket =
+      signalingSocket;
+
+    return signalingSocket;
+  }
+
+  stopSignaling() {
+    const signalingSocket =
+      this.state
+        ?.signalingSocket;
+
+    if (!signalingSocket) {
+      return false;
+    }
+
+    try {
+      signalingSocket.disconnect?.();
+    } catch {}
+
+    this.state.signalingSocket =
+      null;
+
+    return true;
+  }
+
+  async start(roomId, isHost) {
+    return this.handlers.start(
+      roomId,
+      isHost
+    );
+  }
+
+  reset() {
+    return this.handlers.reset();
+  }
+
+  getState() {
+    return this.handlers.getState();
+  }
+
+  getClientPort() {
+    return this.handlers.getClientPort();
+  }
+
+  getHostIP() {
+    return this.handlers.getHostIP();
+  }
+
+  toBridgeAPI() {
+    this.validateHandlers();
+
+    return {
+      startBridge:
+        this.start.bind(this),
+
+      resetBridge:
+        this.reset.bind(this),
+
+      getClientPort:
+        this.getClientPort.bind(this),
+
+      getHostIP:
+        this.getHostIP.bind(this),
+
+      getBridgeState:
+        this.getState.bind(this),
+    };
+  }
+}
+
+function createGameNetworkEngine(
+  options
+) {
+  return new GameNetworkEngine(
+    options
+  );
+}
+
+module.exports = {
+  GameNetworkEngine,
+  createGameNetworkEngine,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\ice-utils.js
+==========================================================================================
+
+// electron/bridge/quake3/ice-utils.js
+
+function getCandidateType(candidate) {
+  if (typeof candidate !== "string") {
+    return "unknown";
+  }
+
+  const match =
+    candidate.match(/\styp\s+(\w+)/);
+
+  return match
+    ? match[1]
+    : "unknown";
+}
+
+function describeCandidateTypes(types) {
+  if (
+    !types ||
+    types.size === 0
+  ) {
+    return "ninguno";
+  }
+
+  return [...types].join(", ");
+}
+
+function hasUsableInternetCandidate(types) {
+  return (
+    types?.has("srflx") ||
+    types?.has("relay")
+  );
+}
+
+function hasRelayCandidate(types) {
+  return Boolean(
+    types?.has("relay")
+  );
+}
+
+function flushCandidateQueue({
+  peer,
+  remoteDescSet,
+  candidates,
+  label,
+}) {
+  if (
+    !peer ||
+    !remoteDescSet ||
+    !Array.isArray(candidates)
+  ) {
+    return candidates || [];
+  }
+
+  const stillPending = [];
+
+  for (const {
+    candidate,
+    mid,
+  } of candidates) {
+    try {
+      peer.addRemoteCandidate(
+        candidate,
+        mid
+      );
+    } catch (error) {
+      console.warn(
+        `[Bridge-Q3] No se pudo aplicar candidato ICE (${label}); se reintentarÃ¡:`,
+        error.message || error
+      );
+
+      stillPending.push({
+        candidate,
+        mid,
+      });
+    }
+  }
+
+  return stillPending;
+}
+
+function logGatheringResult(
+  label,
+  gatheredCandidateTypes
+) {
+  const description =
+    describeCandidateTypes(
+      gatheredCandidateTypes
+    );
+
+  console.log(
+    `[Bridge-Q3] ${label}: gathering completo. Candidatos: ${description}.`
+  );
+
+  if (
+    !hasUsableInternetCandidate(
+      gatheredCandidateTypes
+    )
+  ) {
+    console.warn(
+      `[Bridge-Q3] ${label}: no se reuniÃ³ ningÃºn candidato srflx o relay.`
+    );
+
+    return;
+  }
+
+  if (
+    !hasRelayCandidate(
+      gatheredCandidateTypes
+    )
+  ) {
+    console.warn(
+      `[Bridge-Q3] ${label}: STUN funciona, pero no hay candidato TURN relay.`
+    );
+  }
+}
+
+module.exports = {
+  getCandidateType,
+  describeCandidateTypes,
+  hasUsableInternetCandidate,
+  hasRelayCandidate,
+  flushCandidateQueue,
+  logGatheringResult,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\peer.js
+==========================================================================================
+
+// electron/bridge/quake3/peer.js
+// (MÃ³dulo genÃ©rico del motor de peers WebRTC. SerÃ¡ trasladado a
+//  electron/bridge/core/peer.js â€” la API pÃºblica ya queda estable
+//  desde ahora. No contiene referencias especÃ­ficas a ningÃºn juego;
+//  los nombres de PeerConnection y el prefijo de logs se reciben
+//  mediante `deps`.)
+
+let deps = null;
+
+function initialize(injectedDeps) {
+  deps = injectedDeps;
+}
+
+function flushHostCandidates(
+  socketId
+) {
+  const state = deps.getState();
+
+  const client =
+    state.clients.get(socketId);
+
+  if (!client) {
+    return;
+  }
+
+  client.pendingCandidates =
+    deps.flushCandidateQueue({
+      peer: client.peer,
+      remoteDescSet:
+        client.remoteDescSet,
+      candidates:
+        client.pendingCandidates,
+      label: `host/${socketId}`,
+    });
+}
+
+function flushClientCandidates() {
+  const state = deps.getState();
+
+  state.pendingCandidates =
+    deps.flushCandidateQueue({
+      peer: state.peer,
+      remoteDescSet:
+        state.remoteDescSet,
+      candidates:
+        state.pendingCandidates,
+      label: "cliente",
+    });
+}
+
+function createHost(
+  NDC,
+  signaling,
+  socketId
+) {
+  const state = deps.getState();
+
+  const client =
+    state.clients.get(socketId);
+
+  if (!client) {
+    return;
+  }
+
+  const peer =
+    new NDC.PeerConnection(
+      `${deps.peerNamePrefix}-Host-${socketId}`,
+      {
+        iceServers:
+          deps.buildIceServers(),
+        iceTransportPolicy: "all",
+      }
+    );
+
+  client.peer = peer;
+
+  deps.createHostWatchdog(
+    socketId,
+    client
+  );
+
+  peer.onStateChange(
+    (connectionState) => {
+      client.iceConnectionState =
+        connectionState;
+
+      console.log(
+        `${deps.logPrefix} Estado peer host ${socketId}: ${connectionState}`
+      );
+
+      if (
+        connectionState ===
+          "connected" ||
+        connectionState ===
+          "completed"
+      ) {
+        deps.clearClientTimeout(client);
+
+        deps.sendStatus(
+          "ConexiÃ³n P2P establecida con el cliente."
+        );
+      }
+
+      if (
+        connectionState ===
+        "failed"
+      ) {
+        /*
+         * Evita fallback duplicado si el watchdog ya
+         * activÃ³ Relay para este cliente.
+         */
+        if (
+          client.switchingToRelay ||
+          client.transportManager
+            ?.isRelayOpen() ||
+          deps.isRelayActiveOrConnecting(
+            client.relayTransport
+          )
+        ) {
+          return;
+        }
+
+        deps.clearClientTimeout(client);
+
+        client.transportManager
+          ?.disableWebRTC();
+
+        const relayStarted =
+          deps.activateHostRelay(
+            socketId,
+            "ice-failed"
+          );
+
+        if (relayStarted) {
+          deps.closeHostWebRTCResources(
+            socketId,
+            client
+          );
+        }
+
+        deps.sendStatus(
+          relayStarted
+            ? "FallÃ³ P2P. Intentando conexiÃ³n mediante Relay..."
+            : "FallÃ³ la conexiÃ³n P2P con el cliente."
+        );
+      }
+    }
+  );
+
+  peer.onGatheringStateChange(
+    (gatheringState) => {
+      console.log(
+        `${deps.logPrefix} Gathering host ${socketId}: ${gatheringState}`
+      );
+
+      if (
+        gatheringState ===
+        "complete"
+      ) {
+        deps.logGatheringResult(
+          `Host/${socketId}`,
+          client.gatheredCandidateTypes
+        );
+      }
+    }
+  );
+
+  peer.onLocalDescription(
+    (sdp, type) => {
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId:
+            state.roomId,
+          type,
+          sdp,
+          toSocketId:
+            socketId,
+        }
+      );
+
+      signaling.emit(
+        "webrtc-client-port",
+        {
+          roomId:
+            state.roomId,
+          port:
+            client.clientPort,
+          toSocketId:
+            socketId,
+        }
+      );
+    }
+  );
+
+  peer.onLocalCandidate(
+    (candidate, mid) => {
+      const type =
+        deps.getCandidateType(candidate);
+
+      client.gatheredCandidateTypes.add(
+        type
+      );
+
+      console.log(
+        `${deps.logPrefix} Candidato host ${socketId} [${type}]:`,
+        candidate
+      );
+
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId:
+            state.roomId,
+          type: "candidate",
+          candidate,
+          mid,
+          toSocketId:
+            socketId,
+        }
+      );
+    }
+  );
+
+  const channel =
+    peer.createDataChannel(
+      "game",
+      {
+        ordered: true,
+      }
+    );
+
+  client.channel = channel;
+
+  channel.onOpen(() => {
+    deps.onHostChannelOpen(
+      socketId,
+      channel
+    );
+  });
+
+  channel.onMessage((message) => {
+    deps.handleChannelMessage(
+      message,
+      socketId
+    );
+  });
+
+  channel.onClosed(() => {
+    console.log(
+      `${deps.logPrefix} Canal cerrado: ${socketId}`
+    );
+
+    deps.stopKeepAlive(socketId);
+
+    client.transportManager
+      ?.disableWebRTC();
+
+    client.channel = null;
+
+    const relayUsable =
+      Boolean(
+        client.transportManager
+          ?.isRelayOpen()
+      ) ||
+      client.switchingToRelay ||
+      deps.isRelayActiveOrConnecting(
+        client.relayTransport
+      );
+
+    /*
+     * Si el relay sigue disponible o intentando conectar,
+     * NO destruimos el cliente: la salida real del jugador
+     * se maneja mediante "webrtc-client-left".
+     */
+    if (!relayUsable) {
+      deps.cleanupClient(socketId);
+    }
+
+    const connected =
+      [...state.clients.values()].filter(
+        (item) =>
+          item.transportManager
+            ?.isWebRTCOpen() ||
+          item.transportManager
+            ?.isRelayOpen()
+      ).length;
+
+    deps.sendStatus(
+      connected > 0
+        ? `${connected} jugador(es) conectado(s)`
+        : relayUsable
+          ? "ConexiÃ³n WebRTC cerrada. Usando Relay..."
+          : "Esperando jugadores..."
+    );
+  });
+
+  channel.onError((error) => {
+    console.error(
+      `${deps.logPrefix} Error DataChannel ${socketId}:`,
+      error
+    );
+  });
+
+  /*
+   * El host debe iniciar la oferta.
+   */
+  setTimeout(() => {
+    try {
+      peer.setLocalDescription();
+    } catch (error) {
+      console.error(
+        `${deps.logPrefix} Error creando oferta para ${socketId}:`,
+        error.message
+      );
+
+      deps.cleanupClient(socketId);
+    }
+  }, 200);
+}
+
+function createClient(
+  NDC,
+  signaling
+) {
+  const state = deps.getState();
+
+  const peer =
+    new NDC.PeerConnection(
+      `${deps.peerNamePrefix}-Client`,
+      {
+        iceServers:
+          deps.buildIceServers(),
+        iceTransportPolicy: "all",
+      }
+    );
+
+  state.peer = peer;
+
+  deps.createClientWatchdog();
+
+  peer.onStateChange(
+    (connectionState) => {
+      state.iceConnectionState =
+        connectionState;
+
+      console.log(
+        `${deps.logPrefix} Estado peer cliente: ${connectionState}`
+      );
+
+      if (
+        connectionState ===
+          "connected" ||
+        connectionState ===
+          "completed"
+      ) {
+        if (
+          state.iceTimeoutHandle
+        ) {
+          clearTimeout(
+            state.iceTimeoutHandle
+          );
+
+          state.iceTimeoutHandle =
+            null;
+        }
+
+        deps.sendStatus(
+          "ConexiÃ³n P2P establecida."
+        );
+      }
+
+      if (
+        connectionState ===
+        "failed"
+      ) {
+        /*
+         * Evita fallback duplicado si el watchdog ya
+         * activÃ³ Relay.
+         */
+        if (
+          state.switchingToRelay ||
+          state.transportManager
+            ?.isRelayOpen() ||
+          deps.isRelayActiveOrConnecting(
+            state.relayTransport
+          )
+        ) {
+          return;
+        }
+
+        if (
+          state.iceTimeoutHandle
+        ) {
+          clearTimeout(
+            state.iceTimeoutHandle
+          );
+
+          state.iceTimeoutHandle =
+            null;
+        }
+
+        state.transportManager
+          ?.disableWebRTC();
+
+        const relayStarted =
+          deps.activateClientRelay(
+            "ice-failed"
+          );
+
+        if (relayStarted) {
+          deps.closeClientWebRTCResources();
+        }
+
+        deps.sendStatus(
+          relayStarted
+            ? "FallÃ³ P2P. Intentando conexiÃ³n mediante Relay..."
+            : "FallÃ³ la conexiÃ³n P2P."
+        );
+      }
+    }
+  );
+
+  peer.onGatheringStateChange(
+    (gatheringState) => {
+      console.log(
+        `${deps.logPrefix} Gathering cliente: ${gatheringState}`
+      );
+
+      if (
+        gatheringState ===
+        "complete"
+      ) {
+        deps.logGatheringResult(
+          "Cliente",
+          state.gatheredCandidateTypes
+        );
+      }
+    }
+  );
+
+  peer.onLocalDescription(
+    (sdp, type) => {
+      console.log(
+        `${deps.logPrefix} DescripciÃ³n local cliente: ${type}`
+      );
+
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId:
+            state.roomId,
+          type,
+          sdp,
+        }
+      );
+    }
+  );
+
+  peer.onLocalCandidate(
+    (candidate, mid) => {
+      const type =
+        deps.getCandidateType(candidate);
+
+      state.gatheredCandidateTypes.add(
+        type
+      );
+
+      console.log(
+        `${deps.logPrefix} Candidato cliente [${type}]:`,
+        candidate
+      );
+
+      signaling.emit(
+        "webrtc-signal",
+        {
+          roomId:
+            state.roomId,
+          type: "candidate",
+          candidate,
+          mid,
+        }
+      );
+    }
+  );
+
+  peer.onDataChannel((channel) => {
+    state.channel = channel;
+
+    channel.onOpen(
+      deps.onClientChannelOpen
+    );
+
+    channel.onMessage(
+      deps.handleChannelMessage
+    );
+
+    channel.onClosed(() => {
+      deps.stopKeepAlive("self");
+
+      state.transportManager
+        ?.disableWebRTC();
+
+      state.channel = null;
+
+      const relayUsable =
+        Boolean(
+          state.transportManager
+            ?.isRelayOpen()
+        ) ||
+        state.switchingToRelay ||
+        deps.isRelayActiveOrConnecting(
+          state.relayTransport
+        );
+
+      /*
+       * No cerramos TransportManager, UDP ni Relay: si el
+       * relay estÃ¡ activo o conectando, la partida sigue
+       * funcionando.
+       */
+      deps.sendStatus(
+        relayUsable
+          ? "ConexiÃ³n P2P cerrada. Usando Relay."
+          : "ConexiÃ³n P2P cerrada."
+      );
+    });
+
+    channel.onError((error) => {
+      console.error(
+        `${deps.logPrefix} Error DataChannel cliente:`,
+        error
+      );
+    });
+  });
+}
+
+const peer = {
+  initialize,
+  createHost,
+  createClient,
+  flushHostCandidates,
+  flushClientCandidates,
+};
+
+module.exports = {
+  peer,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\signaling\index.js
+==========================================================================================
+
+// electron/bridge/core/signaling/index.js
+
+function configureSignaling({
+  signaling,
+  NDC,
+  getState,
+  sendStatus,
+  getLocalIP,
+  getNextClientPort,
+  createHostPeer,
+  createClientPeer,
+  flushHostCandidates,
+  flushClientCandidates,
+  cleanupClient,
+}) {
+  if (!signaling) {
+    throw new Error(
+      "[Core-Signaling] signaling es obligatorio."
+    );
+  }
+
+  if (typeof getState !== "function") {
+    throw new Error(
+      "[Core-Signaling] getState debe ser una funciÃ³n."
+    );
+  }
+
+  signaling.on(
+    "connect_error",
+    (error) => {
+      console.error(
+        "[Core-Signaling] Error de seÃ±alizaciÃ³n:",
+        error.message
+      );
+
+      sendStatus(
+        "Error al conectar al servidor de seÃ±ales."
+      );
+    }
+  );
+
+  signaling.on(
+    "connect",
+    () => {
+      const state = getState();
+
+      console.log(
+        "[Core-Signaling] Signaling conectado:",
+        signaling.id
+      );
+
+      if (state.isHost) {
+        state.hostIP =
+          getLocalIP();
+      }
+
+      signaling.emit(
+        "webrtc-join",
+        {
+          roomId:
+            state.roomId,
+          isHost:
+            state.isHost,
+          hostIP:
+            state.hostIP,
+        },
+        () => {
+          sendStatus(
+            state.isHost
+              ? "Esperando jugadores..."
+              : "Buscando rival en la sala..."
+          );
+        }
+      );
+    }
+  );
+
+  signaling.on(
+    "webrtc-host-ip",
+    ({ hostIP } = {}) => {
+      const state = getState();
+
+      if (
+        !state.isHost &&
+        hostIP
+      ) {
+        state.hostIP =
+          hostIP;
+      }
+    }
+  );
+
+  signaling.on(
+    "webrtc-peer-ready",
+    ({ fromSocketId } = {}) => {
+      const state = getState();
+
+      if (
+        !state.isHost ||
+        !fromSocketId ||
+        state.clients.has(
+          fromSocketId
+        )
+      ) {
+        return;
+      }
+
+      const clientPort =
+        getNextClientPort(
+          state
+        );
+
+      if (!clientPort) {
+        sendStatus(
+          "La sala alcanzÃ³ su mÃ¡ximo de jugadores."
+        );
+
+        return;
+      }
+
+      state.clients.set(
+        fromSocketId,
+        {
+          peer: null,
+          channel: null,
+          udpTransport: null,
+          transportManager: null,
+          relayTransport: null,
+          switchingToRelay: false,
+
+          clientPort,
+
+          pendingCandidates: [],
+          remoteDescSet: false,
+
+          iceConnectionState:
+            null,
+          iceTimeoutHandle:
+            null,
+
+          gatheredCandidateTypes:
+            new Set(),
+        }
+      );
+
+      sendStatus(
+        "Rival encontrado. Creando conexiÃ³n P2P..."
+      );
+
+      createHostPeer(
+        NDC,
+        signaling,
+        fromSocketId
+      );
+    }
+  );
+
+  signaling.on(
+    "webrtc-client-port",
+    ({ port } = {}) => {
+      const state = getState();
+
+      if (
+        !state.isHost &&
+        Number.isInteger(port)
+      ) {
+        state.clientPort =
+          port;
+
+        console.log(
+          `[Core-Signaling] Puerto cliente asignado: ${port}`
+        );
+      }
+    }
+  );
+
+  signaling.on(
+    "webrtc-signal",
+    ({
+      type,
+      sdp,
+      candidate,
+      mid,
+      fromSocketId,
+    } = {}) => {
+      const state = getState();
+
+      try {
+        if (state.isHost) {
+          const client =
+            state.clients.get(
+              fromSocketId
+            );
+
+          if (!client) {
+            return;
+          }
+
+          if (
+            type === "answer"
+          ) {
+            client.peer.setRemoteDescription(
+              sdp,
+              "answer"
+            );
+
+            client.remoteDescSet =
+              true;
+
+            flushHostCandidates(
+              fromSocketId
+            );
+
+            return;
+          }
+
+          if (
+            type === "candidate"
+          ) {
+            client.pendingCandidates.push({
+              candidate,
+              mid,
+            });
+
+            flushHostCandidates(
+              fromSocketId
+            );
+          }
+
+          return;
+        }
+
+        if (
+          type === "offer"
+        ) {
+          if (!state.peer) {
+            createClientPeer(
+              NDC,
+              signaling
+            );
+          }
+
+          sendStatus(
+            "Procesando oferta de conexiÃ³n..."
+          );
+
+          /*
+           * node-datachannel genera automÃ¡ticamente
+           * la respuesta despuÃ©s de recibir la oferta.
+           * No debe llamarse despuÃ©s a
+           * setLocalDescription(), porque eso
+           * generarÃ­a una nueva oferta.
+           */
+          state.peer.setRemoteDescription(
+            sdp,
+            "offer"
+          );
+
+          state.remoteDescSet =
+            true;
+
+          flushClientCandidates();
+
+          return;
+        }
+
+        if (
+          type === "candidate"
+        ) {
+          state.pendingCandidates.push({
+            candidate,
+            mid,
+          });
+
+          flushClientCandidates();
+        }
+      } catch (error) {
+        console.error(
+          "[Core-Signaling] Error procesando seÃ±al:",
+          error.message
+        );
+
+        sendStatus(
+          `Error procesando seÃ±al: ${error.message}`
+        );
+      }
+    }
+  );
+
+  signaling.on(
+    "webrtc-client-left",
+    ({ socketId } = {}) => {
+      const state = getState();
+
+      if (
+        !state.isHost ||
+        !socketId
+      ) {
+        return;
+      }
+
+      cleanupClient(
+        socketId
+      );
+
+      sendStatus(
+        state.clients.size > 0
+          ? `${state.clients.size} jugador(es) conectado(s)`
+          : "Esperando jugadores..."
+      );
+    }
+  );
+}
+
+module.exports = {
+  configureSignaling,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\signaling-session.js
+==========================================================================================
+
+// electron/bridge/core/signaling-session.js
+
+function createSignalingSession({
+  socketFactory,
+  url,
+  options = {},
+  configure,
+} = {}) {
+  if (
+    typeof socketFactory !==
+    "function"
+  ) {
+    throw new TypeError(
+      "[SignalingSession] socketFactory debe ser una funciÃ³n."
+    );
+  }
+
+  if (!url) {
+    throw new Error(
+      "[SignalingSession] No se proporcionÃ³ la URL de seÃ±alizaciÃ³n."
+    );
+  }
+
+  if (
+    typeof configure !==
+    "function"
+  ) {
+    throw new TypeError(
+      "[SignalingSession] configure debe ser una funciÃ³n."
+    );
+  }
+
+  const socket =
+    socketFactory(
+      url,
+      options
+    );
+
+  configure(socket);
+
+  return socket;
+}
+
+module.exports = {
+  createSignalingSession,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\socket-relay-transport.js
+==========================================================================================
+
+// electron/bridge/quake3/socket-relay-transport.js
+
+/*
+ * Transporte Relay binario sobre un socket Socket.IO existente.
+ *
+ * Este mÃ³dulo:
+ *
+ * - NO conoce Quake III.
+ * - NO conoce UDP.
+ * - NO conoce ICE.
+ * - NO conoce PeerConnection.
+ * - NO implementa fallback.
+ * - NO crea ni desconecta el socket de seÃ±alizaciÃ³n.
+ *
+ * Solamente activa/desactiva el relay de una sala y transporta
+ * paquetes binarios mediante los eventos game-relay-*.
+ */
+
+const RELAY_STATE = Object.freeze({
+  IDLE: "idle",
+  CONNECTING: "connecting",
+  OPEN: "open",
+  CLOSED: "closed",
+  ERROR: "error",
+});
+
+function toError(value) {
+  if (value instanceof Error) {
+    return value;
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof value.message === "string"
+  ) {
+    return new Error(
+      value.message
+    );
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof value.error === "string"
+  ) {
+    return new Error(
+      value.error
+    );
+  }
+
+  return new Error(
+    typeof value === "string"
+      ? value
+      : "Error desconocido del transporte relay."
+  );
+}
+
+function normalizePacket(value) {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (
+    value instanceof ArrayBuffer
+  ) {
+    return Buffer.from(value);
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(
+      value.buffer,
+      value.byteOffset,
+      value.byteLength
+    );
+  }
+
+  /*
+   * Socket.IO puede reconstruir buffers con esta forma
+   * dependiendo del parser o de cÃ³mo viaje el objeto.
+   */
+  if (
+    value &&
+    value.type === "Buffer" &&
+    Array.isArray(value.data)
+  ) {
+    return Buffer.from(
+      value.data
+    );
+  }
+
+  return null;
+}
+
+function createSocketRelayTransport(
+  options = {}
+) {
+  const {
+    socket,
+    roomId,
+    isHost = false,
+
+    /*
+     * En el host identifica al cliente remoto asociado
+     * con este transporte.
+     *
+     * El cliente normalmente lo deja en null porque el
+     * servidor dirige automÃ¡ticamente su trÃ¡fico al host.
+     */
+    peerSocketId = null,
+
+    reason = "ice-failed",
+
+    onPacket = null,
+    onConnected = null,
+    onDisconnected = null,
+    onError = null,
+    onRateLimited = null,
+  } = options;
+
+  if (!socket) {
+    throw new Error(
+      "[GameRelay] Se requiere una instancia de Socket.IO."
+    );
+  }
+
+  if (
+    typeof roomId !== "string" ||
+    !roomId.trim()
+  ) {
+    throw new Error(
+      "[GameRelay] Se requiere un roomId vÃ¡lido."
+    );
+  }
+
+  if (
+    isHost &&
+    peerSocketId !== null &&
+    typeof peerSocketId !== "string"
+  ) {
+    throw new Error(
+      "[GameRelay] peerSocketId debe ser string o null."
+    );
+  }
+
+  const packetHandler =
+    typeof onPacket === "function"
+      ? onPacket
+      : null;
+
+  const connectedHandler =
+    typeof onConnected === "function"
+      ? onConnected
+      : null;
+
+  const disconnectedHandler =
+    typeof onDisconnected === "function"
+      ? onDisconnected
+      : null;
+
+  const errorHandler =
+    typeof onError === "function"
+      ? onError
+      : null;
+
+  const rateLimitedHandler =
+    typeof onRateLimited === "function"
+      ? onRateLimited
+      : null;
+
+  let relayState =
+    RELAY_STATE.IDLE;
+
+  let listenersBound = false;
+  let manuallyClosed = false;
+
+  const stats = {
+    packetsSent: 0,
+    bytesSent: 0,
+
+    packetsReceived: 0,
+    bytesReceived: 0,
+
+    packetsDropped: 0,
+    bytesDropped: 0,
+
+    rateLimitNotices: 0,
+
+    connectedAt: null,
+    disconnectedAt: null,
+
+    lastPacketSentAt: null,
+    lastPacketReceivedAt: null,
+
+    lastError: null,
+  };
+
+  function emitError(rawError) {
+    const error =
+      toError(rawError);
+
+    stats.lastError = {
+      message: error.message,
+      at: Date.now(),
+    };
+
+    try {
+      errorHandler?.(error);
+    } catch {}
+  }
+
+  function setState(nextState) {
+    relayState = nextState;
+  }
+
+  function markDisconnected(
+    reasonValue = null
+  ) {
+    if (
+      relayState ===
+      RELAY_STATE.CLOSED
+    ) {
+      return;
+    }
+
+    setState(
+      RELAY_STATE.CLOSED
+    );
+
+    stats.disconnectedAt =
+      Date.now();
+
+    try {
+      disconnectedHandler?.(
+        reasonValue
+      );
+    } catch {}
+  }
+
+  function getIncomingPacket(
+    payload
+  ) {
+    if (
+      Buffer.isBuffer(payload) ||
+      payload instanceof
+        ArrayBuffer ||
+      ArrayBuffer.isView(payload)
+    ) {
+      return {
+        roomId: null,
+        sourceSocketId: null,
+        packet: payload,
+      };
+    }
+
+    if (
+      !payload ||
+      typeof payload !== "object"
+    ) {
+      return {
+        roomId: null,
+        sourceSocketId: null,
+        packet: null,
+      };
+    }
+
+    return {
+      roomId:
+        payload.roomId ?? null,
+
+      /*
+       * El backend deberÃ­a enviar sourceSocketId.
+       * Se acepta fromSocketId para tolerar implementaciones
+       * anteriores o variantes del relay-store.
+       */
+      sourceSocketId:
+        payload.sourceSocketId ??
+        payload.fromSocketId ??
+        null,
+
+      packet:
+        payload.packet ?? null,
+    };
+  }
+
+  function handleRelayPacket(
+    payload
+  ) {
+    if (
+      relayState !==
+      RELAY_STATE.OPEN
+    ) {
+      return;
+    }
+
+    const incoming =
+      getIncomingPacket(payload);
+
+    if (
+      incoming.roomId &&
+      incoming.roomId !== roomId
+    ) {
+      return;
+    }
+
+    /*
+     * Cada TransportManager del host representa a un cliente.
+     * Por eso solo debe aceptar paquetes provenientes del
+     * socket remoto asociado.
+     */
+    if (
+      isHost &&
+      peerSocketId &&
+      incoming.sourceSocketId &&
+      incoming.sourceSocketId !==
+        peerSocketId
+    ) {
+      return;
+    }
+
+    const buffer =
+      normalizePacket(
+        incoming.packet
+      );
+
+    if (!buffer) {
+      stats.packetsDropped += 1;
+
+      emitError(
+        "Se recibiÃ³ un paquete relay con formato invÃ¡lido."
+      );
+
+      return;
+    }
+
+    if (buffer.length === 0) {
+      stats.packetsDropped += 1;
+
+      return;
+    }
+
+    stats.packetsReceived += 1;
+    stats.bytesReceived +=
+      buffer.length;
+
+    stats.lastPacketReceivedAt =
+      Date.now();
+
+    if (!packetHandler) {
+      return;
+    }
+
+    try {
+      packetHandler(
+        buffer,
+        {
+          roomId,
+          sourceSocketId:
+            incoming.sourceSocketId,
+        }
+      );
+    } catch (error) {
+      emitError(error);
+    }
+  }
+
+  function handleRateLimited(
+    payload = {}
+  ) {
+    if (
+      payload.roomId &&
+      payload.roomId !== roomId
+    ) {
+      return;
+    }
+
+    stats.rateLimitNotices += 1;
+
+    try {
+      rateLimitedHandler?.({
+        roomId,
+
+        limitBytesPerSecond:
+          payload
+            .limitBytesPerSecond ??
+          null,
+      });
+    } catch {}
+
+    emitError(
+      payload
+        .limitBytesPerSecond
+        ? `El relay superÃ³ el lÃ­mite de ${payload.limitBytesPerSecond} bytes por segundo.`
+        : "El relay superÃ³ el lÃ­mite de trÃ¡fico permitido."
+    );
+  }
+
+  function handleSocketDisconnect(
+    reasonValue
+  ) {
+    if (manuallyClosed) {
+      return;
+    }
+
+    markDisconnected(
+      reasonValue ||
+        "socket-disconnected"
+    );
+  }
+
+  function handleSocketConnectError(
+    error
+  ) {
+    emitError(error);
+
+    /*
+     * Si aÃºn intentÃ¡bamos activarlo, queda en error.
+     * Si ya estaba abierto, Socket.IO puede reconectarse,
+     * pero deberÃ¡ reactivarse expresamente mÃ¡s adelante.
+     */
+    if (
+      relayState ===
+        RELAY_STATE.CONNECTING ||
+      relayState ===
+        RELAY_STATE.OPEN
+    ) {
+      setState(
+        RELAY_STATE.ERROR
+      );
+    }
+  }
+
+  function bindListeners() {
+    if (listenersBound) {
+      return;
+    }
+
+    socket.on(
+      "game-relay-packet",
+      handleRelayPacket
+    );
+
+    socket.on(
+      "game-relay-rate-limited",
+      handleRateLimited
+    );
+
+    socket.on(
+      "disconnect",
+      handleSocketDisconnect
+    );
+
+    socket.on(
+      "connect_error",
+      handleSocketConnectError
+    );
+
+    listenersBound = true;
+  }
+
+  function unbindListeners() {
+    if (!listenersBound) {
+      return;
+    }
+
+    socket.off(
+      "game-relay-packet",
+      handleRelayPacket
+    );
+
+    socket.off(
+      "game-relay-rate-limited",
+      handleRateLimited
+    );
+
+    socket.off(
+      "disconnect",
+      handleSocketDisconnect
+    );
+
+    socket.off(
+      "connect_error",
+      handleSocketConnectError
+    );
+
+    listenersBound = false;
+  }
+
+  function connect() {
+    if (
+      relayState ===
+        RELAY_STATE.CONNECTING ||
+      relayState ===
+        RELAY_STATE.OPEN
+    ) {
+      return false;
+    }
+
+    manuallyClosed = false;
+
+    setState(
+      RELAY_STATE.CONNECTING
+    );
+
+    bindListeners();
+
+    try {
+      socket.emit(
+        "game-relay-enable",
+        {
+          roomId,
+          reason,
+        },
+        (ack = {}) => {
+          if (
+            !ack ||
+            ack.success !== true
+          ) {
+            setState(
+              RELAY_STATE.ERROR
+            );
+
+            emitError(
+              ack?.error ||
+                "El servidor rechazÃ³ la activaciÃ³n del relay."
+            );
+
+            return;
+          }
+
+          if (
+            relayState ===
+            RELAY_STATE.CLOSED
+          ) {
+            return;
+          }
+
+          setState(
+            RELAY_STATE.OPEN
+          );
+
+          stats.connectedAt =
+            Date.now();
+
+          stats.disconnectedAt =
+            null;
+
+          try {
+            connectedHandler?.(
+              ack
+            );
+          } catch {}
+        }
+      );
+    } catch (error) {
+      setState(
+        RELAY_STATE.ERROR
+      );
+
+      emitError(error);
+
+      return false;
+    }
+
+    return true;
+  }
+
+  function disconnect() {
+    if (
+      relayState ===
+        RELAY_STATE.CLOSED
+    ) {
+      unbindListeners();
+
+      return false;
+    }
+
+    manuallyClosed = true;
+
+    try {
+      socket.emit(
+        "game-relay-disable",
+        {
+          roomId,
+        },
+        () => {}
+      );
+    } catch {}
+
+    unbindListeners();
+
+    setState(
+      RELAY_STATE.CLOSED
+    );
+
+    stats.disconnectedAt =
+      Date.now();
+
+    return true;
+  }
+
+  function send(packet) {
+    if (
+      relayState !==
+      RELAY_STATE.OPEN
+    ) {
+      return false;
+    }
+
+    const buffer =
+      normalizePacket(packet);
+
+    if (!buffer) {
+      stats.packetsDropped += 1;
+
+      emitError(
+        "send() requiere un Buffer o una vista binaria vÃ¡lida."
+      );
+
+      return false;
+    }
+
+    if (buffer.length === 0) {
+      stats.packetsDropped += 1;
+
+      return false;
+    }
+
+    const payload = {
+      roomId,
+      packet: buffer,
+    };
+
+    /*
+     * Solo el host debe seleccionar explÃ­citamente el
+     * cliente destinatario. Los clientes siempre envÃ­an
+     * al host segÃºn la lÃ³gica del backend.
+     */
+    if (
+      isHost &&
+      peerSocketId
+    ) {
+      payload.toSocketId =
+        peerSocketId;
+    }
+
+    try {
+      socket.emit(
+        "game-relay-packet",
+        payload
+      );
+    } catch (error) {
+      stats.packetsDropped += 1;
+      stats.bytesDropped +=
+        buffer.length;
+
+      emitError(error);
+
+      return false;
+    }
+
+    stats.packetsSent += 1;
+    stats.bytesSent +=
+      buffer.length;
+
+    stats.lastPacketSentAt =
+      Date.now();
+
+    return true;
+  }
+
+  function isOpen() {
+    return (
+      relayState ===
+      RELAY_STATE.OPEN
+    );
+  }
+
+  function getState() {
+    return {
+      roomId,
+      isHost,
+      peerSocketId,
+
+      state: relayState,
+
+      connected:
+        relayState ===
+        RELAY_STATE.OPEN,
+
+      socketConnected:
+        Boolean(
+          socket.connected
+        ),
+
+      stats: {
+        ...stats,
+      },
+    };
+  }
+
+  /*
+   * Alias Ãºtil para TransportManager, que suele cerrar
+   * transportes mediante close().
+   */
+  function close() {
+    return disconnect();
+  }
+
+  return {
+    connect,
+    disconnect,
+    close,
+
+    send,
+    isOpen,
+    getState,
+  };
+}
+
+module.exports = {
+  RELAY_STATE,
+  createSocketRelayTransport,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\state.js
+==========================================================================================
+
+// electron/bridge/quake3/state.js
+
+function createInitialState() {
+  return {
+    signalingSocket: null,
+
+    roomId: null,
+    isHost: false,
+    hostIP: null,
+
+    clients: new Map(),
+
+    peer: null,
+    channel: null,
+    udpTransport: null,
+    transportManager: null,
+    relayTransport: null,
+    switchingToRelay: false,
+
+    pendingCandidates: [],
+    remoteDescSet: false,
+
+    clientPort: null,
+
+    iceConnectionState: null,
+    iceTimeoutHandle: null,
+
+    gatheredCandidateTypes: new Set(),
+  };
+}
+
+module.exports = {
+  createInitialState,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\transport.js
+==========================================================================================
+
+// electron/bridge/quake3/transport.js
+
+let deps = null;
+
+function initializeTransport(injectedDeps) {
+  deps = injectedDeps;
+}
+
+/*
+ * Crea (una Ãºnica vez) el TransportManager y el UDP proxy
+ * de un cliente del host. El UDP debe existir aunque el
+ * DataChannel nunca llegue a abrirse, porque Relay depende
+ * de Ã©l para poder alcanzar Quake III.
+ */
+function ensureHostTransportResources(
+  socketId
+) {
+  const state = deps.getState();
+
+  const client =
+    state.clients.get(socketId);
+
+  if (!client) {
+    return null;
+  }
+
+  client.transportManager ||=
+    deps.createTransportManager({
+      label: `host-${socketId}`,
+      onPacket: (buffer) => {
+        client.udpTransport
+          ?.sendToGame(buffer);
+      },
+    });
+
+  if (client.clientPort) {
+    client.udpTransport ||=
+      deps.createHostUDPProxy({
+        socketId,
+        clientPort:
+          client.clientPort,
+        onGamePacket: (buffer) =>
+          client.transportManager
+            ?.send(buffer),
+      });
+  }
+
+  return client;
+}
+
+/*
+ * Igual que la anterior, pero para el cliente local.
+ */
+function ensureClientTransportResources() {
+  const state = deps.getState();
+
+  state.transportManager ||=
+    deps.createTransportManager({
+      label: "client",
+      onPacket: (buffer) => {
+        state.udpTransport
+          ?.sendToGame(buffer);
+      },
+    });
+
+  if (state.clientPort) {
+    state.udpTransport ||=
+      deps.createClientUDPTransport({
+        localPort:
+          state.clientPort,
+        onGamePacket: (buffer) =>
+          state.transportManager
+            ?.send(buffer),
+      });
+  }
+
+  return state;
+}
+
+module.exports = {
+  initializeTransport,
+  ensureHostTransportResources,
+  ensureClientTransportResources,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\transport-manager.js
+==========================================================================================
+
+// electron/bridge/quake3/transport-manager.js
+
+const TRANSPORT_MODE = Object.freeze({
+  NONE: "none",
+  WEBRTC: "webrtc",
+  RELAY: "relay",
+});
+
+function normalizePacket(packet) {
+  if (Buffer.isBuffer(packet)) {
+    return packet;
+  }
+
+  if (packet instanceof ArrayBuffer) {
+    return Buffer.from(packet);
+  }
+
+  if (ArrayBuffer.isView(packet)) {
+    return Buffer.from(
+      packet.buffer,
+      packet.byteOffset,
+      packet.byteLength
+    );
+  }
+
+  try {
+    return Buffer.from(packet);
+  } catch {
+    return null;
+  }
+}
+
+function createTransportManager({
+  label = "transport",
+  onPacket = null,
+  onModeChange = null,
+} = {}) {
+  let mode = TRANSPORT_MODE.NONE;
+
+  let webrtcChannel = null;
+  let relayTransport = null;
+
+  let packetHandler =
+    typeof onPacket === "function"
+      ? onPacket
+      : null;
+
+  let modeChangeHandler =
+    typeof onModeChange === "function"
+      ? onModeChange
+      : null;
+
+  let closed = false;
+
+  const stats = {
+    packetsSent: 0,
+    bytesSent: 0,
+
+    packetsReceived: 0,
+    bytesReceived: 0,
+
+    packetsDropped: 0,
+    bytesDropped: 0,
+
+    lastPacketSentAt: null,
+    lastPacketReceivedAt: null,
+
+    firstPacketSentAt: null,
+    firstPacketReceivedAt: null,
+  };
+
+  function log(...args) {
+    console.log(
+      `[Bridge-Q3-Transport:${label}]`,
+      ...args
+    );
+  }
+
+  function warn(...args) {
+    console.warn(
+      `[Bridge-Q3-Transport:${label}]`,
+      ...args
+    );
+  }
+
+  function setMode(nextMode) {
+    if (
+      !Object.values(
+        TRANSPORT_MODE
+      ).includes(nextMode)
+    ) {
+      throw new Error(
+        `Modo de transporte invÃ¡lido: ${nextMode}`
+      );
+    }
+
+    if (mode === nextMode) {
+      return;
+    }
+
+    const previousMode = mode;
+
+    mode = nextMode;
+
+    log(
+      `Modo cambiado: ${previousMode} -> ${nextMode}`
+    );
+
+    try {
+      modeChangeHandler?.({
+        previousMode,
+        mode: nextMode,
+      });
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] Error en onModeChange:`,
+        error.message
+      );
+    }
+  }
+
+  function isWebRTCOpen() {
+    try {
+      return Boolean(
+        webrtcChannel?.isOpen?.()
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isRelayOpen() {
+    try {
+      return Boolean(
+        relayTransport?.isOpen?.()
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function connectRelayIfNeeded() {
+    if (
+      !relayTransport ||
+      isRelayOpen()
+    ) {
+      return isRelayOpen();
+    }
+
+    try {
+      relayTransport.connect?.();
+
+      return isRelayOpen();
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] Error activando relay:`,
+        error.message
+      );
+
+      return false;
+    }
+  }
+
+  function registerDroppedPacket(
+    packetLength = 0
+  ) {
+    stats.packetsDropped += 1;
+
+    stats.bytesDropped += Math.max(
+      0,
+      Number(packetLength) || 0
+    );
+  }
+
+  function receive(
+    packet,
+    source,
+    metadata = {}
+  ) {
+    if (closed) {
+      return false;
+    }
+
+    const buffer =
+      normalizePacket(packet);
+
+    if (!buffer) {
+      registerDroppedPacket();
+
+      warn(
+        `Paquete remoto invÃ¡lido desde ${source}`
+      );
+
+      return false;
+    }
+
+    stats.packetsReceived += 1;
+    stats.bytesReceived +=
+      buffer.length;
+
+    stats.lastPacketReceivedAt =
+      Date.now();
+
+    if (
+      !stats.firstPacketReceivedAt
+    ) {
+      stats.firstPacketReceivedAt =
+        stats.lastPacketReceivedAt;
+
+      log(
+        `Primer paquete recibido mediante ${source}: ${buffer.length} bytes`
+      );
+    }
+
+    if (!packetHandler) {
+      registerDroppedPacket(
+        buffer.length
+      );
+
+      warn(
+        `No existe onPacket para procesar ${buffer.length} bytes`
+      );
+
+      return false;
+    }
+
+    try {
+      const result =
+        packetHandler(
+          buffer,
+          {
+            source,
+            mode,
+            ...metadata,
+          }
+        );
+
+      return result !== false;
+    } catch (error) {
+      registerDroppedPacket(
+        buffer.length
+      );
+
+      console.error(
+        `[Bridge-Q3-Transport:${label}] Error procesando paquete remoto:`,
+        error.message
+      );
+
+      return false;
+    }
+  }
+
+  function handleWebRTCMessage(
+    packet,
+    metadata = {}
+  ) {
+    return receive(
+      packet,
+      TRANSPORT_MODE.WEBRTC,
+      metadata
+    );
+  }
+
+  function handleRelayMessage(
+    packet,
+    metadata = {}
+  ) {
+    return receive(
+      packet,
+      TRANSPORT_MODE.RELAY,
+      metadata
+    );
+  }
+
+  function useWebRTC(channel) {
+    if (closed) {
+      return false;
+    }
+
+    if (!channel) {
+      warn(
+        "No se proporcionÃ³ un DataChannel."
+      );
+
+      return false;
+    }
+
+    webrtcChannel = channel;
+
+    setMode(
+      TRANSPORT_MODE.WEBRTC
+    );
+
+    return true;
+  }
+
+  function useRelay(transport) {
+    if (closed) {
+      return false;
+    }
+
+    if (!transport) {
+      warn(
+        "No se proporcionÃ³ un transporte relay."
+      );
+
+      return false;
+    }
+
+    if (
+      relayTransport &&
+      relayTransport !== transport
+    ) {
+      try {
+        relayTransport.close?.();
+      } catch {}
+    }
+
+    relayTransport = transport;
+
+    /*
+     * La activaciÃ³n mediante Socket.IO es asÃ­ncrona.
+     * connect() inicia el proceso; isRelayOpen() puede
+     * seguir siendo false hasta recibir el ACK.
+     */
+    connectRelayIfNeeded();
+
+    setMode(
+      TRANSPORT_MODE.RELAY
+    );
+
+    return true;
+  }
+
+  function disableWebRTC() {
+    webrtcChannel = null;
+
+    if (
+      mode ===
+      TRANSPORT_MODE.WEBRTC
+    ) {
+      if (isRelayOpen()) {
+        setMode(
+          TRANSPORT_MODE.RELAY
+        );
+      } else {
+        setMode(
+          TRANSPORT_MODE.NONE
+        );
+      }
+    }
+  }
+
+  function disableRelay() {
+    try {
+      relayTransport?.close?.();
+    } catch {}
+
+    relayTransport = null;
+
+    if (
+      mode ===
+      TRANSPORT_MODE.RELAY
+    ) {
+      if (isWebRTCOpen()) {
+        setMode(
+          TRANSPORT_MODE.WEBRTC
+        );
+      } else {
+        setMode(
+          TRANSPORT_MODE.NONE
+        );
+      }
+    }
+  }
+
+  function sendViaWebRTC(buffer) {
+    if (!isWebRTCOpen()) {
+      return false;
+    }
+
+    webrtcChannel.sendMessageBinary(
+      buffer
+    );
+
+    return true;
+  }
+
+  function sendViaRelay(buffer) {
+    if (!relayTransport) {
+      return false;
+    }
+
+    if (!isRelayOpen()) {
+      /*
+       * Inicia o reintenta la activaciÃ³n del relay.
+       * Este paquete puede perderse mientras el ACK
+       * todavÃ­a estÃ¡ pendiente; no se implementa cola
+       * dentro del TransportManager.
+       */
+      connectRelayIfNeeded();
+
+      if (!isRelayOpen()) {
+        return false;
+      }
+    }
+
+    return Boolean(
+      relayTransport.send(
+        buffer
+      )
+    );
+  }
+
+  function send(packet) {
+    if (closed) {
+      return false;
+    }
+
+    const buffer =
+      normalizePacket(packet);
+
+    if (!buffer) {
+      registerDroppedPacket();
+
+      warn(
+        "No se pudo normalizar el paquete local."
+      );
+
+      return false;
+    }
+
+    let sent = false;
+    let usedMode = mode;
+
+    try {
+      if (
+        mode ===
+        TRANSPORT_MODE.WEBRTC
+      ) {
+        sent =
+          sendViaWebRTC(buffer);
+
+        if (!sent) {
+          sent =
+            sendViaRelay(buffer);
+
+          if (sent) {
+            setMode(
+              TRANSPORT_MODE.RELAY
+            );
+
+            usedMode =
+              TRANSPORT_MODE.RELAY;
+          }
+        }
+      } else if (
+        mode ===
+        TRANSPORT_MODE.RELAY
+      ) {
+        sent =
+          sendViaRelay(buffer);
+
+        if (!sent) {
+          sent =
+            sendViaWebRTC(buffer);
+
+          if (sent) {
+            setMode(
+              TRANSPORT_MODE.WEBRTC
+            );
+
+            usedMode =
+              TRANSPORT_MODE.WEBRTC;
+          }
+        }
+      } else {
+        sent =
+          sendViaWebRTC(buffer);
+
+        if (sent) {
+          setMode(
+            TRANSPORT_MODE.WEBRTC
+          );
+
+          usedMode =
+            TRANSPORT_MODE.WEBRTC;
+        } else {
+          sent =
+            sendViaRelay(buffer);
+
+          if (sent) {
+            setMode(
+              TRANSPORT_MODE.RELAY
+            );
+
+            usedMode =
+              TRANSPORT_MODE.RELAY;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] Error enviando mediante ${mode}:`,
+        error.message
+      );
+
+      sent = false;
+    }
+
+    if (!sent) {
+      registerDroppedPacket(
+        buffer.length
+      );
+
+      return false;
+    }
+
+    stats.packetsSent += 1;
+    stats.bytesSent +=
+      buffer.length;
+
+    stats.lastPacketSentAt =
+      Date.now();
+
+    if (
+      !stats.firstPacketSentAt
+    ) {
+      stats.firstPacketSentAt =
+        stats.lastPacketSentAt;
+
+      log(
+        `Primer paquete enviado mediante ${usedMode}: ${buffer.length} bytes`
+      );
+    }
+
+    return true;
+  }
+
+  function setPacketHandler(
+    handler
+  ) {
+    packetHandler =
+      typeof handler ===
+      "function"
+        ? handler
+        : null;
+  }
+
+  function setModeChangeHandler(
+    handler
+  ) {
+    modeChangeHandler =
+      typeof handler ===
+      "function"
+        ? handler
+        : null;
+  }
+
+  function getState() {
+    let relayState = null;
+
+    try {
+      relayState =
+        relayTransport
+          ?.getState?.() ??
+        null;
+    } catch {
+      relayState = null;
+    }
+
+    return {
+      label,
+      mode,
+      closed,
+
+      webrtcAvailable:
+        isWebRTCOpen(),
+
+      relayAvailable:
+        isRelayOpen(),
+
+      relayState,
+
+      stats: {
+        ...stats,
+      },
+    };
+  }
+
+  function close() {
+    if (closed) {
+      return;
+    }
+
+    closed = true;
+
+    try {
+      relayTransport?.close?.();
+    } catch {}
+
+    webrtcChannel = null;
+    relayTransport = null;
+
+    packetHandler = null;
+    modeChangeHandler = null;
+
+    mode =
+      TRANSPORT_MODE.NONE;
+
+    log(
+      "Transport manager cerrado."
+    );
+  }
+
+  return {
+    send,
+
+    useWebRTC,
+    useRelay,
+
+    disableWebRTC,
+    disableRelay,
+
+    handleWebRTCMessage,
+    handleRelayMessage,
+
+    setPacketHandler,
+    setModeChangeHandler,
+
+    isWebRTCOpen,
+    isRelayOpen,
+
+    getMode: () => mode,
+
+    getState,
+
+    close,
+  };
+}
+
+module.exports = {
+  TRANSPORT_MODE,
+  createTransportManager,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\core\udp-transport.js
+==========================================================================================
+
+// electron/bridge/core/udp-transport.js
+
+const dgram = require("dgram");
+
+function normalizeMessage(message) {
+  return Buffer.isBuffer(message)
+    ? message
+    : Buffer.from(message);
+}
+
+function createUDPTransportFactory({
+  gamePort,
+  gameHost = "127.0.0.1",
+  bindHost = "127.0.0.1",
+  debug = false,
+  logPrefix = "Game-UDP",
+  gameName = "juego",
+} = {}) {
+  if (
+    !Number.isInteger(gamePort) ||
+    gamePort < 1 ||
+    gamePort > 65535
+  ) {
+    throw new Error(
+      `[${logPrefix}] gamePort debe ser un puerto UDP vÃ¡lido.`
+    );
+  }
+
+  function debugLog(...args) {
+    if (debug) {
+      console.log(
+        `[${logPrefix}]`,
+        ...args
+      );
+    }
+  }
+
+  function safelyForwardGamePacket({
+    message,
+    onGamePacket,
+    label,
+  }) {
+    if (
+      typeof onGamePacket !==
+      "function"
+    ) {
+      debugLog(
+        `${label}: no existe callback onGamePacket`
+      );
+
+      return false;
+    }
+
+    try {
+      return (
+        onGamePacket(
+          Buffer.from(message)
+        ) !== false
+      );
+    } catch (error) {
+      console.error(
+        `[${logPrefix}] ${label}:`,
+        error.message
+      );
+
+      return false;
+    }
+  }
+
+  function createHostUDPProxy({
+    socketId,
+    clientPort,
+    onGamePacket,
+  }) {
+    const socket =
+      dgram.createSocket("udp4");
+
+    let closed = false;
+
+    socket.on("error", (error) => {
+      console.error(
+        `[${logPrefix}] Error proxy host (${socketId}):`,
+        error.message
+      );
+    });
+
+    socket.on(
+      "message",
+      (message, remoteInfo) => {
+        debugLog(
+          `Host recibiÃ³ ${message.length} bytes`,
+          `desde ${remoteInfo.address}:${remoteInfo.port}`
+        );
+
+        const forwarded =
+          safelyForwardGamePacket({
+            message,
+            onGamePacket,
+            label:
+              `Host â†’ transporte remoto (${socketId})`,
+          });
+
+        if (!forwarded) {
+          debugLog(
+            `Paquete host descartado para ${socketId}: ${message.length} bytes`
+          );
+        }
+      }
+    );
+
+    socket.bind(
+      0,
+      bindHost,
+      () => {
+        const address =
+          socket.address();
+
+        console.log(
+          `[${logPrefix}] Proxy host ${socketId} escuchando en ${bindHost}:${address.port}; puerto virtual cliente ${clientPort}`
+        );
+      }
+    );
+
+    return {
+      socket,
+
+      sendToGame(message) {
+        if (closed) {
+          return false;
+        }
+
+        const buffer =
+          normalizeMessage(message);
+
+        socket.send(
+          buffer,
+          0,
+          buffer.length,
+          gamePort,
+          gameHost,
+          (error) => {
+            if (error) {
+              console.error(
+                `[${logPrefix}] Remoto â†’ ${gameName} host:`,
+                error.message
+              );
+            } else {
+              debugLog(
+                `Transporte remoto â†’ host ${gameName}: ${buffer.length} bytes`
+              );
+            }
+          }
+        );
+
+        return true;
+      },
+
+      getLocalPort() {
+        try {
+          return socket.address().port;
+        } catch {
+          return null;
+        }
+      },
+
+      isOpen() {
+        return !closed;
+      },
+
+      close() {
+        if (closed) {
+          return;
+        }
+
+        closed = true;
+
+        try {
+          socket.close();
+        } catch {}
+      },
+    };
+  }
+
+  function createClientUDPTransport({
+    localPort,
+    onGamePacket,
+  }) {
+    const socket =
+      dgram.createSocket("udp4");
+
+    let closed = false;
+
+    socket.on("error", (error) => {
+      console.error(
+        `[${logPrefix}] Error UDP cliente:`,
+        error.message
+      );
+    });
+
+    socket.on(
+      "message",
+      (message, remoteInfo) => {
+        debugLog(
+          `Cliente recibiÃ³ ${message.length} bytes`,
+          `desde ${remoteInfo.address}:${remoteInfo.port}`
+        );
+
+        const forwarded =
+          safelyForwardGamePacket({
+            message,
+            onGamePacket,
+            label:
+              "Cliente â†’ transporte remoto",
+          });
+
+        if (!forwarded) {
+          debugLog(
+            `Paquete cliente descartado: ${message.length} bytes`
+          );
+        }
+      }
+    );
+
+    socket.bind(
+      localPort,
+      bindHost,
+      () => {
+        console.log(
+          `[${logPrefix}] Cliente escuchando en ${bindHost}:${localPort}`
+        );
+      }
+    );
+
+    return {
+      socket,
+
+      sendToGame(message) {
+        if (closed) {
+          return false;
+        }
+
+        const buffer =
+          normalizeMessage(message);
+
+        socket.send(
+          buffer,
+          0,
+          buffer.length,
+          gamePort,
+          gameHost,
+          (error) => {
+            if (error) {
+              console.error(
+                `[${logPrefix}] Remoto â†’ ${gameName} cliente:`,
+                error.message
+              );
+            } else {
+              debugLog(
+                `Transporte remoto â†’ cliente ${gameName}: ${buffer.length} bytes`
+              );
+            }
+          }
+        );
+
+        return true;
+      },
+
+      getLocalPort() {
+        try {
+          return socket.address().port;
+        } catch {
+          return null;
+        }
+      },
+
+      isOpen() {
+        return !closed;
+      },
+
+      close() {
+        if (closed) {
+          return;
+        }
+
+        closed = true;
+
+        try {
+          socket.close();
+        } catch {}
+      },
+    };
+  }
+
+  return {
+    createHostUDPProxy,
+    createClientUDPTransport,
+  };
+}
+
+module.exports = {
+  createUDPTransportFactory,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\profiles\carmageddon2.js
+==========================================================================================
+
+// electron/bridge/profiles/carmageddon2.js
+
+module.exports = require("../relay-c2");
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\profiles\cs16.js
+==========================================================================================
+
+// electron/bridge/profiles/cs16.js
+
+module.exports = require("../relay-cs");
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\profiles\quake3.js
+==========================================================================================
+
+// electron/bridge/profiles/quake3.js
+
+module.exports = require("../quake3");
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\profiles\ut99.js
+==========================================================================================
+
+// electron/bridge/profiles/ut99.js
+
+module.exports = require("../relay-ut99");
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\channel-handlers.js
+==========================================================================================
+
+// electron/bridge/quake3/channel-handlers.js
+
+let deps = null;
+
+function initializeChannelHandlers(injectedDeps) {
+  deps = injectedDeps;
+}
+
+function handleChannelMessage(
+  message,
+  socketId = null
+) {
+  const state = deps.getState();
+
+  const buffer =
+    deps.normalizeMessage(message);
+
+  if (deps.isKeepAlive(buffer)) {
+    return;
+  }
+
+  if (state.isHost) {
+    const client =
+      state.clients.get(socketId);
+
+    client?.transportManager
+      ?.handleWebRTCMessage(buffer);
+
+    return;
+  }
+
+  state.transportManager
+    ?.handleWebRTCMessage(buffer);
+}
+
+function onHostChannelOpen(
+  socketId,
+  channel
+) {
+  const state = deps.getState();
+
+  const client =
+    deps.ensureHostTransportResources(
+      socketId
+    );
+
+  if (!client) {
+    return;
+  }
+
+  console.log(
+    `[Bridge-Q3] DataChannel host abierto para ${socketId}`
+  );
+
+  client.channel = channel;
+
+  client.transportManager.useWebRTC(
+    channel
+  );
+
+  /*
+   * WebRTC volviÃ³ a estar disponible: disableRelay() ya
+   * cierra el relayTransport internamente (una sola vez).
+   * AquÃ­ solo soltamos la referencia local, sin volver a
+   * llamar close().
+   */
+  if (client.relayTransport) {
+    client.transportManager.disableRelay();
+    client.relayTransport = null;
+  }
+
+  client.switchingToRelay = false;
+
+  deps.startKeepAlive(
+    socketId,
+    channel
+  );
+
+  const connected =
+    [...state.clients.values()].filter(
+      (item) =>
+        item.transportManager
+          ?.isWebRTCOpen() ||
+        item.transportManager
+          ?.isRelayOpen()
+    ).length;
+
+  deps.sendStatus(
+    `Â¡${connected} jugador(es) conectado(s)! Listos para jugar.`
+  );
+}
+
+function onClientChannelOpen() {
+  const state = deps.getState();
+
+  console.log(
+    `[Bridge-Q3] DataChannel cliente abierto; puerto ${state.clientPort}`
+  );
+
+  if (!state.clientPort) {
+    deps.sendStatus(
+      "Error: no se recibiÃ³ el puerto local del cliente."
+    );
+
+    return;
+  }
+
+  deps.ensureClientTransportResources();
+
+  state.transportManager.useWebRTC(
+    state.channel
+  );
+
+  /*
+   * Igual que en el host: disableRelay() ya cierra el
+   * relayTransport internamente. Solo soltamos la
+   * referencia local.
+   */
+  if (state.relayTransport) {
+    state.transportManager.disableRelay();
+    state.relayTransport = null;
+  }
+
+  state.switchingToRelay = false;
+
+  deps.startKeepAlive(
+    "self",
+    state.channel
+  );
+
+  deps.sendStatus(
+    "Â¡ConexiÃ³n P2P establecida! Listos para jugar."
+  );
+}
+
+module.exports = {
+  initializeChannelHandlers,
+  handleChannelMessage,
+  onHostChannelOpen,
+  onClientChannelOpen,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\cleanup.js
+==========================================================================================
+
+// electron/bridge/quake3/cleanup.js
+
+let deps = null;
+
+function initializeCleanup(injectedDeps) {
+  deps = injectedDeps;
+}
+
+/*
+ * Cierra WebRTC (channel + peer) de un cliente del host de
+ * forma segura. Se usa Ãºnicamente DESPUÃ‰S de haber iniciado
+ * Relay con Ã©xito, nunca antes.
+ */
+function closeHostWebRTCResources(
+  socketId,
+  client
+) {
+  deps.stopKeepAlive(socketId);
+
+  try {
+    client.channel?.close();
+  } catch {}
+
+  try {
+    client.peer?.close();
+  } catch {}
+
+  client.channel = null;
+  client.peer = null;
+  client.remoteDescSet = false;
+  client.pendingCandidates = [];
+}
+
+/*
+ * Igual que closeHostWebRTCResources(), pero para el
+ * cliente local.
+ */
+function closeClientWebRTCResources() {
+  const state = deps.getState();
+
+  deps.stopKeepAlive("self");
+
+  try {
+    state.channel?.close();
+  } catch {}
+
+  try {
+    state.peer?.close();
+  } catch {}
+
+  state.channel = null;
+  state.peer = null;
+  state.remoteDescSet = false;
+  state.pendingCandidates = [];
+}
+
+function clearClientResources(
+  socketId,
+  client
+) {
+  deps.clearClientTimeout(client);
+  deps.stopKeepAlive(socketId);
+
+  /*
+   * Un solo propietario cierra el relay: si existe
+   * TransportManager, su close() ya cierra el relay
+   * internamente (relayTransport.close() emite
+   * game-relay-disable). Solo cerramos relayTransport
+   * directamente cuando no hay TransportManager.
+   */
+  if (client?.transportManager) {
+    try {
+      client.transportManager.close();
+    } catch {}
+  } else if (client?.relayTransport) {
+    try {
+      client.relayTransport.close?.();
+    } catch {}
+  }
+
+  if (client) {
+    client.relayTransport = null;
+    client.switchingToRelay = false;
+  }
+
+  try {
+    client?.udpTransport?.close();
+  } catch {}
+
+  try {
+    client?.channel?.close();
+  } catch {}
+
+  try {
+    client?.peer?.close();
+  } catch {}
+}
+
+function cleanupClient(socketId) {
+  const state = deps.getState();
+
+  const client =
+    state.clients.get(socketId);
+
+  if (!client) {
+    return;
+  }
+
+  clearClientResources(
+    socketId,
+    client
+  );
+
+  state.clients.delete(socketId);
+}
+
+module.exports = {
+  initializeCleanup,
+  closeHostWebRTCResources,
+  closeClientWebRTCResources,
+  clearClientResources,
+  cleanupClient,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\index.js
+==========================================================================================
+
+// electron/bridge/quake3/index.js
+
+const {
+  io: socketClient,
+} = require("socket.io-client");
+
+const {
+  createSignalingSession,
+} = require("../core/signaling-session");
+
+const {
+  createGameNetworkEngine,
+} = require("../core/game-network-engine");
+
+const {
+  SIGNALING_URL,
+  ICE_CONNECT_TIMEOUT_MS,
+  buildIceServers,
+} = require("../core/engine-config");
+
+const {
+  sendStatus,
+} = require("./status");
+
+const {
+  getCandidateType,
+  describeCandidateTypes,
+  flushCandidateQueue,
+  logGatheringResult,
+} = require("../core/ice-utils");
+
+const {
+  createUDPTransportFactory,
+} = require("../core/udp-transport");
+
+const quake3Profile =
+  require("./profile");
+
+const {
+  createHostUDPProxy,
+  createClientUDPTransport,
+} = createUDPTransportFactory({
+  gamePort: quake3Profile.gamePort,
+  debug: quake3Profile.debugUDP,
+  logPrefix: "Bridge-Q3-UDP",
+  gameName: quake3Profile.name,
+});
+
+const {
+  createTransportManager,
+} = require("../core/transport-manager");
+
+const {
+  createSocketRelayTransport,
+} = require("../core/socket-relay-transport");
+
+const {
+  createInitialState,
+} = require("../core/state");
+
+const engine =
+  createGameNetworkEngine({
+    name: "Bridge-Q3",
+    createState:
+      createInitialState,
+  });
+
+let state =
+  engine.getMutableState();
+
+const {
+  getLocalIP,
+  getNextClientPort,
+} = require("./network-utils");
+
+const {
+  normalizeMessage,
+  isKeepAlive,
+  startKeepAlive,
+  stopKeepAlive,
+  clearAllKeepAlives,
+} = require("./keepalive");
+
+const {
+  initializeWatchdog,
+  createHostWatchdog,
+  createClientWatchdog,
+} = require("./watchdog");
+
+const {
+  initializeCleanup,
+  closeHostWebRTCResources,
+  closeClientWebRTCResources,
+  clearClientResources,
+  cleanupClient,
+} = require("./cleanup");
+
+const {
+  initializeChannelHandlers,
+  handleChannelMessage,
+  onHostChannelOpen,
+  onClientChannelOpen,
+} = require("./channel-handlers");
+
+const {
+  initializeTransport,
+  ensureHostTransportResources,
+  ensureClientTransportResources,
+} = require("../core/transport");
+
+const {
+  initializeRelay,
+  isRelayActiveOrConnecting,
+  activateHostRelay,
+  activateClientRelay,
+} = require("./relay");
+
+const {
+  configureSignaling,
+} = require("../core/signaling");
+
+const {
+  peer,
+} = require("../core/peer");
+
+function clearClientTimeout(client) {
+  if (!client?.iceTimeoutHandle) {
+    return;
+  }
+  clearTimeout(client.iceTimeoutHandle);
+  client.iceTimeoutHandle = null;
+}
+
+initializeCleanup({
+  getState: () => state,
+  stopKeepAlive,
+  clearClientTimeout,
+});
+
+function resetBridge() {
+  clearAllKeepAlives();
+
+  if (state.iceTimeoutHandle) {
+    clearTimeout(
+      state.iceTimeoutHandle
+    );
+  }
+
+  try {
+    if (
+      state.signalingSocket &&
+      state.roomId
+    ) {
+      state.signalingSocket.emit(
+        "webrtc-leave",
+        {
+          roomId: state.roomId,
+        }
+      );
+    }
+  } catch {}
+
+  for (const [
+    socketId,
+    client,
+  ] of state.clients) {
+    clearClientResources(
+      socketId,
+      client
+    );
+  }
+
+  state.clients.clear();
+
+  /*
+   * Mismo principio: un solo propietario cierra el relay.
+   */
+  if (state.transportManager) {
+    try {
+      state.transportManager.close();
+    } catch {}
+  } else if (state.relayTransport) {
+    try {
+      state.relayTransport.close?.();
+    } catch {}
+  }
+
+  state.relayTransport = null;
+
+  try {
+    state.udpTransport?.close();
+  } catch {}
+
+  try {
+    state.channel?.close();
+  } catch {}
+
+  try {
+    state.peer?.close();
+  } catch {}
+
+  engine.stopSignaling();
+
+  state =
+    engine.resetOwnedState();
+
+  console.log(
+    "[Bridge-Q3] Reset complete"
+  );
+}
+
+initializeTransport({
+  getState: () => state,
+  createTransportManager,
+  createHostUDPProxy,
+  createClientUDPTransport,
+});
+
+initializeRelay({
+  getState: () => state,
+  createSocketRelayTransport,
+  ensureHostTransportResources,
+  ensureClientTransportResources,
+  sendStatus,
+});
+
+initializeChannelHandlers({
+  getState: () => state,
+  normalizeMessage,
+  isKeepAlive,
+  ensureHostTransportResources,
+  ensureClientTransportResources,
+  startKeepAlive,
+  sendStatus,
+});
+
+initializeWatchdog({
+  getState: () => state,
+  sendStatus,
+  activateHostRelay,
+  activateClientRelay,
+  closeHostWebRTCResources,
+  closeClientWebRTCResources,
+  clearClientTimeout,
+  isRelayActiveOrConnecting,
+  describeCandidateTypes,
+  ICE_CONNECT_TIMEOUT_MS,
+});
+
+peer.initialize({
+  getState: () => state,
+  buildIceServers,
+  flushCandidateQueue,
+  getCandidateType,
+  logGatheringResult,
+  createHostWatchdog,
+  createClientWatchdog,
+  clearClientTimeout,
+  sendStatus,
+  isRelayActiveOrConnecting,
+  activateHostRelay,
+  activateClientRelay,
+  closeHostWebRTCResources,
+  closeClientWebRTCResources,
+  cleanupClient,
+  stopKeepAlive,
+  onHostChannelOpen,
+  onClientChannelOpen,
+  handleChannelMessage,
+  // Config especÃ­fica de Quake 3, inyectada hacia el mÃ³dulo
+  // genÃ©rico del motor (electron/bridge/core/peer.js).
+  peerNamePrefix: "RetroLink-Q3",
+  logPrefix: "[Bridge-Q3]",
+});
+
+async function startBridge(
+  roomId,
+  isHost
+) {
+  resetBridge();
+
+  if (!roomId) {
+    return {
+      success: false,
+      error:
+        "No se proporcionÃ³ una sala.",
+    };
+  }
+
+  state.roomId = roomId;
+  state.isHost =
+    Boolean(isHost);
+
+  const NDC =
+    require("node-datachannel");
+
+  console.log(
+    `[Bridge-Q3] Iniciando sala ${roomId} como ${
+      state.isHost
+        ? "HOST"
+        : "CLIENTE"
+    }`
+  );
+
+  sendStatus(
+    "Conectando al servidor de seÃ±ales..."
+  );
+
+  engine.startSignaling({
+    createSession:
+      createSignalingSession,
+
+    socketFactory:
+      socketClient,
+
+    url:
+      SIGNALING_URL,
+
+    options: {
+      transports: [
+        "websocket",
+      ],
+
+      reconnection: true,
+      reconnectionAttempts: 3,
+      reconnectionDelay: 1000,
+    },
+
+    configure:
+      (signaling) => {
+        configureSignaling({
+          signaling,
+          NDC,
+          getState: () => state,
+          sendStatus,
+          getLocalIP,
+          getNextClientPort,
+          createHostPeer:
+            peer.createHost,
+          createClientPeer:
+            peer.createClient,
+          flushHostCandidates:
+            peer.flushHostCandidates,
+          flushClientCandidates:
+            peer.flushClientCandidates,
+          cleanupClient,
+        });
+      },
+  });
+
+  return {
+    success: true,
+  };
+}
+
+function getBridgeState() {
+  const connectedClients =
+    [...state.clients.entries()]
+      .filter(
+        ([, client]) =>
+          client.transportManager
+            ?.isWebRTCOpen() ||
+          client.transportManager
+            ?.isRelayOpen()
+      )
+      .map(
+        ([socketId, client]) => ({
+          socketId,
+          clientPort:
+            client.clientPort,
+          iceConnectionState:
+            client.iceConnectionState,
+          candidateTypes: [
+            ...client.gatheredCandidateTypes,
+          ],
+          switchingToRelay:
+            client.switchingToRelay,
+          transport:
+            client.transportManager?.getState() ??
+            null,
+          relay:
+            client.relayTransport?.getState?.() ??
+            null,
+        })
+      );
+
+  const clientConnected =
+    Boolean(
+      state.transportManager
+        ?.isWebRTCOpen() ||
+      state.transportManager
+        ?.isRelayOpen()
+    );
+
+  return {
+    isReady: state.isHost
+      ? connectedClients.length > 0
+      : clientConnected,
+
+    isHost:
+      state.isHost,
+
+    roomId:
+      state.roomId,
+
+    clientCount:
+      state.isHost
+        ? connectedClients.length
+        : clientConnected
+          ? 1
+          : 0,
+
+    clientPort:
+      state.clientPort,
+
+    hostIP:
+      state.hostIP,
+
+    iceConnectionState:
+      state.iceConnectionState,
+
+    candidateTypes: [
+      ...state.gatheredCandidateTypes,
+    ],
+
+    signalingConnected:
+      Boolean(
+        state.signalingSocket
+          ?.connected
+      ),
+
+    clients:
+      connectedClients,
+
+    switchingToRelay:
+      state.switchingToRelay,
+
+    transport:
+      state.transportManager?.getState() ??
+      null,
+
+    relay:
+      state.relayTransport?.getState?.() ??
+      null,
+  };
+}
+
+engine.setHandlers({
+  start:
+    startBridge,
+
+  reset:
+    resetBridge,
+
+  getState:
+    getBridgeState,
+
+  getClientPort: () =>
+    engine
+      .getMutableState()
+      .clientPort,
+
+  getHostIP: () =>
+    engine
+      .getMutableState()
+      .hostIP,
+});
+
+module.exports =
+  engine.toBridgeAPI();
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\keepalive.js
+==========================================================================================
+
+// electron/bridge/quake3/keepalive.js
+
+const {
+  KEEPALIVE_INTERVAL_MS,
+} = require("../core/engine-config");
+
+const keepAliveIntervals =
+  new Map();
+
+function normalizeMessage(message) {
+  return Buffer.isBuffer(message)
+    ? message
+    : Buffer.from(message);
+}
+
+function isKeepAlive(message) {
+  const buffer =
+    normalizeMessage(message);
+
+  return (
+    buffer.length <= 12 &&
+    buffer
+      .toString("latin1")
+      .includes("ping")
+  );
+}
+
+function sendKeepAlive(channel) {
+  if (!channel?.isOpen()) {
+    return false;
+  }
+
+  try {
+    channel.sendMessageBinary(
+      Buffer.from(
+        "\xFF\xFF\xFF\xFFping"
+      )
+    );
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stopKeepAlive(key) {
+  const interval =
+    keepAliveIntervals.get(key);
+
+  if (!interval) {
+    return;
+  }
+
+  clearInterval(interval);
+  keepAliveIntervals.delete(key);
+}
+
+function startKeepAlive(
+  key,
+  channel
+) {
+  stopKeepAlive(key);
+
+  const interval =
+    setInterval(() => {
+      if (!sendKeepAlive(channel)) {
+        stopKeepAlive(key);
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+
+  keepAliveIntervals.set(
+    key,
+    interval
+  );
+}
+
+function clearAllKeepAlives() {
+  for (const interval of
+    keepAliveIntervals.values()) {
+    clearInterval(interval);
+  }
+
+  keepAliveIntervals.clear();
+}
+
+module.exports = {
+  normalizeMessage,
+  isKeepAlive,
+  startKeepAlive,
+  stopKeepAlive,
+  clearAllKeepAlives,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\network-utils.js
+==========================================================================================
+
+// electron/bridge/quake3/network-utils.js
+
+const os = require("os");
+
+const {
+  CLIENT_PORT_BASE,
+  MAX_CLIENTS,
+} = require("./profile");
+
+function getLocalIP() {
+  const interfaces =
+    os.networkInterfaces();
+
+  const addresses = [];
+
+  for (const [
+    name,
+    networks,
+  ] of Object.entries(interfaces)) {
+    for (const network of
+      networks || []) {
+      if (
+        network.family === "IPv4" &&
+        !network.internal
+      ) {
+        addresses.push({
+          name,
+          address: network.address,
+        });
+      }
+    }
+  }
+
+  const vpn = addresses.find(
+    ({ address }) =>
+      address.startsWith("26.") ||
+      address.startsWith("10.")
+  );
+
+  if (vpn) {
+    return vpn.address;
+  }
+
+  const lan = addresses.find(
+    ({ address }) =>
+      address.startsWith("192.168.")
+  );
+
+  if (lan) {
+    return lan.address;
+  }
+
+  return (
+    addresses[0]?.address ||
+    "127.0.0.1"
+  );
+}
+
+function getNextClientPort(state) {
+  const usedPorts =
+    new Set(
+      [...state.clients.values()].map(
+        (client) =>
+          client.clientPort
+      )
+    );
+
+  for (
+    let offset = 0;
+    offset < MAX_CLIENTS;
+    offset += 1
+  ) {
+    const port =
+      CLIENT_PORT_BASE + offset;
+
+    if (!usedPorts.has(port)) {
+      return port;
+    }
+  }
+
+  return null;
+}
+
+module.exports = {
+  getLocalIP,
+  getNextClientPort,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\profile.js
+==========================================================================================
+
+// electron/bridge/quake3/profile.js
+
+const GAME_PORT = 27960;
+const CLIENT_PORT_BASE = 27961;
+const MAX_CLIENTS = 8;
+
+const DEBUG_UDP =
+  process.env.RETROLINK_DEBUG_UDP === "1";
+
+module.exports = {
+  id: "quake3",
+  name: "Quake III Arena",
+
+  GAME_PORT,
+  CLIENT_PORT_BASE,
+  MAX_CLIENTS,
+  DEBUG_UDP,
+
+  // Alias en camelCase para el futuro GameNetworkEngine.
+  gamePort: GAME_PORT,
+  clientPortBase: CLIENT_PORT_BASE,
+  maxClients: MAX_CLIENTS,
+  debugUDP: DEBUG_UDP,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\relay.js
+==========================================================================================
+
+// electron/bridge/quake3/relay.js
+
+let deps = null;
+
+function initializeRelay(injectedDeps) {
+  deps = injectedDeps;
+}
+
+function isRelayActiveOrConnecting(
+  relayTransport
+) {
+  if (!relayTransport) {
+    return false;
+  }
+
+  if (relayTransport.isOpen?.()) {
+    return true;
+  }
+
+  const relayState =
+    relayTransport.getState?.();
+
+  return (
+    relayState?.state ===
+      "connecting" ||
+    relayState?.state === "open"
+  );
+}
+
+function normalizeErrorMessage(
+  error
+) {
+  return (
+    error?.message ||
+    String(error)
+  );
+}
+
+/*
+ * Activa (o reutiliza) el transporte Relay de un cliente
+ * del host concreto. Es idempotente:
+ *
+ * - Si ya hay un relay abierto o conectando, no crea otro
+ *   ni vuelve a llamar useRelay().
+ * - Si hay un relay CLOSED/ERROR, lo descarta y crea uno
+ *   nuevo.
+ * - useRelay() se llama exactamente una vez, justo despuÃ©s
+ *   de crear el relayTransport (useRelay() ya dispara
+ *   connect() internamente).
+ * - Los callbacks capturan la instancia local (relayTransport)
+ *   y se ignoran a sÃ­ mismos si client.relayTransport ya
+ *   cambiÃ³ (instancia obsoleta).
+ */
+function activateHostRelay(
+  socketId,
+  reason = "ice-failed"
+) {
+  const state = deps.getState();
+
+  const client =
+    deps.ensureHostTransportResources(
+      socketId
+    );
+
+  if (
+    !client ||
+    !state.signalingSocket ||
+    !state.roomId
+  ) {
+    return false;
+  }
+
+  if (
+    isRelayActiveOrConnecting(
+      client.relayTransport
+    )
+  ) {
+    return true;
+  }
+
+  if (client.relayTransport) {
+    try {
+      client.relayTransport.close?.();
+    } catch {}
+
+    client.relayTransport = null;
+  }
+
+  client.switchingToRelay = true;
+
+  const relayTransport =
+    deps.createSocketRelayTransport({
+      socket:
+        state.signalingSocket,
+      roomId: state.roomId,
+      isHost: true,
+      peerSocketId: socketId,
+      reason,
+
+      onPacket(buffer, metadata) {
+        if (
+          client.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        client.transportManager
+          ?.handleRelayMessage(
+            buffer,
+            metadata
+          );
+      },
+
+      onConnected() {
+        if (
+          client.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        client.switchingToRelay =
+          false;
+
+        deps.sendStatus(
+          "Relay activado con el cliente."
+        );
+      },
+
+      onDisconnected() {
+        if (
+          client.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        client.relayTransport = null;
+        client.switchingToRelay =
+          false;
+
+        const currentMode =
+          client.transportManager
+            ?.getState?.()
+            ?.mode;
+
+        if (currentMode === "relay") {
+          client.transportManager.disableRelay();
+        }
+      },
+
+      onError(error) {
+        if (
+          client.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        const message =
+          normalizeErrorMessage(
+            error
+          );
+
+        console.error(
+          `[Bridge-Q3] Error relay host ${socketId}:`,
+          message
+        );
+
+        client.switchingToRelay =
+          false;
+
+        if (
+          !client.transportManager
+            ?.isWebRTCOpen()
+        ) {
+          deps.sendStatus(
+            `No se pudo conectar con el jugador ${socketId}: fallÃ³ WebRTC y Relay.`
+          );
+        }
+      },
+
+      onRateLimited(info) {
+        if (
+          client.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        console.warn(
+          `[Bridge-Q3] Relay host limitado para ${socketId}:`,
+          info
+        );
+      },
+    });
+
+  client.relayTransport =
+    relayTransport;
+
+  client.transportManager?.useRelay(
+    relayTransport
+  );
+
+  return true;
+}
+
+/*
+ * Igual que activateHostRelay(), pero para el cliente
+ * local. No usa peerSocketId: el cliente se relaciona con
+ * el host Ãºnicamente mediante roomId.
+ */
+function activateClientRelay(
+  reason = "ice-failed"
+) {
+  const state = deps.getState();
+
+  deps.ensureClientTransportResources();
+
+  if (
+    !state.signalingSocket ||
+    !state.roomId
+  ) {
+    return false;
+  }
+
+  if (
+    isRelayActiveOrConnecting(
+      state.relayTransport
+    )
+  ) {
+    return true;
+  }
+
+  if (state.relayTransport) {
+    try {
+      state.relayTransport.close?.();
+    } catch {}
+
+    state.relayTransport = null;
+  }
+
+  state.switchingToRelay = true;
+
+  const relayTransport =
+    deps.createSocketRelayTransport({
+      socket:
+        state.signalingSocket,
+      roomId: state.roomId,
+      isHost: false,
+      peerSocketId: null,
+      reason,
+
+      onPacket(buffer, metadata) {
+        if (
+          state.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        state.transportManager
+          ?.handleRelayMessage(
+            buffer,
+            metadata
+          );
+      },
+
+      onConnected() {
+        if (
+          state.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        state.switchingToRelay =
+          false;
+
+        deps.sendStatus(
+          "ConexiÃ³n establecida mediante Relay."
+        );
+      },
+
+      onDisconnected() {
+        if (
+          state.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        state.relayTransport = null;
+        state.switchingToRelay =
+          false;
+
+        const currentMode =
+          state.transportManager
+            ?.getState?.()
+            ?.mode;
+
+        if (currentMode === "relay") {
+          state.transportManager.disableRelay();
+        }
+      },
+
+      onError(error) {
+        if (
+          state.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        const message =
+          normalizeErrorMessage(
+            error
+          );
+
+        console.error(
+          "[Bridge-Q3] Error relay cliente:",
+          message
+        );
+
+        state.switchingToRelay =
+          false;
+
+        if (
+          !state.transportManager
+            ?.isWebRTCOpen()
+        ) {
+          deps.sendStatus(
+            "No se pudo conectar: fallÃ³ WebRTC y Relay."
+          );
+        }
+      },
+
+      onRateLimited(info) {
+        if (
+          state.relayTransport !==
+          relayTransport
+        ) {
+          return;
+        }
+
+        console.warn(
+          "[Bridge-Q3] Relay cliente limitado:",
+          info
+        );
+      },
+    });
+
+  state.relayTransport =
+    relayTransport;
+
+  state.transportManager?.useRelay(
+    relayTransport
+  );
+
+  return true;
+}
+
+module.exports = {
+  initializeRelay,
+  isRelayActiveOrConnecting,
+  activateHostRelay,
+  activateClientRelay,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\status.js
+==========================================================================================
+
+// electron/bridge/quake3/status.js
+
+const {
+  BrowserWindow,
+} = require("electron");
+
+function sendToFrontend(channel, data) {
+  try {
+    const windows =
+      BrowserWindow.getAllWindows();
+
+    const mainWindow = windows[0];
+
+    if (
+      mainWindow &&
+      !mainWindow.webContents.isDestroyed()
+    ) {
+      mainWindow.webContents.send(
+        channel,
+        data
+      );
+    }
+  } catch (error) {
+    console.error(
+      "[Bridge-Q3] Error enviando al frontend:",
+      error.message
+    );
+  }
+}
+
+function sendStatus(message) {
+  console.log(
+    `[Bridge-Q3] Status: ${message}`
+  );
+
+  sendToFrontend(
+    "bridge-status-update",
+    message
+  );
+}
+
+module.exports = {
+  sendToFrontend,
+  sendStatus,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\bridge\quake3\watchdog.js
+==========================================================================================
+
+// electron/bridge/quake3/watchdog.js
+
+let deps = null;
+
+function initializeWatchdog(injectedDeps) {
+  deps = injectedDeps;
+}
+
+function createHostWatchdog(
+  socketId,
+  client
+) {
+  deps.clearClientTimeout(client);
+
+  client.iceTimeoutHandle =
+    setTimeout(() => {
+      if (
+        client.iceConnectionState ===
+          "connected" ||
+        client.iceConnectionState ===
+          "completed"
+      ) {
+        return;
+      }
+
+      /*
+       * Evita fallback duplicado si onStateChange("failed")
+       * ya activÃ³ Relay para este mismo cliente.
+       */
+      if (
+        client.switchingToRelay ||
+        client.transportManager
+          ?.isRelayOpen() ||
+        deps.isRelayActiveOrConnecting(
+          client.relayTransport
+        )
+      ) {
+        return;
+      }
+
+      const candidates =
+        deps.describeCandidateTypes(
+          client.gatheredCandidateTypes
+        );
+
+      console.error(
+        `[Bridge-Q3] Timeout ICE con ${socketId}. Estado: ${
+          client.iceConnectionState ||
+          "desconocido"
+        }. Candidatos: ${candidates}.`
+      );
+
+      client.transportManager
+        ?.disableWebRTC();
+
+      const relayStarted =
+        deps.activateHostRelay(
+          socketId,
+          "ice-timeout"
+        );
+
+      if (relayStarted) {
+        deps.closeHostWebRTCResources(
+          socketId,
+          client
+        );
+      }
+
+      deps.sendStatus(
+        relayStarted
+          ? "P2P agotÃ³ el tiempo de espera. Intentando Relay..."
+          : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
+      );
+    }, deps.ICE_CONNECT_TIMEOUT_MS);
+}
+
+function createClientWatchdog() {
+  const state = deps.getState();
+
+  if (state.iceTimeoutHandle) {
+    clearTimeout(
+      state.iceTimeoutHandle
+    );
+  }
+
+  state.iceTimeoutHandle =
+    setTimeout(() => {
+      const state = deps.getState();
+
+      if (
+        state.iceConnectionState ===
+          "connected" ||
+        state.iceConnectionState ===
+          "completed"
+      ) {
+        return;
+      }
+
+      /*
+       * Evita fallback duplicado si onStateChange("failed")
+       * ya activÃ³ Relay.
+       */
+      if (
+        state.switchingToRelay ||
+        state.transportManager
+          ?.isRelayOpen() ||
+        deps.isRelayActiveOrConnecting(
+          state.relayTransport
+        )
+      ) {
+        return;
+      }
+
+      const candidates =
+        deps.describeCandidateTypes(
+          state.gatheredCandidateTypes
+        );
+
+      console.error(
+        `[Bridge-Q3] Timeout ICE cliente. Estado: ${
+          state.iceConnectionState ||
+          "desconocido"
+        }. Candidatos: ${candidates}.`
+      );
+
+      if (state.iceTimeoutHandle) {
+        clearTimeout(
+          state.iceTimeoutHandle
+        );
+
+        state.iceTimeoutHandle =
+          null;
+      }
+
+      state.transportManager
+        ?.disableWebRTC();
+
+      const relayStarted =
+        deps.activateClientRelay(
+          "ice-timeout"
+        );
+
+      if (relayStarted) {
+        deps.closeClientWebRTCResources();
+      }
+
+      deps.sendStatus(
+        relayStarted
+          ? "P2P agotÃ³ el tiempo de espera. Intentando Relay..."
+          : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
+      );
+    }, deps.ICE_CONNECT_TIMEOUT_MS);
+}
+
+module.exports = {
+  initializeWatchdog,
+  createHostWatchdog,
+  createClientWatchdog,
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\games\carmageddon2.js
+==========================================================================================
+
+// electron/games/carmageddon2.js
+
+module.exports = {
+  id: "carmageddon2",
+  name: "Carmageddon II: Carpocalypse Now",
+
+  executable: "CARMA2_HW.EXE",
+
+  /*
+   * IPXWrapper utiliza un puerto UDP compartido
+   * para broadcast y luego crea puertos privados
+   * dinÃ¡micos para cada instancia.
+   */
+  defaultPort: 54792,
+  clientPortBase: 54792,
+
+  /*
+   * El juego crea la partida desde su propio menÃº.
+   */
+  supportsRoomOptions: false,
+  usesDedicatedServer: false,
+  hostAlsoLaunchesClient: false,
+
+  /*
+   * Dejamos estas propiedades para mantener la misma
+   * interfaz que el resto de juegos.
+   */
+  serverWarmupMs: 0,
+
+  getHostArgs(extraArgs = []) {
+    return [...extraArgs];
+  },
+
+  getClientArgs(port, extraArgs = []) {
+    return [...extraArgs];
+  },
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\games\cs16.js
+==========================================================================================
+
+module.exports = {
+  id: "cs16",
+  name: "Counter-Strike 1.6",
+  defaultPort: 27015,
+  clientPortBase: 27016,
+  clientGamePort: 27005,
+  serverWarmupMs: 7000,
+  supportsRoomOptions: true,
+
+  getHostArgs(options = {}, extraArgs = []) {
+    const map = options.map || "de_dust2";
+    const maxPlayers = options.maxPlayers || 16;
+    const timeLimit = options.timeLimit || 30;
+    const friendlyFire = options.friendlyFire ? "1" : "0";
+    const startMoney = options.startMoney || 800;
+    const freezeTime = options.freezeTime ?? 5;
+    const buyTime = options.buyTime ?? 0.25;
+    const allTalk = options.allTalk ? "1" : "0";
+    const password = options.password?.trim() || "";
+
+    return [
+      "-console",
+      "-game", "cstrike",
+
+      "+sv_lan", "1",
+      "+maxplayers", String(maxPlayers),
+      "+map", map,
+      "+port", String(this.defaultPort),
+      "+ip", "0.0.0.0",
+
+      "+hostname", "RetroLink CS 1.6",
+      "+sv_password", password,
+
+      "+sv_allowdownload", "1",
+      "+sv_allowupload", "1",
+      "+sv_pure", "0",
+      "+sv_cheats", "0",
+
+      "+mp_timelimit", String(timeLimit),
+      "+mp_friendlyfire", friendlyFire,
+      "+mp_startmoney", String(startMoney),
+      "+mp_freezetime", String(freezeTime),
+      "+mp_buytime", String(buyTime),
+      "+mp_autoteambalance", "1",
+      "+mp_limitteams", "2",
+      "+mp_roundtime", "5",
+
+      "+sv_voiceenable", "1",
+      "+sv_alltalk", allTalk,
+
+      ...extraArgs,
+    ];
+  },
+
+  getClientArgs(port, options = {}, extraArgs = []) {
+    const password = options.password?.trim() || "";
+
+    const args = [
+      "-console",
+      "-game", "cstrike",
+
+      "+clientport", String(this.clientGamePort),
+      "+port", String(port),
+    ];
+
+    if (password) {
+      args.push("+password", password);
+    }
+
+    args.push(
+      "+connect", `127.0.0.1:${this.defaultPort}`,
+      "+rate", "25000",
+      "+cl_updaterate", "20",
+      "+cl_cmdrate", "20",
+      "+fps_max", "100",
+      ...extraArgs
+    );
+
+    return args;
+  },
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\games\index.js
+==========================================================================================
+
+// electron/games/index.js
+
+const quake3 = require("./quake3");
+const cs16 = require("./cs16");
+const carmageddon2 = require("./carmageddon2");
+const ut99 = require("./ut99");
+
+const gamesRegistry = {
+  [quake3.id]: quake3,
+  [cs16.id]: cs16,
+  [carmageddon2.id]: carmageddon2,
+  [ut99.id]: ut99,
+};
+
+const GAME_ALIASES = {
+  // Counter-Strike 1.6
+  cs16: "cs16",
+  "counter-strike": "cs16",
+  "counter-strike 1.6": "cs16",
+  cs: "cs16",
+  counterstrike: "cs16",
+  cstrike: "cs16",
+  "cs1.6": "cs16",
+  "cs 1.6": "cs16",
+  "counter strike": "cs16",
+  "counter strike 1.6": "cs16",
+  "counter-strike1.6": "cs16",
+  "cstrike1.6": "cs16",
+  hl: "cs16",
+  "half-life": "cs16",
+  "half life": "cs16",
+
+  // Quake III Arena
+  quake3: "quake3",
+  quake: "quake3",
+  "quake 3": "quake3",
+  "quake iii": "quake3",
+  "quake iii arena": "quake3",
+  q3: "quake3",
+  quake3arena: "quake3",
+  "quake3 arena": "quake3",
+  quak3: "quake3",
+  q3a: "quake3",
+
+  // Carmageddon 2
+  carmageddon2: "carmageddon2",
+  "carmageddon 2": "carmageddon2",
+  "carmageddon ii": "carmageddon2",
+  "carmageddon ii: carpocalypse now": "carmageddon2",
+  carmageddon: "carmageddon2",
+  carma2: "carmageddon2",
+  "carma 2": "carmageddon2",
+  c2: "carmageddon2",
+
+  // Unreal Tournament 99
+  ut99: "ut99",
+  "ut 99": "ut99",
+  "ut'99": "ut99",
+  "ut '99": "ut99",
+  "unreal tournament": "ut99",
+  "unreal tournament 99": "ut99",
+  "unreal tournament '99": "ut99",
+  "unreal tournament goty": "ut99",
+  "unreal tournament goty edition": "ut99",
+  "unreal tournament game of the year": "ut99",
+  "unreal tournament game of the year edition": "ut99",
+  "unrealtournament": "ut99",
+  "unreal tournament 1999": "ut99",
+};
+
+function normalizeGameId(gameId) {
+  if (!gameId || typeof gameId !== "string") {
+    return null;
+  }
+
+  return gameId
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function getRealGameId(gameId) {
+  const normalizedId = normalizeGameId(gameId);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  return GAME_ALIASES[normalizedId] || normalizedId;
+}
+
+function getGame(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  if (!realGameId) {
+    console.error("[Games] getGame: gameId invÃ¡lido:", gameId);
+    return null;
+  }
+
+  const game = gamesRegistry[realGameId];
+
+  if (!game) {
+    console.error(`[Games] Juego no encontrado: "${gameId}"`);
+    console.error(`[Games] - Real ID: "${realGameId}"`);
+    console.log(
+      `[Games] Juegos disponibles: ${Object.keys(gamesRegistry).join(", ")}`
+    );
+
+    return null;
+  }
+
+  console.log(
+    `[Games] Juego encontrado: "${gameId}" â†’ ${game.name} (ID: ${game.id})`
+  );
+
+  return game;
+}
+
+function listGames() {
+  return Object.keys(gamesRegistry);
+}
+
+function getGamesInfo() {
+  const result = {};
+
+  for (const [id, game] of Object.entries(gamesRegistry)) {
+    const aliases = Object.keys(GAME_ALIASES).filter(
+      (alias) => GAME_ALIASES[alias] === id
+    );
+
+    result[id] = {
+      id: game.id,
+      name: game.name,
+      executable: game.executable || null,
+      serverExecutable: game.serverExecutable || null,
+      defaultPort: game.defaultPort,
+      queryPort: game.queryPort || null,
+      clientPortBase: game.clientPortBase,
+      supportsRoomOptions: Boolean(game.supportsRoomOptions),
+      usesDedicatedServer: Boolean(game.usesDedicatedServer),
+      hostAlsoLaunchesClient: Boolean(game.hostAlsoLaunchesClient),
+      aliases,
+    };
+  }
+
+  return result;
+}
+
+function gameExists(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  if (!realGameId) {
+    return false;
+  }
+
+  return Boolean(gamesRegistry[realGameId]);
+}
+
+function getGamesWithAliases() {
+  const result = {};
+
+  for (const [id, game] of Object.entries(gamesRegistry)) {
+    const aliases = Object.keys(GAME_ALIASES).filter(
+      (alias) => GAME_ALIASES[alias] === id
+    );
+
+    result[id] = {
+      ...game,
+      aliases,
+    };
+  }
+
+  return result;
+}
+
+module.exports = {
+  getGame,
+  listGames,
+  getGameAliases: () => GAME_ALIASES,
+  getGamesInfo,
+  getGamesWithAliases,
+  gameExists,
+  getRealGameId,
+  normalizeGameId,
+  GAME_ALIASES,
+  gamesRegistry,
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\games\quake3.js
+==========================================================================================
+
+// electron/games/quake3.js
+
+const GAME_TYPES = {
+  freeForAll: 0,
+  tournament: 1,
+  teamDeathmatch: 3,
+  captureTheFlag: 4,
+};
+
+const DEFAULT_MAPS = {
+  freeForAll: "q3dm17",
+  tournament: "q3tourney2",
+  teamDeathmatch: "q3dm7",
+  captureTheFlag: "q3ctf1",
+};
+
+const DEFAULT_OPTIONS = {
+  map: "q3dm17",
+  gameType: "freeForAll",
+  maxPlayers: 16,
+  fragLimit: 20,
+  timeLimit: 15,
+  minPlayers: 0,
+  botSkill: 3,
+  friendlyFire: false,
+  password: "",
+  hostname: "RetroLink Quake III",
+};
+
+/*
+ * Convierte el valor en un nÃºmero entero y lo limita
+ * entre los valores mÃ­nimo y mÃ¡ximo permitidos.
+ */
+function sanitizeInteger(
+  value,
+  fallback,
+  min,
+  max
+) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  const integer = Math.trunc(parsed);
+
+  return Math.min(
+    max,
+    Math.max(min, integer)
+  );
+}
+
+/*
+ * Normaliza campos de texto.
+ */
+function sanitizeText(
+  value,
+  fallback = ""
+) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  return value.trim();
+}
+
+/*
+ * Convierte correctamente valores booleanos provenientes
+ * del frontend o de datos serializados.
+ *
+ * Evita que Boolean("false") dÃ© como resultado true.
+ */
+function sanitizeBoolean(
+  value,
+  fallback = false
+) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+
+  if (typeof value === "string") {
+    const normalized =
+      value.trim().toLowerCase();
+
+    if (
+      normalized === "true" ||
+      normalized === "1" ||
+      normalized === "yes" ||
+      normalized === "on"
+    ) {
+      return true;
+    }
+
+    if (
+      normalized === "false" ||
+      normalized === "0" ||
+      normalized === "no" ||
+      normalized === "off" ||
+      normalized === ""
+    ) {
+      return false;
+    }
+  }
+
+  return fallback;
+}
+
+/*
+ * Comprueba que el tipo de partida exista.
+ */
+function normalizeGameType(gameType) {
+  return Object.prototype.hasOwnProperty.call(
+    GAME_TYPES,
+    gameType
+  )
+    ? gameType
+    : DEFAULT_OPTIONS.gameType;
+}
+
+/*
+ * Normaliza el nombre del mapa.
+ *
+ * Permite mapas originales y mapas personalizados, pero
+ * impide introducir comandos mediante el nombre.
+ */
+function normalizeMapName(
+  map,
+  gameType
+) {
+  const fallback =
+    DEFAULT_MAPS[gameType] ||
+    DEFAULT_MAPS.freeForAll;
+
+  const sanitized =
+    sanitizeText(map, fallback) ||
+    fallback;
+
+  /*
+   * Los nombres normales de mapas de Quake III usan
+   * letras, nÃºmeros, guiones y guiones bajos.
+   */
+  if (
+    !/^[a-zA-Z0-9_-]+$/.test(
+      sanitized
+    )
+  ) {
+    return fallback;
+  }
+
+  return sanitized;
+}
+
+/*
+ * Normaliza todos los parÃ¡metros recibidos desde la sala
+ * o desde el frontend.
+ */
+function normalizeOptions(
+  options = {}
+) {
+  const sourceOptions =
+    options &&
+    typeof options === "object" &&
+    !Array.isArray(options)
+      ? options
+      : {};
+
+  const merged = {
+    ...DEFAULT_OPTIONS,
+    ...sourceOptions,
+  };
+
+  const gameType =
+    normalizeGameType(
+      merged.gameType
+    );
+
+  const maxPlayers =
+    sanitizeInteger(
+      merged.maxPlayers,
+      DEFAULT_OPTIONS.maxPlayers,
+      2,
+      32
+    );
+
+  /*
+   * Si no se proporcionÃ³ explÃ­citamente un mapa,
+   * seleccionamos el mapa predeterminado correspondiente
+   * al tipo de partida.
+   *
+   * Esto permite:
+   *
+   * freeForAll      -> q3dm17
+   * tournament      -> q3tourney2
+   * teamDeathmatch  -> q3dm7
+   * captureTheFlag  -> q3ctf1
+   */
+  const providedMap =
+    Object.prototype.hasOwnProperty.call(
+      sourceOptions,
+      "map"
+    )
+      ? sourceOptions.map
+      : DEFAULT_MAPS[gameType];
+
+  return {
+    gameType,
+
+    gameTypeId:
+      GAME_TYPES[gameType],
+
+    map: normalizeMapName(
+      providedMap,
+      gameType
+    ),
+
+    maxPlayers,
+
+    fragLimit:
+      sanitizeInteger(
+        merged.fragLimit,
+        DEFAULT_OPTIONS.fragLimit,
+        0,
+        999
+      ),
+
+    timeLimit:
+      sanitizeInteger(
+        merged.timeLimit,
+        DEFAULT_OPTIONS.timeLimit,
+        0,
+        999
+      ),
+
+    minPlayers:
+      sanitizeInteger(
+        merged.minPlayers,
+        DEFAULT_OPTIONS.minPlayers,
+        0,
+        maxPlayers
+      ),
+
+    botSkill:
+      sanitizeInteger(
+        merged.botSkill,
+        DEFAULT_OPTIONS.botSkill,
+        1,
+        5
+      ),
+
+    friendlyFire:
+      sanitizeBoolean(
+        merged.friendlyFire,
+        DEFAULT_OPTIONS.friendlyFire
+      ),
+
+    password:
+      sanitizeText(
+        merged.password
+      ),
+
+    hostname:
+      sanitizeText(
+        merged.hostname,
+        DEFAULT_OPTIONS.hostname
+      ) ||
+      DEFAULT_OPTIONS.hostname,
+  };
+}
+
+module.exports = {
+  id: "quake3",
+
+  name: "Quake III Arena",
+
+  executable: "quake3.exe",
+
+  defaultPort: 27960,
+
+  clientPortBase: 27961,
+
+  supportsRoomOptions: true,
+
+  defaultOptions: {
+    ...DEFAULT_OPTIONS,
+  },
+
+  gameTypes: {
+    ...GAME_TYPES,
+  },
+
+  defaultMaps: {
+    ...DEFAULT_MAPS,
+  },
+
+  normalizeOptions,
+
+  getHostArgs(
+    options = {},
+    extraArgs = []
+  ) {
+    const normalized =
+      normalizeOptions(options);
+
+    const safeExtraArgs =
+      Array.isArray(extraArgs)
+        ? extraArgs
+        : [];
+
+    const args = [
+      "+set",
+      "net_port",
+      String(this.defaultPort),
+
+      "+set",
+      "sv_lanForce",
+      "1",
+
+      "+set",
+      "sv_strictAuth",
+      "0",
+
+      "+set",
+      "sv_pure",
+      "0",
+
+      "+set",
+      "sv_maxclients",
+      String(
+        normalized.maxPlayers
+      ),
+
+      "+set",
+      "sv_hostname",
+      normalized.hostname,
+
+      "+set",
+      "g_gametype",
+      String(
+        normalized.gameTypeId
+      ),
+
+      "+set",
+      "fraglimit",
+      String(
+        normalized.fragLimit
+      ),
+
+      "+set",
+      "timelimit",
+      String(
+        normalized.timeLimit
+      ),
+
+      "+set",
+      "g_friendlyFire",
+      normalized.friendlyFire
+        ? "1"
+        : "0",
+
+      "+set",
+      "bot_minplayers",
+      String(
+        normalized.minPlayers
+      ),
+
+      "+set",
+      "g_spSkill",
+      String(
+        normalized.botSkill
+      ),
+
+      "+set",
+      "g_password",
+      normalized.password,
+
+      "+map",
+      normalized.map,
+
+      ...safeExtraArgs,
+    ];
+
+    return args;
+  },
+
+  getClientArgs(
+    port,
+    options = {},
+    extraArgs = []
+  ) {
+    const parsedPort =
+      Number(port);
+
+    const targetPort =
+      Number.isInteger(
+        parsedPort
+      ) &&
+      parsedPort > 0 &&
+      parsedPort <= 65535
+        ? parsedPort
+        : this.clientPortBase;
+
+    const normalized =
+      normalizeOptions(options);
+
+    const safeExtraArgs =
+      Array.isArray(extraArgs)
+        ? extraArgs
+        : [];
+
+    const args = [];
+
+    if (normalized.password) {
+      args.push(
+        "+set",
+        "password",
+        normalized.password
+      );
+    }
+
+    args.push(
+      "+connect",
+      `127.0.0.1:${targetPort}`,
+      ...safeExtraArgs
+    );
+
+    return args;
+  },
+};
+
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\games\ut99.js
+==========================================================================================
+
+// electron/games/ut99.js
+
+const GAME_TYPES = {
+  deathmatch: "Botpack.DeathMatchPlus",
+  teamDeathmatch: "Botpack.TeamGamePlus",
+  captureTheFlag: "Botpack.CTFGame",
+  domination: "Botpack.Domination",
+  lastManStanding: "Botpack.LastManStanding",
+};
+
+const DEFAULT_MAPS = {
+  deathmatch: "DM-Deck16][",
+  teamDeathmatch: "DM-Deck16][",
+  captureTheFlag: "CTF-Face",
+  domination: "DOM-Cinder",
+  lastManStanding: "DM-Deck16][",
+};
+
+const MAP_PREFIXES = {
+  deathmatch: "DM-",
+  teamDeathmatch: "DM-",
+  captureTheFlag: "CTF-",
+  domination: "DOM-",
+  lastManStanding: "DM-",
+};
+
+const DEFAULT_OPTIONS = {
+  map: "DM-Deck16][",
+  gameType: "deathmatch",
+  maxPlayers: 16,
+  fragLimit: 30,
+  timeLimit: 20,
+  minPlayers: 0,
+  difficulty: 3,
+  friendlyFire: 0,
+  password: "",
+  serverName: "RetroLink UT99",
+};
+
+function sanitizeNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function sanitizeText(value, fallback = "") {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  return value.trim();
+}
+
+function normalizeGameType(gameType) {
+  return GAME_TYPES[gameType]
+    ? gameType
+    : DEFAULT_OPTIONS.gameType;
+}
+
+function getGameClass(gameType) {
+  const normalizedGameType = normalizeGameType(gameType);
+  return GAME_TYPES[normalizedGameType];
+}
+
+function getCompatibleMap(gameType, requestedMap) {
+  const normalizedGameType = normalizeGameType(gameType);
+
+  const map =
+    sanitizeText(
+      requestedMap,
+      DEFAULT_MAPS[normalizedGameType]
+    ) || DEFAULT_MAPS[normalizedGameType];
+
+  const expectedPrefix =
+    MAP_PREFIXES[normalizedGameType];
+
+  if (
+    map.toUpperCase().startsWith(
+      expectedPrefix.toUpperCase()
+    )
+  ) {
+    return map;
+  }
+
+  return DEFAULT_MAPS[normalizedGameType];
+}
+
+function normalizeOptions(options = {}) {
+  const mergedOptions = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+  };
+
+  const gameType = normalizeGameType(
+    mergedOptions.gameType
+  );
+
+  const maxPlayers = sanitizeNumber(
+    mergedOptions.maxPlayers,
+    DEFAULT_OPTIONS.maxPlayers,
+    1,
+    32
+  );
+
+  return {
+    map: getCompatibleMap(
+      gameType,
+      mergedOptions.map
+    ),
+
+    gameType,
+
+    gameClass: getGameClass(gameType),
+
+    maxPlayers,
+
+    fragLimit: sanitizeNumber(
+      mergedOptions.fragLimit,
+      DEFAULT_OPTIONS.fragLimit,
+      0,
+      999
+    ),
+
+    timeLimit: sanitizeNumber(
+      mergedOptions.timeLimit,
+      DEFAULT_OPTIONS.timeLimit,
+      0,
+      999
+    ),
+
+    minPlayers: sanitizeNumber(
+      mergedOptions.minPlayers,
+      DEFAULT_OPTIONS.minPlayers,
+      0,
+      maxPlayers
+    ),
+
+    difficulty: sanitizeNumber(
+      mergedOptions.difficulty,
+      DEFAULT_OPTIONS.difficulty,
+      0,
+      7
+    ),
+
+    friendlyFire: sanitizeNumber(
+      mergedOptions.friendlyFire,
+      DEFAULT_OPTIONS.friendlyFire,
+      0,
+      100
+    ),
+
+    password: sanitizeText(
+      mergedOptions.password
+    ),
+
+    serverName:
+      sanitizeText(
+        mergedOptions.serverName,
+        DEFAULT_OPTIONS.serverName
+      ) || DEFAULT_OPTIONS.serverName,
+  };
+}
+
+module.exports = {
+  id: "ut99",
+  name: "Unreal Tournament",
+  executable: "UnrealTournament.exe",
+  serverExecutable: "UCC.exe",
+
+  defaultPort: 7777,
+  queryPort: 7778,
+  clientPortBase: 7801,
+  serverWarmupMs: 3000,
+
+  supportsRoomOptions: true,
+  usesDedicatedServer: true,
+  hostAlsoLaunchesClient: true,
+
+  defaultOptions: {
+    ...DEFAULT_OPTIONS,
+  },
+
+  gameTypes: {
+    ...GAME_TYPES,
+  },
+
+  defaultMaps: {
+    ...DEFAULT_MAPS,
+  },
+
+  normalizeOptions,
+
+  /*
+  ConfiguraciÃ³n que handlers.js debe escribir en los INI
+  antes de iniciar UCC.exe.
+  */
+  getServerConfig(options = {}) {
+    const normalized = normalizeOptions(options);
+
+    return {
+      gameType: normalized.gameType,
+      gameClass: normalized.gameClass,
+      minPlayers: normalized.minPlayers,
+      difficulty: normalized.difficulty,
+      serverName: normalized.serverName,
+    };
+  },
+
+  getServerArgs(options = {}, extraArgs = []) {
+    const normalized = normalizeOptions(options);
+
+    const friendlyFireScale =
+      normalized.friendlyFire / 100;
+
+    const serverUrlOptions = [
+      `Game=${normalized.gameClass}`,
+      `MaxPlayers=${normalized.maxPlayers}`,
+      `FragLimit=${normalized.fragLimit}`,
+      `TimeLimit=${normalized.timeLimit}`,
+      `FriendlyFireScale=${friendlyFireScale}`,
+    ];
+
+    /*
+    MinPlayers y Difficulty no se incluyen aquÃ­.
+    UT99 los toma desde UnrealTournament.ini/User.ini.
+    */
+
+    if (normalized.password) {
+      serverUrlOptions.push(
+        `GamePassword=${encodeURIComponent(
+          normalized.password
+        )}`
+      );
+    }
+
+    const serverUrl =
+      `${normalized.map}?${serverUrlOptions.join("?")}`;
+
+    return [
+      "server",
+      serverUrl,
+      `-port=${this.defaultPort}`,
+      "-log=RetroLinkServer.log",
+      "-nohomedir",
+      ...extraArgs,
+    ];
+  },
+
+  getHostArgs(options = {}, extraArgs = []) {
+    const normalized = normalizeOptions(options);
+
+    const connectionUrl = normalized.password
+      ? `127.0.0.1:${this.defaultPort}?Password=${encodeURIComponent(
+          normalized.password
+        )}`
+      : `127.0.0.1:${this.defaultPort}`;
+
+    return [
+      connectionUrl,
+      "-nohomedir",
+      ...extraArgs,
+    ];
+  },
+
+  getClientArgs(
+    port,
+    options = {},
+    extraArgs = []
+  ) {
+    const parsedPort = Number(port);
+
+    const targetPort =
+      Number.isInteger(parsedPort) &&
+      parsedPort > 0 &&
+      parsedPort <= 65535
+        ? parsedPort
+        : this.defaultPort;
+
+    const normalized = normalizeOptions(options);
+
+    const connectionUrl = normalized.password
+      ? `127.0.0.1:${targetPort}?Password=${encodeURIComponent(
+          normalized.password
+        )}`
+      : `127.0.0.1:${targetPort}`;
+
+    return [
+      connectionUrl,
+      "-nohomedir",
+      ...extraArgs,
+    ];
+  },
+};
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\ipc\game.handlers.js
+==========================================================================================
+
+// electron/ipc/game.handlers.js
+
+const {
+  ipcMain,
+  dialog,
+  BrowserWindow,
+} = require("electron");
+
+const path = require("path");
+
+const gamesPath = path.join(
+  __dirname,
+  "../games/index.js"
+);
+
+console.log(
+  "[Handlers] Cargando juegos desde:",
+  gamesPath
+);
+
+const {
+  getGame,
+  getRealGameId,
+} = require(gamesPath);
+
+const {
+  getBridge,
+} = require("../bridge/bridge-registry");
+
+const {
+  launchStandardGame,
+} = require("../launchers/game-launcher");
+
+const {
+  launchUT99,
+} = require("../launchers/ut99-launcher");
+
+const processManager =
+  require("../runtime/process-manager");
+
+function notifyHostGameClosed(roomId) {
+  if (!roomId) {
+    return;
+  }
+
+  const window =
+    BrowserWindow.getAllWindows()[0];
+
+  if (
+    window &&
+    !window.webContents.isDestroyed()
+  ) {
+    window.webContents.send(
+      "host-game-closed",
+      {
+        roomId,
+      }
+    );
+  }
+}
+
+function attachGameProcessEvents({
+  process,
+  isHost,
+  roomId,
+  gameName,
+  isUT99,
+}) {
+  if (!process || typeof process.on !== "function") {
+    throw new Error(
+      `No se recibiÃ³ un proceso vÃ¡lido para ${gameName}`
+    );
+  }
+
+  process.on("close", (code) => {
+    console.log(
+      `[Game] ${
+        isHost ? "Host" : "Client"
+      } game (${gameName}) closed, code: ${code}`
+    );
+
+    processManager.clearGameProcess(
+      process
+    );
+
+    if (isHost && isUT99) {
+      processManager.stopServerProcess(
+        "servidor dedicado UT99"
+      );
+    }
+
+    if (isHost) {
+      notifyHostGameClosed(roomId);
+    }
+  });
+
+  process.on("error", (error) => {
+    console.error(
+      `[Game] Error ejecutando ${gameName}:`,
+      error.message
+    );
+
+    processManager.clearGameProcess(
+      process
+    );
+
+    if (isHost && isUT99) {
+      processManager.stopServerProcess(
+        "servidor dedicado UT99"
+      );
+    }
+  });
+}
+
+function registerGameHandlers() {
+  ipcMain.handle(
+    "select-game-exe",
+    async () => {
+      const result =
+        await dialog.showOpenDialog({
+          properties: ["openFile"],
+
+          filters: [
+            {
+              name: "Executable Files",
+              extensions: ["exe"],
+            },
+          ],
+        });
+
+      return result.canceled
+        ? null
+        : result.filePaths[0];
+    }
+  );
+
+  ipcMain.handle(
+    "launch-game",
+    async (
+      _,
+      gamePath,
+      hostIp,
+      roomId,
+      isHost,
+      gameId,
+      gameOptions = {},
+      extraArgs = []
+    ) => {
+      if (!gamePath) {
+        return {
+          success: false,
+          error: "No game path provided",
+        };
+      }
+
+      try {
+        const realGameId =
+          getRealGameId(gameId);
+
+        const game =
+          getGame(realGameId);
+
+        if (!game) {
+          return {
+            success: false,
+            error:
+              `Juego no encontrado: ${gameId}`,
+          };
+        }
+
+        const bridge =
+          getBridge(realGameId);
+
+        if (realGameId === "ut99") {
+          if (
+            isHost &&
+            processManager.getServerProcess()
+          ) {
+            processManager.stopServerProcess(
+              "servidor dedicado UT99 anterior"
+            );
+          }
+
+          const result =
+            await launchUT99({
+              game,
+              bridge,
+              gamePath,
+              isHost,
+              gameOptions,
+              extraArgs,
+            });
+
+          if (!result?.gameProcess) {
+            throw new Error(
+              `No se pudo iniciar el proceso de ${game.name}`
+            );
+          }
+
+          processManager.setGameProcess(
+            result.gameProcess
+          );
+
+          if (result.serverProcess) {
+            processManager.setServerProcess(
+              result.serverProcess
+            );
+          }
+
+          attachGameProcessEvents({
+            process: result.gameProcess,
+            isHost,
+            roomId,
+            gameName: game.name,
+            isUT99: true,
+          });
+
+          return {
+            success: true,
+            dedicatedServer: isHost,
+            gamePort: result.gamePort,
+            clientPort: result.clientPort,
+          };
+        }
+
+        const result =
+          await launchStandardGame({
+            game,
+            bridge,
+            gamePath,
+            hostIp,
+            isHost,
+            realGameId,
+            gameOptions,
+            extraArgs,
+          });
+
+        if (!result?.process) {
+          throw new Error(
+            `No se pudo iniciar el proceso de ${game.name}`
+          );
+        }
+
+        processManager.setGameProcess(
+          result.process
+        );
+
+        attachGameProcessEvents({
+          process: result.process,
+          isHost,
+          roomId,
+          gameName: game.name,
+          isUT99: false,
+        });
+
+        return {
+          success: true,
+        };
+      } catch (error) {
+        console.error(
+          "[Handlers] Error en launch-game:",
+          error
+        );
+
+        processManager.stopServerProcess(
+          "servidor dedicado tras error"
+        );
+
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    }
+  );
+
+  ipcMain.handle(
+    "kill-game",
+    async () => {
+      processManager.stopAllProcesses();
+
+      return {
+        success: true,
+      };
+    }
+  );
+}
+
+module.exports = registerGameHandlers;
+
+
+==========================================================================================
+FILE: C:\Users\Capitan Meque\Desktop\retrolink\electron\ipc\handlers.js
+==========================================================================================
+
+// electron/ipc/handlers.js
+
+const registerGameHandlers = require("./game.handlers");
+const registerRelayHandlers = require("./relay.handlers");
+const registerNetworkHandlers = require("./network.handlers");
+
+function registerIPCHandlers() {
+  registerGameHandlers();
+  registerRelayHandlers();
+  registerNetworkHandlers();
+
+  console.log("[Handlers] IPC handlers registrados");
+}
+
+module.exports = registerIPCHandlers;

@@ -13,6 +13,18 @@ const {
 } = require("../core/game-network-engine");
 
 const {
+  createBridgeReset,
+} = require("../core/bridge-reset");
+
+const {
+  createBridgeStateGetter,
+} = require("../core/bridge-state");
+
+const {
+  createBridgeStarter,
+} = require("../core/bridge-start");
+
+const {
   SIGNALING_URL,
   ICE_CONNECT_TIMEOUT_MS,
   buildIceServers,
@@ -40,10 +52,17 @@ const {
   createHostUDPProxy,
   createClientUDPTransport,
 } = createUDPTransportFactory({
-  gamePort: quake3Profile.gamePort,
-  debug: quake3Profile.debugUDP,
-  logPrefix: "Bridge-Q3-UDP",
-  gameName: quake3Profile.name,
+  gamePort:
+    quake3Profile.gamePort,
+
+  debug:
+    quake3Profile.debugUDP,
+
+  logPrefix:
+    "Bridge-Q3-UDP",
+
+  gameName:
+    quake3Profile.name,
 });
 
 const {
@@ -60,7 +79,9 @@ const {
 
 const engine =
   createGameNetworkEngine({
-    name: "Bridge-Q3",
+    name:
+      "Bridge-Q3",
+
     createState:
       createInitialState,
   });
@@ -123,327 +144,208 @@ const {
   peer,
 } = require("../core/peer");
 
+/*
+ * Getter único para el estado mutable del bridge.
+ *
+ * Todos los módulos reciben esta función, evitando conservar
+ * referencias antiguas después de resetBridge().
+ */
+const getState =
+  () => state;
+
 function clearClientTimeout(client) {
   if (!client?.iceTimeoutHandle) {
     return;
   }
-  clearTimeout(client.iceTimeoutHandle);
-  client.iceTimeoutHandle = null;
+
+  clearTimeout(
+    client.iceTimeoutHandle
+  );
+
+  client.iceTimeoutHandle =
+    null;
 }
 
 initializeCleanup({
-  getState: () => state,
+  getState,
   stopKeepAlive,
   clearClientTimeout,
 });
 
-function resetBridge() {
-  clearAllKeepAlives();
+const resetBridge =
+  createBridgeReset({
+    engine,
+    getState,
 
-  if (state.iceTimeoutHandle) {
-    clearTimeout(
-      state.iceTimeoutHandle
-    );
-  }
+    setState:
+      (nextState) => {
+        state =
+          nextState;
+      },
 
-  try {
-    if (
-      state.signalingSocket &&
-      state.roomId
-    ) {
-      state.signalingSocket.emit(
-        "webrtc-leave",
-        {
-          roomId: state.roomId,
-        }
-      );
-    }
-  } catch {}
+    clearAllKeepAlives,
+    clearClientResources,
 
-  for (const [
-    socketId,
-    client,
-  ] of state.clients) {
-    clearClientResources(
-      socketId,
-      client
-    );
-  }
+    logPrefix:
+      "Bridge-Q3",
+  });
 
-  state.clients.clear();
-
-  /*
-   * Mismo principio: un solo propietario cierra el relay.
-   */
-  if (state.transportManager) {
-    try {
-      state.transportManager.close();
-    } catch {}
-  } else if (state.relayTransport) {
-    try {
-      state.relayTransport.close?.();
-    } catch {}
-  }
-
-  state.relayTransport = null;
-
-  try {
-    state.udpTransport?.close();
-  } catch {}
-
-  try {
-    state.channel?.close();
-  } catch {}
-
-  try {
-    state.peer?.close();
-  } catch {}
-
-  engine.stopSignaling();
-
-  state =
-    engine.resetOwnedState();
-
-  console.log(
-    "[Bridge-Q3] Reset complete"
-  );
-}
+const getBridgeState =
+  createBridgeStateGetter({
+    getState,
+  });
 
 initializeTransport({
-  getState: () => state,
+  getState,
+
   createTransportManager,
   createHostUDPProxy,
   createClientUDPTransport,
 });
 
 initializeRelay({
-  getState: () => state,
+  getState,
+
   createSocketRelayTransport,
+
   ensureHostTransportResources,
   ensureClientTransportResources,
+
   sendStatus,
 });
 
 initializeChannelHandlers({
-  getState: () => state,
+  getState,
+
   normalizeMessage,
   isKeepAlive,
+
   ensureHostTransportResources,
   ensureClientTransportResources,
+
   startKeepAlive,
   sendStatus,
 });
 
 initializeWatchdog({
-  getState: () => state,
+  getState,
+
   sendStatus,
+
   activateHostRelay,
   activateClientRelay,
+
   closeHostWebRTCResources,
   closeClientWebRTCResources,
+
   clearClientTimeout,
   isRelayActiveOrConnecting,
   describeCandidateTypes,
+
   ICE_CONNECT_TIMEOUT_MS,
 });
 
 peer.initialize({
-  getState: () => state,
+  getState,
+
   buildIceServers,
   flushCandidateQueue,
   getCandidateType,
   logGatheringResult,
+
   createHostWatchdog,
   createClientWatchdog,
   clearClientTimeout,
+
   sendStatus,
+
   isRelayActiveOrConnecting,
   activateHostRelay,
   activateClientRelay,
+
   closeHostWebRTCResources,
   closeClientWebRTCResources,
   cleanupClient,
+
   stopKeepAlive,
+
   onHostChannelOpen,
   onClientChannelOpen,
   handleChannelMessage,
-  // Config específica de Quake 3, inyectada hacia el módulo
-  // genérico del motor (electron/bridge/core/peer.js).
-  peerNamePrefix: "RetroLink-Q3",
-  logPrefix: "[Bridge-Q3]",
+
+  peerNamePrefix:
+    "RetroLink-Q3",
+
+  logPrefix:
+    "[Bridge-Q3]",
 });
 
-async function startBridge(
-  roomId,
-  isHost
-) {
-  resetBridge();
+/*
+ * El proceso de inicio ya pertenece al motor genérico.
+ *
+ * Quake inyecta únicamente sus dependencias y configuración.
+ */
+const startBridge =
+  createBridgeStarter({
+    engine,
+    getState,
+    resetBridge,
 
-  if (!roomId) {
-    return {
-      success: false,
-      error:
-        "No se proporcionó una sala.",
-    };
-  }
-
-  state.roomId = roomId;
-  state.isHost =
-    Boolean(isHost);
-
-  const NDC =
-    require("node-datachannel");
-
-  console.log(
-    `[Bridge-Q3] Iniciando sala ${roomId} como ${
-      state.isHost
-        ? "HOST"
-        : "CLIENTE"
-    }`
-  );
-
-  sendStatus(
-    "Conectando al servidor de señales..."
-  );
-
-  engine.startSignaling({
-    createSession:
-      createSignalingSession,
+    createSignalingSession,
 
     socketFactory:
       socketClient,
 
-    url:
+    signalingUrl:
       SIGNALING_URL,
 
-    options: {
+    socketOptions: {
       transports: [
         "websocket",
       ],
 
-      reconnection: true,
-      reconnectionAttempts: 3,
-      reconnectionDelay: 1000,
+      reconnection:
+        true,
+
+      reconnectionAttempts:
+        3,
+
+      reconnectionDelay:
+        1000,
     },
 
-    configure:
-      (signaling) => {
-        configureSignaling({
-          signaling,
-          NDC,
-          getState: () => state,
-          sendStatus,
-          getLocalIP,
-          getNextClientPort,
-          createHostPeer:
-            peer.createHost,
-          createClientPeer:
-            peer.createClient,
-          flushHostCandidates:
-            peer.flushHostCandidates,
-          flushClientCandidates:
-            peer.flushClientCandidates,
-          cleanupClient,
-        });
-      },
+    configureSignaling,
+
+    getNodeDataChannel:
+      () =>
+        require(
+          "node-datachannel"
+        ),
+
+    sendStatus,
+    getLocalIP,
+    getNextClientPort,
+
+    createHostPeer:
+      peer.createHost,
+
+    createClientPeer:
+      peer.createClient,
+
+    flushHostCandidates:
+      peer.flushHostCandidates,
+
+    flushClientCandidates:
+      peer.flushClientCandidates,
+
+    cleanupClient,
+
+    logPrefix:
+      "[Bridge-Q3]",
+
+    connectingStatus:
+      "Conectando al servidor de señales...",
   });
-
-  return {
-    success: true,
-  };
-}
-
-function getBridgeState() {
-  const connectedClients =
-    [...state.clients.entries()]
-      .filter(
-        ([, client]) =>
-          client.transportManager
-            ?.isWebRTCOpen() ||
-          client.transportManager
-            ?.isRelayOpen()
-      )
-      .map(
-        ([socketId, client]) => ({
-          socketId,
-          clientPort:
-            client.clientPort,
-          iceConnectionState:
-            client.iceConnectionState,
-          candidateTypes: [
-            ...client.gatheredCandidateTypes,
-          ],
-          switchingToRelay:
-            client.switchingToRelay,
-          transport:
-            client.transportManager?.getState() ??
-            null,
-          relay:
-            client.relayTransport?.getState?.() ??
-            null,
-        })
-      );
-
-  const clientConnected =
-    Boolean(
-      state.transportManager
-        ?.isWebRTCOpen() ||
-      state.transportManager
-        ?.isRelayOpen()
-    );
-
-  return {
-    isReady: state.isHost
-      ? connectedClients.length > 0
-      : clientConnected,
-
-    isHost:
-      state.isHost,
-
-    roomId:
-      state.roomId,
-
-    clientCount:
-      state.isHost
-        ? connectedClients.length
-        : clientConnected
-          ? 1
-          : 0,
-
-    clientPort:
-      state.clientPort,
-
-    hostIP:
-      state.hostIP,
-
-    iceConnectionState:
-      state.iceConnectionState,
-
-    candidateTypes: [
-      ...state.gatheredCandidateTypes,
-    ],
-
-    signalingConnected:
-      Boolean(
-        state.signalingSocket
-          ?.connected
-      ),
-
-    clients:
-      connectedClients,
-
-    switchingToRelay:
-      state.switchingToRelay,
-
-    transport:
-      state.transportManager?.getState() ??
-      null,
-
-    relay:
-      state.relayTransport?.getState?.() ??
-      null,
-  };
-}
 
 engine.setHandlers({
   start:
@@ -455,15 +357,17 @@ engine.setHandlers({
   getState:
     getBridgeState,
 
-  getClientPort: () =>
-    engine
-      .getMutableState()
-      .clientPort,
+  getClientPort:
+    () =>
+      engine
+        .getMutableState()
+        .clientPort,
 
-  getHostIP: () =>
-    engine
-      .getMutableState()
-      .hostIP,
+  getHostIP:
+    () =>
+      engine
+        .getMutableState()
+        .hostIP,
 });
 
 module.exports =
