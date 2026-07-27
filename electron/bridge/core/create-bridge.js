@@ -251,8 +251,8 @@ function createBridge({
     });
 
   /*
-   * Crea los transportes UDP adaptados
-   * al puerto del juego.
+   * Crea los transportes UDP adaptados a las
+   * características de cada juego.
    */
   const {
     createHostUDPProxy,
@@ -269,6 +269,15 @@ function createBridge({
 
     gameName:
       profile.name,
+
+    /*
+     * Por defecto será false para los perfiles que no
+     * definan explícitamente esta capacidad.
+     */
+    dynamicClientEndpoint:
+      Boolean(
+        profile.dynamicClientEndpoint
+      ),
   });
 
   /*

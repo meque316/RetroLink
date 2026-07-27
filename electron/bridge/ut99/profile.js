@@ -8,8 +8,11 @@ const DEBUG_UDP =
   process.env.RETROLINK_DEBUG_UDP === "1";
 
 module.exports = {
-  id: "ut99",
-  name: "Unreal Tournament",
+  id:
+    "ut99",
+
+  name:
+    "Unreal Tournament",
 
   /*
    * Constantes conservadas por compatibilidad
@@ -23,8 +26,25 @@ module.exports = {
   /*
    * Propiedades utilizadas por createBridge().
    */
-  gamePort: GAME_PORT,
-  clientPortBase: CLIENT_PORT_BASE,
-  maxClients: MAX_CLIENTS,
-  debugUDP: DEBUG_UDP,
+  gamePort:
+    GAME_PORT,
+
+  clientPortBase:
+    CLIENT_PORT_BASE,
+
+  maxClients:
+    MAX_CLIENTS,
+
+  debugUDP:
+    DEBUG_UDP,
+
+  /*
+   * UT99 abre el socket del cliente en un puerto UDP
+   * dinámico distinto de 7777.
+   *
+   * El bridge debe aprender ese endpoint desde el primer
+   * paquete local y devolver allí las respuestas del host.
+   */
+  dynamicClientEndpoint:
+    true,
 };

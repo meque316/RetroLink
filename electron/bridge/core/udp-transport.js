@@ -15,6 +15,16 @@ function createUDPTransportFactory({
   debug = false,
   logPrefix = "Game-UDP",
   gameName = "juego",
+
+  /*
+   * Algunos juegos crean el socket del cliente en un puerto
+   * UDP dinámico distinto del puerto del servidor.
+   *
+   * Cuando esta opción está activada, RetroLink aprende el
+   * endpoint real desde el primer paquete enviado por el juego
+   * y devuelve allí las respuestas recibidas desde la red.
+   */
+  dynamicClientEndpoint = false,
 } = {}) {
   if (
     !Number.isInteger(gamePort) ||
@@ -27,12 +37,14 @@ function createUDPTransportFactory({
   }
 
   function debugLog(...args) {
-    if (debug) {
-      console.log(
-        `[${logPrefix}]`,
-        ...args
-      );
+    if (!debug) {
+      return;
     }
+
+    console.log(
+      `[${logPrefix}]`,
+      ...args
+    );
   }
 
   function safelyForwardGamePacket({
@@ -116,7 +128,10 @@ function createUDPTransportFactory({
           socket.address();
 
         console.log(
-          `[${logPrefix}] Proxy host ${socketId} escuchando en ${bindHost}:${address.port}; puerto virtual cliente ${clientPort}`
+          `[${logPrefix}] Proxy host ${socketId} escuchando en ` +
+            `${address.address}:${address.port}; ` +
+            `puerto virtual cliente ${clientPort}; ` +
+            `destino del juego ${gameHost}:${gamePort}`
         );
       }
     );
@@ -144,11 +159,14 @@ function createUDPTransportFactory({
                 `[${logPrefix}] Remoto → ${gameName} host:`,
                 error.message
               );
-            } else {
-              debugLog(
-                `Transporte remoto → host ${gameName}: ${buffer.length} bytes`
-              );
+
+              return;
             }
+
+            debugLog(
+              `Transporte remoto → host ${gameName}: ` +
+                `${buffer.length} bytes a ${gameHost}:${gamePort}`
+            );
           }
         );
 
@@ -190,6 +208,15 @@ function createUDPTransportFactory({
 
     let closed = false;
 
+    /*
+     * Endpoint UDP real del ejecutable cliente.
+     *
+     * En modo dinámico se obtiene desde remoteInfo cuando
+     * el juego envía su primer paquete al puerto virtual.
+     */
+    let clientGameAddress = null;
+    let clientGamePort = null;
+
     socket.on("error", (error) => {
       console.error(
         `[${logPrefix}] Error UDP cliente:`,
@@ -204,6 +231,27 @@ function createUDPTransportFactory({
           `Cliente recibió ${message.length} bytes`,
           `desde ${remoteInfo.address}:${remoteInfo.port}`
         );
+
+        if (dynamicClientEndpoint) {
+          const endpointChanged =
+            clientGameAddress !==
+              remoteInfo.address ||
+            clientGamePort !==
+              remoteInfo.port;
+
+          clientGameAddress =
+            remoteInfo.address;
+
+          clientGamePort =
+            remoteInfo.port;
+
+          if (endpointChanged) {
+            console.log(
+              `[${logPrefix}] Endpoint dinámico de ${gameName} detectado: ` +
+                `${clientGameAddress}:${clientGamePort}`
+            );
+          }
+        }
 
         const forwarded =
           safelyForwardGamePacket({
@@ -225,9 +273,23 @@ function createUDPTransportFactory({
       localPort,
       bindHost,
       () => {
+        const address =
+          socket.address();
+
         console.log(
-          `[${logPrefix}] Cliente escuchando en ${bindHost}:${localPort}`
+          `[${logPrefix}] Cliente escuchando en ` +
+            `${address.address}:${address.port}`
         );
+
+        if (dynamicClientEndpoint) {
+          console.log(
+            `[${logPrefix}] Esperando detectar el endpoint UDP dinámico de ${gameName}...`
+          );
+        } else {
+          debugLog(
+            `Destino fijo del cliente: ${gameHost}:${gamePort}`
+          );
+        }
       }
     );
 
@@ -242,23 +304,64 @@ function createUDPTransportFactory({
         const buffer =
           normalizeMessage(message);
 
+        const targetAddress =
+          dynamicClientEndpoint
+            ? clientGameAddress
+            : gameHost;
+
+        const targetPort =
+          dynamicClientEndpoint
+            ? clientGamePort
+            : gamePort;
+
+        /*
+         * Cuando el juego usa un endpoint dinámico, no debemos
+         * asumir que escucha en gamePort.
+         *
+         * Esperamos a que el ejecutable envíe su primer paquete
+         * para aprender el puerto correcto.
+         */
+        if (
+          dynamicClientEndpoint &&
+          (
+            !targetAddress ||
+            !Number.isInteger(
+              targetPort
+            ) ||
+            targetPort < 1 ||
+            targetPort > 65535
+          )
+        ) {
+          debugLog(
+            `Respuesta remota descartada temporalmente: ` +
+              `todavía no se detecta el endpoint UDP de ${gameName}.`
+          );
+
+          return false;
+        }
+
         socket.send(
           buffer,
           0,
           buffer.length,
-          gamePort,
-          gameHost,
+          targetPort,
+          targetAddress,
           (error) => {
             if (error) {
               console.error(
-                `[${logPrefix}] Remoto → ${gameName} cliente:`,
+                `[${logPrefix}] Remoto → ${gameName} cliente ` +
+                  `(${targetAddress}:${targetPort}):`,
                 error.message
               );
-            } else {
-              debugLog(
-                `Transporte remoto → cliente ${gameName}: ${buffer.length} bytes`
-              );
+
+              return;
             }
+
+            debugLog(
+              `Transporte remoto → cliente ${gameName}: ` +
+                `${buffer.length} bytes a ` +
+                `${targetAddress}:${targetPort}`
+            );
           }
         );
 
@@ -273,6 +376,43 @@ function createUDPTransportFactory({
         }
       },
 
+      getGameEndpoint() {
+        if (dynamicClientEndpoint) {
+          return {
+            address:
+              clientGameAddress,
+
+            port:
+              clientGamePort,
+
+            detected:
+              Boolean(
+                clientGameAddress &&
+                Number.isInteger(
+                  clientGamePort
+                )
+              ),
+
+            dynamic:
+              true,
+          };
+        }
+
+        return {
+          address:
+            gameHost,
+
+          port:
+            gamePort,
+
+          detected:
+            true,
+
+          dynamic:
+            false,
+        };
+      },
+
       isOpen() {
         return !closed;
       },
@@ -283,6 +423,12 @@ function createUDPTransportFactory({
         }
 
         closed = true;
+
+        clientGameAddress =
+          null;
+
+        clientGamePort =
+          null;
 
         try {
           socket.close();
