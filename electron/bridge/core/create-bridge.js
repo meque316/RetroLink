@@ -108,9 +108,12 @@ const {
 /**
  * Crea y ensambla un bridge de red completo para un juego.
  *
- * Esta primera versión conserva el mismo comportamiento
- * que anteriormente estaba implementado directamente
- * dentro de quake3/index.js.
+ * Cada adaptador entrega:
+ *
+ * - identidad para logs y peers;
+ * - perfil declarativo de red;
+ * - sistema de estados para el frontend;
+ * - handlers de DataChannel.
  */
 function createBridge({
   identity,
@@ -238,8 +241,8 @@ function createBridge({
   }
 
   /*
-   * Cada juego define su rango de puertos.
-   * El motor genérico encuentra el siguiente disponible.
+   * Cada juego define su rango virtual de clientes.
+   * El motor genérico encuentra el siguiente puerto disponible.
    */
   const getNextClientPort =
     createClientPortAllocator({
@@ -251,8 +254,10 @@ function createBridge({
     });
 
   /*
-   * Crea los transportes UDP adaptados a las
-   * características de cada juego.
+   * Crea los transportes UDP según las capacidades
+   * declaradas por el perfil.
+   *
+   * Ninguna condición depende del identificador del juego.
    */
   const {
     createHostUDPProxy,
@@ -260,6 +265,14 @@ function createBridge({
   } = createUDPTransportFactory({
     gamePort:
       profile.gamePort,
+
+    gameHost:
+      profile.gameHost ??
+      "127.0.0.1",
+
+    bindHost:
+      profile.bindHost ??
+      "127.0.0.1",
 
     debug:
       profile.debugUDP,
@@ -271,13 +284,32 @@ function createBridge({
       profile.name,
 
     /*
-     * Por defecto será false para los perfiles que no
-     * definan explícitamente esta capacidad.
+     * Cuando true, el destino real del ejecutable cliente
+     * se aprende desde el primer datagrama local.
      */
     dynamicClientEndpoint:
       Boolean(
         profile.dynamicClientEndpoint
       ),
+
+    /*
+     * Puerto local fijo donde escucha el bridge.
+     *
+     * Si el perfil no lo declara, se utiliza el puerto
+     * virtual asignado por señalización.
+     */
+    clientListenPort:
+      profile.clientListenPort ??
+      null,
+
+    /*
+     * Puerto fijo donde escucha el ejecutable cliente.
+     *
+     * Por defecto coincide con gamePort.
+     */
+    configuredClientGamePort:
+      profile.clientGamePort ??
+      profile.gamePort,
   });
 
   /*

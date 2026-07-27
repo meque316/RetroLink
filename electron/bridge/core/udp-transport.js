@@ -8,6 +8,14 @@ function normalizeMessage(message) {
     : Buffer.from(message);
 }
 
+function isValidPort(port) {
+  return (
+    Number.isInteger(port) &&
+    port >= 1 &&
+    port <= 65535
+  );
+}
+
 function createUDPTransportFactory({
   gamePort,
   gameHost = "127.0.0.1",
@@ -25,14 +33,67 @@ function createUDPTransportFactory({
    * y devuelve allí las respuestas recibidas desde la red.
    */
   dynamicClientEndpoint = false,
+
+  /*
+   * Puerto fijo donde debe escuchar el bridge del cliente.
+   *
+   * Si es null, el bridge escucha en el puerto virtual
+   * asignado por RetroLink mediante señalización.
+   *
+   * Ejemplo:
+   *
+   *   Quake III:
+   *     clientListenPort = null
+   *
+   *   UT99:
+   *     clientListenPort = null
+   *
+   *   Counter-Strike 1.6:
+   *     clientListenPort = 27015
+   */
+  clientListenPort = null,
+
+  /*
+   * Puerto UDP fijo donde escucha el ejecutable cliente.
+   *
+   * Si no se declara, utiliza gamePort para conservar el
+   * comportamiento anterior.
+   *
+   * Se ignora cuando dynamicClientEndpoint está activado,
+   * porque en ese caso se utiliza el endpoint aprendido.
+   *
+   * Ejemplo:
+   *
+   *   Quake III:
+   *     configuredClientGamePort = gamePort
+   *
+   *   Counter-Strike 1.6:
+   *     configuredClientGamePort = 27005
+   */
+  configuredClientGamePort = gamePort,
 } = {}) {
-  if (
-    !Number.isInteger(gamePort) ||
-    gamePort < 1 ||
-    gamePort > 65535
-  ) {
+  if (!isValidPort(gamePort)) {
     throw new Error(
       `[${logPrefix}] gamePort debe ser un puerto UDP válido.`
+    );
+  }
+
+  if (
+    clientListenPort !== null &&
+    !isValidPort(clientListenPort)
+  ) {
+    throw new Error(
+      `[${logPrefix}] clientListenPort debe ser null o un puerto UDP válido.`
+    );
+  }
+
+  if (
+    !isValidPort(
+      configuredClientGamePort
+    )
+  ) {
+    throw new Error(
+      `[${logPrefix}] configuredClientGamePort debe ser un puerto UDP válido.`
     );
   }
 
@@ -108,13 +169,15 @@ function createUDPTransportFactory({
           safelyForwardGamePacket({
             message,
             onGamePacket,
+
             label:
               `Host → transporte remoto (${socketId})`,
           });
 
         if (!forwarded) {
           debugLog(
-            `Paquete host descartado para ${socketId}: ${message.length} bytes`
+            `Paquete host descartado para ${socketId}: ` +
+              `${message.length} bytes`
           );
         }
       }
@@ -165,7 +228,8 @@ function createUDPTransportFactory({
 
             debugLog(
               `Transporte remoto → host ${gameName}: ` +
-                `${buffer.length} bytes a ${gameHost}:${gamePort}`
+                `${buffer.length} bytes a ` +
+                `${gameHost}:${gamePort}`
             );
           }
         );
@@ -203,19 +267,41 @@ function createUDPTransportFactory({
     localPort,
     onGamePacket,
   }) {
+    if (!isValidPort(localPort)) {
+      throw new Error(
+        `[${logPrefix}] localPort debe ser un puerto UDP válido.`
+      );
+    }
+
     const socket =
       dgram.createSocket("udp4");
+
+    /*
+     * Puerto virtual asignado por RetroLink.
+     *
+     * En la mayoría de los juegos también es el puerto donde
+     * escucha el bridge, pero algunos perfiles pueden declarar
+     * un clientListenPort fijo.
+     */
+    const assignedClientPort =
+      localPort;
+
+    const effectiveListenPort =
+      clientListenPort ??
+      assignedClientPort;
 
     let closed = false;
 
     /*
-     * Endpoint UDP real del ejecutable cliente.
+     * Endpoint UDP real aprendido desde el ejecutable.
      *
-     * En modo dinámico se obtiene desde remoteInfo cuando
-     * el juego envía su primer paquete al puerto virtual.
+     * Sólo se utiliza cuando dynamicClientEndpoint está activo.
      */
-    let clientGameAddress = null;
-    let clientGamePort = null;
+    let learnedClientAddress =
+      null;
+
+    let learnedClientPort =
+      null;
 
     socket.on("error", (error) => {
       console.error(
@@ -234,21 +320,21 @@ function createUDPTransportFactory({
 
         if (dynamicClientEndpoint) {
           const endpointChanged =
-            clientGameAddress !==
+            learnedClientAddress !==
               remoteInfo.address ||
-            clientGamePort !==
+            learnedClientPort !==
               remoteInfo.port;
 
-          clientGameAddress =
+          learnedClientAddress =
             remoteInfo.address;
 
-          clientGamePort =
+          learnedClientPort =
             remoteInfo.port;
 
           if (endpointChanged) {
             console.log(
               `[${logPrefix}] Endpoint dinámico de ${gameName} detectado: ` +
-                `${clientGameAddress}:${clientGamePort}`
+                `${learnedClientAddress}:${learnedClientPort}`
             );
           }
         }
@@ -257,20 +343,22 @@ function createUDPTransportFactory({
           safelyForwardGamePacket({
             message,
             onGamePacket,
+
             label:
               "Cliente → transporte remoto",
           });
 
         if (!forwarded) {
           debugLog(
-            `Paquete cliente descartado: ${message.length} bytes`
+            `Paquete cliente descartado: ` +
+              `${message.length} bytes`
           );
         }
       }
     );
 
     socket.bind(
-      localPort,
+      effectiveListenPort,
       bindHost,
       () => {
         const address =
@@ -281,15 +369,30 @@ function createUDPTransportFactory({
             `${address.address}:${address.port}`
         );
 
+        if (
+          effectiveListenPort !==
+          assignedClientPort
+        ) {
+          console.log(
+            `[${logPrefix}] Puerto virtual asignado por RetroLink: ` +
+              `${assignedClientPort}; ` +
+              `puerto de escucha definido por el perfil: ` +
+              `${effectiveListenPort}`
+          );
+        }
+
         if (dynamicClientEndpoint) {
           console.log(
             `[${logPrefix}] Esperando detectar el endpoint UDP dinámico de ${gameName}...`
           );
-        } else {
-          debugLog(
-            `Destino fijo del cliente: ${gameHost}:${gamePort}`
-          );
+
+          return;
         }
+
+        debugLog(
+          `Destino fijo del cliente: ` +
+            `${gameHost}:${configuredClientGamePort}`
+        );
       }
     );
 
@@ -306,30 +409,26 @@ function createUDPTransportFactory({
 
         const targetAddress =
           dynamicClientEndpoint
-            ? clientGameAddress
+            ? learnedClientAddress
             : gameHost;
 
         const targetPort =
           dynamicClientEndpoint
-            ? clientGamePort
-            : gamePort;
+            ? learnedClientPort
+            : configuredClientGamePort;
 
         /*
-         * Cuando el juego usa un endpoint dinámico, no debemos
-         * asumir que escucha en gamePort.
+         * Cuando el juego usa un endpoint dinámico no debemos
+         * asumir que escucha en gamePort ni en otro puerto fijo.
          *
          * Esperamos a que el ejecutable envíe su primer paquete
-         * para aprender el puerto correcto.
+         * para aprender el destino correcto.
          */
         if (
           dynamicClientEndpoint &&
           (
             !targetAddress ||
-            !Number.isInteger(
-              targetPort
-            ) ||
-            targetPort < 1 ||
-            targetPort > 65535
+            !isValidPort(targetPort)
           )
         ) {
           debugLog(
@@ -376,20 +475,24 @@ function createUDPTransportFactory({
         }
       },
 
+      getAssignedClientPort() {
+        return assignedClientPort;
+      },
+
       getGameEndpoint() {
         if (dynamicClientEndpoint) {
           return {
             address:
-              clientGameAddress,
+              learnedClientAddress,
 
             port:
-              clientGamePort,
+              learnedClientPort,
 
             detected:
               Boolean(
-                clientGameAddress &&
-                Number.isInteger(
-                  clientGamePort
+                learnedClientAddress &&
+                isValidPort(
+                  learnedClientPort
                 )
               ),
 
@@ -403,7 +506,7 @@ function createUDPTransportFactory({
             gameHost,
 
           port:
-            gamePort,
+            configuredClientGamePort,
 
           detected:
             true,
@@ -424,10 +527,10 @@ function createUDPTransportFactory({
 
         closed = true;
 
-        clientGameAddress =
+        learnedClientAddress =
           null;
 
-        clientGamePort =
+        learnedClientPort =
           null;
 
         try {
