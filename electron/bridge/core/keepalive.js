@@ -2,7 +2,7 @@
 
 const {
   KEEPALIVE_INTERVAL_MS,
-} = require("../core/engine-config");
+} = require("./engine-config");
 
 const keepAliveIntervals =
   new Map();
