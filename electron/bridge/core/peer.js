@@ -9,6 +9,22 @@ let deps = null;
 
 function initialize(injectedDeps) {
   deps = injectedDeps;
+
+  console.log(
+    "[DEBUG-PEER] initialize() ejecutado:",
+    {
+      peerNamePrefix:
+        injectedDeps?.peerNamePrefix,
+      logPrefix:
+        injectedDeps?.logPrefix,
+      hasGetState:
+        typeof injectedDeps?.getState ===
+        "function",
+      hasSendStatus:
+        typeof injectedDeps?.sendStatus ===
+        "function",
+    }
+  );
 }
 
 function flushHostCandidates(
@@ -53,14 +69,88 @@ function createHost(
   signaling,
   socketId
 ) {
+  console.log(
+    "[DEBUG-PEER] createHost() iniciado:",
+    {
+      socketId,
+      hasDeps: Boolean(deps),
+      hasNDC: Boolean(NDC),
+      hasPeerConnection:
+        typeof NDC?.PeerConnection ===
+        "function",
+      hasSignaling:
+        Boolean(signaling),
+      signalingId:
+        signaling?.id,
+    }
+  );
+
+  if (!deps) {
+    console.error(
+      "[DEBUG-PEER] peer.initialize() no fue ejecutado."
+    );
+
+    return;
+  }
+
   const state = deps.getState();
+
+  console.log(
+    "[DEBUG-PEER] Estado obtenido en createHost():",
+    {
+      roomId:
+        state?.roomId,
+      isHost:
+        state?.isHost,
+      clientsCount:
+        state?.clients?.size,
+      clientExists:
+        Boolean(
+          state?.clients?.has(
+            socketId
+          )
+        ),
+      peerNamePrefix:
+        deps.peerNamePrefix,
+      logPrefix:
+        deps.logPrefix,
+    }
+  );
 
   const client =
     state.clients.get(socketId);
 
   if (!client) {
+    console.error(
+      "[DEBUG-PEER] Cliente no encontrado en state.clients:",
+      {
+        socketId,
+        roomId:
+          state?.roomId,
+        clients:
+          state?.clients
+            ? [
+                ...state.clients.keys(),
+              ]
+            : null,
+      }
+    );
+
     return;
   }
+
+  console.log(
+    "[DEBUG-PEER] Creando PeerConnection host:",
+    {
+      socketId,
+      peerName:
+        `${deps.peerNamePrefix}-Host-${socketId}`,
+      roomId:
+        state.roomId,
+      clientPort:
+        client.clientPort,
+    }
+  );
 
   const peer =
     new NDC.PeerConnection(
@@ -71,6 +161,11 @@ function createHost(
         iceTransportPolicy: "all",
       }
     );
+
+  console.log(
+    "[DEBUG-PEER] PeerConnection host creado:",
+    socketId
+  );
 
   client.peer = peer;
 
@@ -167,6 +262,24 @@ function createHost(
 
   peer.onLocalDescription(
     (sdp, type) => {
+      console.log(
+        "[DEBUG-PEER] Descripción local host generada:",
+        {
+          socketId,
+          roomId:
+            state.roomId,
+          type,
+          sdpLength:
+            typeof sdp === "string"
+              ? sdp.length
+              : null,
+          signalingConnected:
+            signaling?.connected,
+          signalingId:
+            signaling?.id,
+        }
+      );
+
       signaling.emit(
         "webrtc-signal",
         {
@@ -174,6 +287,18 @@ function createHost(
             state.roomId,
           type,
           sdp,
+          toSocketId:
+            socketId,
+        }
+      );
+
+      console.log(
+        "[DEBUG-PEER] webrtc-signal enviado al servidor:",
+        {
+          socketId,
+          roomId:
+            state.roomId,
+          type,
           toSocketId:
             socketId,
         }
@@ -188,6 +313,17 @@ function createHost(
             client.clientPort,
           toSocketId:
             socketId,
+        }
+      );
+
+      console.log(
+        "[DEBUG-PEER] webrtc-client-port enviado:",
+        {
+          socketId,
+          roomId:
+            state.roomId,
+          port:
+            client.clientPort,
         }
       );
     }
@@ -222,6 +358,11 @@ function createHost(
     }
   );
 
+  console.log(
+    "[DEBUG-PEER] Creando DataChannel host:",
+    socketId
+  );
+
   const channel =
     peer.createDataChannel(
       "game",
@@ -231,6 +372,15 @@ function createHost(
     );
 
   client.channel = channel;
+
+  console.log(
+    "[DEBUG-PEER] DataChannel host creado:",
+    {
+      socketId,
+      clientPort:
+        client.clientPort,
+    }
+  );
 
   channel.onOpen(() => {
     deps.onHostChannelOpen(
@@ -305,13 +455,53 @@ function createHost(
   /*
    * El host debe iniciar la oferta.
    */
+  console.log(
+    "[DEBUG-PEER] DataChannel configurado. Programando oferta en 200 ms:",
+    {
+      socketId,
+      roomId:
+        state.roomId,
+      clientPort:
+        client.clientPort,
+      peerNamePrefix:
+        deps.peerNamePrefix,
+      logPrefix:
+        deps.logPrefix,
+    }
+  );
+
   setTimeout(() => {
+    console.log(
+      "[DEBUG-PEER] Timeout ejecutado. Llamando setLocalDescription():",
+      {
+        socketId,
+        roomId:
+          state.roomId,
+        clientStillExists:
+          state.clients.has(
+            socketId
+          ),
+        signalingConnected:
+          signaling?.connected,
+      }
+    );
+
     try {
-      peer.setLocalDescription();
+      const result =
+        peer.setLocalDescription();
+
+      console.log(
+        "[DEBUG-PEER] setLocalDescription() ejecutado sin excepción:",
+        {
+          socketId,
+          resultType:
+            typeof result,
+        }
+      );
     } catch (error) {
       console.error(
-        `${deps.logPrefix} Error creando oferta para ${socketId}:`,
-        error.message
+        `[DEBUG-PEER] Error creando oferta para ${socketId}:`,
+        error
       );
 
       deps.cleanupClient(socketId);
@@ -323,7 +513,50 @@ function createClient(
   NDC,
   signaling
 ) {
+  console.log(
+    "[DEBUG-PEER] createClient() iniciado:",
+    {
+      hasDeps:
+        Boolean(deps),
+      hasNDC:
+        Boolean(NDC),
+      hasPeerConnection:
+        typeof NDC?.PeerConnection ===
+        "function",
+      hasSignaling:
+        Boolean(signaling),
+      signalingId:
+        signaling?.id,
+    }
+  );
+
+  if (!deps) {
+    console.error(
+      "[DEBUG-PEER] peer.initialize() no fue ejecutado antes de createClient()."
+    );
+
+    return;
+  }
+
   const state = deps.getState();
+
+  console.log(
+    "[DEBUG-PEER] Estado obtenido en createClient():",
+    {
+      roomId:
+        state?.roomId,
+      isHost:
+        state?.isHost,
+      peerAlreadyExists:
+        Boolean(
+          state?.peer
+        ),
+      peerNamePrefix:
+        deps.peerNamePrefix,
+      logPrefix:
+        deps.logPrefix,
+    }
+  );
 
   const peer =
     new NDC.PeerConnection(
@@ -445,6 +678,23 @@ function createClient(
         `${deps.logPrefix} Descripción local cliente: ${type}`
       );
 
+      console.log(
+        "[DEBUG-PEER] Descripción local cliente generada:",
+        {
+          roomId:
+            state.roomId,
+          type,
+          sdpLength:
+            typeof sdp === "string"
+              ? sdp.length
+              : null,
+          signalingConnected:
+            signaling?.connected,
+          signalingId:
+            signaling?.id,
+        }
+      );
+
       signaling.emit(
         "webrtc-signal",
         {
@@ -452,6 +702,15 @@ function createClient(
             state.roomId,
           type,
           sdp,
+        }
+      );
+
+      console.log(
+        "[DEBUG-PEER] Señal cliente enviada al servidor:",
+        {
+          roomId:
+            state.roomId,
+          type,
         }
       );
     }

@@ -95,6 +95,19 @@ function configureSignaling({
     ({ fromSocketId } = {}) => {
       const state = getState();
 
+      console.log(
+        "[DEBUG-SIGNALING] webrtc-peer-ready recibido:",
+        {
+          fromSocketId,
+          roomId:
+            state.roomId,
+          isHost:
+            state.isHost,
+          clientsCount:
+            state.clients?.size,
+        }
+      );
+
       if (
         !state.isHost ||
         !fromSocketId ||
@@ -102,6 +115,22 @@ function configureSignaling({
           fromSocketId
         )
       ) {
+        console.log(
+          "[DEBUG-SIGNALING] webrtc-peer-ready ignorado:",
+          {
+            isHost:
+              state.isHost,
+            fromSocketId,
+            clientAlreadyExists:
+              Boolean(
+                fromSocketId &&
+                state.clients.has(
+                  fromSocketId
+                )
+              ),
+          }
+        );
+
         return;
       }
 
@@ -109,6 +138,14 @@ function configureSignaling({
         getNextClientPort(
           state
         );
+
+      console.log(
+        "[DEBUG-SIGNALING] Puerto virtual calculado:",
+        {
+          fromSocketId,
+          clientPort,
+        }
+      );
 
       if (!clientPort) {
         sendStatus(
@@ -143,15 +180,50 @@ function configureSignaling({
         }
       );
 
+      console.log(
+        "[DEBUG-SIGNALING] Cliente agregado a state.clients:",
+        {
+          fromSocketId,
+          clientPort,
+          clientsCount:
+            state.clients.size,
+        }
+      );
+
       sendStatus(
         "Rival encontrado. Creando conexión P2P..."
       );
 
-      createHostPeer(
-        NDC,
-        signaling,
-        fromSocketId
-      );
+      try {
+        console.log(
+          "[DEBUG-SIGNALING] Llamando createHostPeer...",
+          {
+            fromSocketId,
+            roomId:
+              state.roomId,
+          }
+        );
+
+        createHostPeer(
+          NDC,
+          signaling,
+          fromSocketId
+        );
+
+        console.log(
+          "[DEBUG-SIGNALING] createHostPeer terminó sin lanzar error:",
+          fromSocketId
+        );
+      } catch (error) {
+        console.error(
+          "[DEBUG-SIGNALING] Error ejecutando createHostPeer:",
+          error
+        );
+
+        sendStatus(
+          `Error creando peer host: ${error.message}`
+        );
+      }
     }
   );
 
@@ -159,6 +231,17 @@ function configureSignaling({
     "webrtc-client-port",
     ({ port } = {}) => {
       const state = getState();
+
+      console.log(
+        "[DEBUG-SIGNALING] webrtc-client-port recibido:",
+        {
+          port,
+          isHost:
+            state.isHost,
+          roomId:
+            state.roomId,
+        }
+      );
 
       if (
         !state.isHost &&
@@ -176,14 +259,39 @@ function configureSignaling({
 
   signaling.on(
     "webrtc-signal",
-    ({
-      type,
-      sdp,
-      candidate,
-      mid,
-      fromSocketId,
-    } = {}) => {
+    (payload = {}) => {
+      const {
+        type,
+        sdp,
+        candidate,
+        mid,
+        fromSocketId,
+      } = payload;
+
       const state = getState();
+
+      console.log(
+        "[DEBUG-SIGNALING] webrtc-signal recibido:",
+        {
+          type,
+          fromSocketId,
+          roomId:
+            state.roomId,
+          isHost:
+            state.isHost,
+          hasSdp:
+            typeof sdp ===
+            "string",
+          sdpLength:
+            typeof sdp ===
+            "string"
+              ? sdp.length
+              : null,
+          hasCandidate:
+            Boolean(candidate),
+          mid,
+        }
+      );
 
       try {
         if (state.isHost) {
@@ -193,12 +301,27 @@ function configureSignaling({
             );
 
           if (!client) {
+            console.warn(
+              "[DEBUG-SIGNALING] Señal host ignorada: cliente no encontrado.",
+              {
+                fromSocketId,
+                type,
+                clientsCount:
+                  state.clients.size,
+              }
+            );
+
             return;
           }
 
           if (
             type === "answer"
           ) {
+            console.log(
+              "[DEBUG-SIGNALING] Host procesando answer:",
+              fromSocketId
+            );
+
             client.peer.setRemoteDescription(
               sdp,
               "answer"
@@ -208,6 +331,11 @@ function configureSignaling({
               true;
 
             flushHostCandidates(
+              fromSocketId
+            );
+
+            console.log(
+              "[DEBUG-SIGNALING] Answer aplicada correctamente:",
               fromSocketId
             );
 
@@ -222,6 +350,15 @@ function configureSignaling({
               mid,
             });
 
+            console.log(
+              "[DEBUG-SIGNALING] Candidate host encolado:",
+              {
+                fromSocketId,
+                pendingCandidates:
+                  client.pendingCandidates.length,
+              }
+            );
+
             flushHostCandidates(
               fromSocketId
             );
@@ -233,10 +370,30 @@ function configureSignaling({
         if (
           type === "offer"
         ) {
+          console.log(
+            "[DEBUG-SIGNALING] Cliente procesando offer:",
+            {
+              roomId:
+                state.roomId,
+              peerAlreadyExists:
+                Boolean(
+                  state.peer
+                ),
+            }
+          );
+
           if (!state.peer) {
+            console.log(
+              "[DEBUG-SIGNALING] Creando peer cliente..."
+            );
+
             createClientPeer(
               NDC,
               signaling
+            );
+
+            console.log(
+              "[DEBUG-SIGNALING] createClientPeer terminó sin lanzar error."
             );
           }
 
@@ -256,10 +413,18 @@ function configureSignaling({
             "offer"
           );
 
+          console.log(
+            "[DEBUG-SIGNALING] Oferta aplicada al peer cliente."
+          );
+
           state.remoteDescSet =
             true;
 
           flushClientCandidates();
+
+          console.log(
+            "[DEBUG-SIGNALING] Candidates cliente procesados tras la oferta."
+          );
 
           return;
         }
@@ -272,12 +437,20 @@ function configureSignaling({
             mid,
           });
 
+          console.log(
+            "[DEBUG-SIGNALING] Candidate cliente encolado:",
+            {
+              pendingCandidates:
+                state.pendingCandidates.length,
+            }
+          );
+
           flushClientCandidates();
         }
       } catch (error) {
         console.error(
           "[Core-Signaling] Error procesando señal:",
-          error.message
+          error
         );
 
         sendStatus(
@@ -291,6 +464,17 @@ function configureSignaling({
     "webrtc-client-left",
     ({ socketId } = {}) => {
       const state = getState();
+
+      console.log(
+        "[DEBUG-SIGNALING] webrtc-client-left recibido:",
+        {
+          socketId,
+          isHost:
+            state.isHost,
+          roomId:
+            state.roomId,
+        }
+      );
 
       if (
         !state.isHost ||
