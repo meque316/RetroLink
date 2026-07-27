@@ -102,7 +102,7 @@ const {
 } = require("./signaling");
 
 const {
-  peer,
+  createPeerModule,
 } = require("./peer");
 
 /**
@@ -239,6 +239,12 @@ function createBridge({
       "[CreateBridge] channels.onClientChannelOpen debe ser una función."
     );
   }
+
+  /*
+   * Cada bridge posee su propia instancia del motor de peers,
+   * evitando el antiguo singleton global compartido.
+   */
+  const peer = createPeerModule();
 
   /*
    * Cada juego define su rango virtual de clientes.
