@@ -9,14 +9,14 @@ const {
 } = require("./status");
 
 const {
-  initializeChannelHandlers,
-  handleChannelMessage,
-  onHostChannelOpen,
-  onClientChannelOpen,
+  createChannelHandlers,
 } = require("./channel-handlers");
 
 const quake3Profile =
   require("./profile");
+
+const channels =
+  createChannelHandlers();
 
 
 const identity = {
@@ -43,12 +43,7 @@ module.exports =
 
     sendStatus,
 
-    channels: {
-      initializeChannelHandlers,
-      handleChannelMessage,
-      onHostChannelOpen,
-      onClientChannelOpen,
-    },
+    channels,
 
     connectingStatus:
       "Conectando al servidor de señales...",
