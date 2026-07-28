@@ -116,8 +116,9 @@ function createBridge({
   profile,
   sendStatus,
   channels,
+  localTransport = null,
   connectingStatus =
-    "Conectando al servidor de señales...",
+    "Conectando al servidor de seÃ±ales...",
 } = {}) {
   if (!identity) {
     throw new TypeError(
@@ -136,7 +137,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] sendStatus debe ser una función."
+      "[CreateBridge] sendStatus debe ser una funciÃ³n."
     );
   }
 
@@ -151,6 +152,7 @@ function createBridge({
     logPrefix,
     peerNamePrefix,
     udpLogPrefix,
+    localTransportLogPrefix,
   } = identity;
 
   const {
@@ -191,12 +193,15 @@ function createBridge({
   }
 
   if (
-    typeof udpLogPrefix !==
-      "string" ||
-    !udpLogPrefix
+    !localTransport &&
+    (
+      typeof udpLogPrefix !==
+        "string" ||
+      !udpLogPrefix
+    )
   ) {
     throw new TypeError(
-      "[CreateBridge] identity.udpLogPrefix es obligatorio."
+      "[CreateBridge] identity.udpLogPrefix es obligatorio para el transporte UDP."
     );
   }
 
@@ -205,7 +210,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.initializeChannelHandlers debe ser una función."
+      "[CreateBridge] channels.initializeChannelHandlers debe ser una funciÃ³n."
     );
   }
 
@@ -214,7 +219,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.handleChannelMessage debe ser una función."
+      "[CreateBridge] channels.handleChannelMessage debe ser una funciÃ³n."
     );
   }
 
@@ -223,7 +228,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.onHostChannelOpen debe ser una función."
+      "[CreateBridge] channels.onHostChannelOpen debe ser una funciÃ³n."
     );
   }
 
@@ -232,7 +237,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.onClientChannelOpen debe ser una función."
+      "[CreateBridge] channels.onClientChannelOpen debe ser una funciÃ³n."
     );
   }
 
@@ -249,13 +254,66 @@ function createBridge({
   const watchdog = createWatchdogModule();
 
   /*
-   * Cada bridge posee su propia instancia del módulo de transporte.
+   * Por defecto se utiliza el transporte UDP genérico. Los juegos
+   * con una topología local distinta (por ejemplo IPX broadcast)
+   * pueden inyectar un módulo compatible mediante localTransport.
    */
-  const transport = createTransportModule();
+  const transport =
+    localTransport ??
+    createTransportModule();
+
+  let createHostUDPProxy = null;
+  let createClientUDPTransport = null;
+
+  if (!localTransport) {
+    ({
+      createHostUDPProxy,
+      createClientUDPTransport,
+    } = createUDPTransportFactory({
+      gamePort:
+        profile.gamePort,
+
+      gameHost:
+        profile.gameHost ??
+        "127.0.0.1",
+
+      bindHost:
+        profile.bindHost ??
+        "127.0.0.1",
+
+      debug:
+        profile.debugUDP,
+
+      logPrefix:
+        udpLogPrefix,
+
+      gameName:
+        profile.name,
+
+      dynamicClientEndpoint:
+        Boolean(
+          profile.dynamicClientEndpoint
+        ),
+
+      clientListenPort:
+        profile.clientListenPort ??
+        null,
+
+      configuredClientGamePort:
+        profile.clientGamePort ??
+        profile.gamePort,
+    }));
+  } else {
+    console.log(
+      `[${identity.bridgeName}] Usando transporte local personalizado: ${
+        localTransportLogPrefix ??
+        profile.id
+      }`
+    );
+  }
 
   /*
    * Cada juego define su rango virtual de clientes.
-   * El motor genérico encuentra el siguiente puerto disponible.
    */
   const getNextClientPort =
     createClientPortAllocator({
@@ -267,67 +325,8 @@ function createBridge({
     });
 
   /*
-   * Crea los transportes UDP según las capacidades
-   * declaradas por el perfil.
-   *
-   * Ninguna condición depende del identificador del juego.
-   */
-  const {
-    createHostUDPProxy,
-    createClientUDPTransport,
-  } = createUDPTransportFactory({
-    gamePort:
-      profile.gamePort,
-
-    gameHost:
-      profile.gameHost ??
-      "127.0.0.1",
-
-    bindHost:
-      profile.bindHost ??
-      "127.0.0.1",
-
-    debug:
-      profile.debugUDP,
-
-    logPrefix:
-      udpLogPrefix,
-
-    gameName:
-      profile.name,
-
-    /*
-     * Cuando true, el destino real del ejecutable cliente
-     * se aprende desde el primer datagrama local.
-     */
-    dynamicClientEndpoint:
-      Boolean(
-        profile.dynamicClientEndpoint
-      ),
-
-    /*
-     * Puerto local fijo donde escucha el bridge.
-     *
-     * Si el perfil no lo declara, se utiliza el puerto
-     * virtual asignado por señalización.
-     */
-    clientListenPort:
-      profile.clientListenPort ??
-      null,
-
-    /*
-     * Puerto fijo donde escucha el ejecutable cliente.
-     *
-     * Por defecto coincide con gamePort.
-     */
-    configuredClientGamePort:
-      profile.clientGamePort ??
-      profile.gamePort,
-  });
-
-  /*
    * El engine mantiene el estado y expone
-   * la API pública del bridge.
+   * la API pÃºblica del bridge.
    */
   const engine =
     createGameNetworkEngine({
@@ -342,14 +341,14 @@ function createBridge({
     engine.getMutableState();
 
   /*
-   * Todos los módulos acceden al estado actual
-   * mediante esta función.
+   * Todos los mÃ³dulos acceden al estado actual
+   * mediante esta funciÃ³n.
    */
   const getState =
     () => state;
 
   /*
-   * Restablece una sesión anterior y sustituye
+   * Restablece una sesiÃ³n anterior y sustituye
    * la instancia mutable del estado.
    */
   const resetBridge =
@@ -379,10 +378,17 @@ function createBridge({
   const getBridgeState =
     createBridgeStateGetter({
       getState,
+
+      extendState:
+        typeof transport.getStateExtension ===
+          "function"
+          ? () =>
+              transport.getStateExtension()
+          : null,
     });
 
   /*
-   * Inicializa todos los módulos internos.
+   * Inicializa todos los mÃ³dulos internos.
    */
   initializeBridgeModules({
     getState,
@@ -467,7 +473,7 @@ function createBridge({
   });
 
   /*
-   * Punto de entrada de una nueva sesión.
+   * Punto de entrada de una nueva sesiÃ³n.
    */
   const startBridge =
     createBridgeStarter({
@@ -544,8 +550,11 @@ function createBridge({
 
     getClientPort:
       () =>
-        getState()
-          .clientPort,
+        typeof transport.getClientPort ===
+          "function"
+          ? transport.getClientPort()
+          : getState()
+              .clientPort,
 
     getHostIP:
       () =>
@@ -559,3 +568,4 @@ function createBridge({
 module.exports = {
   createBridge,
 };
+

@@ -2,10 +2,11 @@
 
 function createBridgeStateGetter({
   getState,
+  extendState = null,
 }) {
   if (typeof getState !== "function") {
     throw new TypeError(
-      "[BridgeState] getState debe ser una función."
+      "[BridgeState] getState debe ser una funciÃ³n."
     );
   }
 
@@ -58,6 +59,12 @@ function createBridgeStateGetter({
         state.transportManager
           ?.isRelayOpen()
       );
+
+    const extraState =
+      typeof extendState ===
+        "function"
+        ? extendState(state) ?? {}
+        : {};
 
     return {
       isReady:
@@ -112,6 +119,8 @@ function createBridgeStateGetter({
         state.relayTransport
           ?.getState?.() ??
         null,
+
+      ...extraState,
     };
   };
 }
@@ -119,3 +128,4 @@ function createBridgeStateGetter({
 module.exports = {
   createBridgeStateGetter,
 };
+
