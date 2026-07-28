@@ -16,6 +16,22 @@ function isValidPort(port) {
   );
 }
 
+function describeError(error) {
+  if (!error) {
+    return null;
+  }
+
+  return {
+    message: error.message,
+    code: error.code ?? null,
+    errno: error.errno ?? null,
+    syscall: error.syscall ?? null,
+    address: error.address ?? null,
+    port: error.port ?? null,
+    stack: error.stack,
+  };
+}
+
 function createUDPTransportFactory({
   gamePort,
   gameHost = "127.0.0.1",
@@ -72,7 +88,25 @@ function createUDPTransportFactory({
    */
   configuredClientGamePort = gamePort,
 } = {}) {
+  console.log(
+    `[UDP-Debug] [${logPrefix}] createUDPTransportFactory() invocado:`,
+    {
+      gamePort,
+      gameHost,
+      bindHost,
+      dynamicClientEndpoint,
+      clientListenPort,
+      configuredClientGamePort,
+      gameName,
+    }
+  );
+
   if (!isValidPort(gamePort)) {
+    console.error(
+      `[UDP-Debug] [${logPrefix}] gamePort inválido:`,
+      { gamePort }
+    );
+
     throw new Error(
       `[${logPrefix}] gamePort debe ser un puerto UDP válido.`
     );
@@ -82,6 +116,11 @@ function createUDPTransportFactory({
     clientListenPort !== null &&
     !isValidPort(clientListenPort)
   ) {
+    console.error(
+      `[UDP-Debug] [${logPrefix}] clientListenPort inválido:`,
+      { clientListenPort }
+    );
+
     throw new Error(
       `[${logPrefix}] clientListenPort debe ser null o un puerto UDP válido.`
     );
@@ -92,6 +131,11 @@ function createUDPTransportFactory({
       configuredClientGamePort
     )
   ) {
+    console.error(
+      `[UDP-Debug] [${logPrefix}] configuredClientGamePort inválido:`,
+      { configuredClientGamePort }
+    );
+
     throw new Error(
       `[${logPrefix}] configuredClientGamePort debe ser un puerto UDP válido.`
     );
@@ -117,6 +161,12 @@ function createUDPTransportFactory({
       typeof onGamePacket !==
       "function"
     ) {
+      console.warn(
+        `[UDP-Debug] [${logPrefix}] ${label}: no existe callback onGamePacket, ` +
+          "paquete descartado.",
+        { bytes: message?.length }
+      );
+
       debugLog(
         `${label}: no existe callback onGamePacket`
       );
@@ -132,6 +182,11 @@ function createUDPTransportFactory({
       );
     } catch (error) {
       console.error(
+        `[UDP-Debug] [${logPrefix}] Excepción en onGamePacket (${label}):`,
+        describeError(error)
+      );
+
+      console.error(
         `[${logPrefix}] ${label}:`,
         error.message
       );
@@ -145,12 +200,33 @@ function createUDPTransportFactory({
     clientPort,
     onGamePacket,
   }) {
-    const socket =
-      dgram.createSocket("udp4");
+    console.log(
+      `[UDP-Debug] [${logPrefix}] [HOST-STEP 2] createHostUDPProxy() invocado:`,
+      { socketId, clientPort, gameHost, gamePort, bindHost }
+    );
+
+    let socket;
+
+    try {
+      socket =
+        dgram.createSocket("udp4");
+    } catch (error) {
+      console.error(
+        `[UDP-Debug] [${logPrefix}] Excepción creando socket UDP host:`,
+        { socketId, ...describeError(error) }
+      );
+
+      throw error;
+    }
 
     let closed = false;
 
     socket.on("error", (error) => {
+      console.error(
+        `[UDP-Debug] [${logPrefix}] [HOST-ERROR] Error en socket UDP host (${socketId}):`,
+        describeError(error)
+      );
+
       console.error(
         `[${logPrefix}] Error proxy host (${socketId}):`,
         error.message
@@ -183,12 +259,21 @@ function createUDPTransportFactory({
       }
     );
 
+    console.log(
+      `[UDP-Debug] [${logPrefix}] [HOST-STEP 3] intentando bind (puerto efímero) para host ${socketId}...`
+    );
+
     socket.bind(
       0,
       bindHost,
       () => {
         const address =
           socket.address();
+
+        console.log(
+          `[UDP-Debug] [${logPrefix}] [HOST-STEP 4] bind exitoso para host ${socketId}:`,
+          { address: address.address, port: address.port }
+        );
 
         console.log(
           `[${logPrefix}] Proxy host ${socketId} escuchando en ` +
@@ -204,6 +289,10 @@ function createUDPTransportFactory({
 
       sendToGame(message) {
         if (closed) {
+          console.warn(
+            `[UDP-Debug] [${logPrefix}] sendToGame() llamado con socket ya cerrado (host ${socketId}).`
+          );
+
           return false;
         }
 
@@ -218,6 +307,11 @@ function createUDPTransportFactory({
           gameHost,
           (error) => {
             if (error) {
+              console.error(
+                `[UDP-Debug] [${logPrefix}] Error enviando a ${gameName} (host ${socketId}):`,
+                describeError(error)
+              );
+
               console.error(
                 `[${logPrefix}] Remoto → ${gameName} host:`,
                 error.message
@@ -256,9 +350,18 @@ function createUDPTransportFactory({
 
         closed = true;
 
+        console.log(
+          `[UDP-Debug] [${logPrefix}] Cerrando socket UDP host (${socketId}).`
+        );
+
         try {
           socket.close();
-        } catch {}
+        } catch (error) {
+          console.error(
+            `[UDP-Debug] [${logPrefix}] Excepción cerrando socket UDP host (${socketId}):`,
+            describeError(error)
+          );
+        }
       },
     };
   }
@@ -267,14 +370,42 @@ function createUDPTransportFactory({
     localPort,
     onGamePacket,
   }) {
+    console.log(
+      `[UDP-Debug] [${logPrefix}] [CLIENT-STEP 2] createClientUDPTransport() invocado:`,
+      {
+        localPort,
+        clientListenPort,
+        dynamicClientEndpoint,
+        configuredClientGamePort,
+        gameHost,
+        bindHost,
+      }
+    );
+
     if (!isValidPort(localPort)) {
+      console.error(
+        `[UDP-Debug] [${logPrefix}] localPort inválido:`,
+        { localPort }
+      );
+
       throw new Error(
         `[${logPrefix}] localPort debe ser un puerto UDP válido.`
       );
     }
 
-    const socket =
-      dgram.createSocket("udp4");
+    let socket;
+
+    try {
+      socket =
+        dgram.createSocket("udp4");
+    } catch (error) {
+      console.error(
+        `[UDP-Debug] [${logPrefix}] Excepción creando socket UDP cliente:`,
+        describeError(error)
+      );
+
+      throw error;
+    }
 
     /*
      * Puerto virtual asignado por RetroLink.
@@ -305,6 +436,16 @@ function createUDPTransportFactory({
 
     socket.on("error", (error) => {
       console.error(
+        `[UDP-Debug] [${logPrefix}] [CLIENT-ERROR] Error en socket UDP cliente ` +
+          "(puede corresponder a un bind fallido, p. ej. EADDRINUSE):",
+        {
+          ...describeError(error),
+          effectiveListenPort,
+          bindHost,
+        }
+      );
+
+      console.error(
         `[${logPrefix}] Error UDP cliente:`,
         error.message
       );
@@ -333,6 +474,14 @@ function createUDPTransportFactory({
 
           if (endpointChanged) {
             console.log(
+              `[UDP-Debug] [${logPrefix}] Endpoint dinámico de ${gameName} detectado:`,
+              {
+                address: learnedClientAddress,
+                port: learnedClientPort,
+              }
+            );
+
+            console.log(
               `[${logPrefix}] Endpoint dinámico de ${gameName} detectado: ` +
                 `${learnedClientAddress}:${learnedClientPort}`
             );
@@ -357,12 +506,22 @@ function createUDPTransportFactory({
       }
     );
 
+    console.log(
+      `[UDP-Debug] [${logPrefix}] [CLIENT-STEP 3] intentando bind puerto ${effectiveListenPort} ` +
+        `en ${bindHost}...`
+    );
+
     socket.bind(
       effectiveListenPort,
       bindHost,
       () => {
         const address =
           socket.address();
+
+        console.log(
+          `[UDP-Debug] [${logPrefix}] [CLIENT-STEP 4] bind exitoso:`,
+          { address: address.address, port: address.port }
+        );
 
         console.log(
           `[${logPrefix}] Cliente escuchando en ` +
@@ -401,6 +560,10 @@ function createUDPTransportFactory({
 
       sendToGame(message) {
         if (closed) {
+          console.warn(
+            `[UDP-Debug] [${logPrefix}] sendToGame() llamado con socket cliente ya cerrado.`
+          );
+
           return false;
         }
 
@@ -431,6 +594,11 @@ function createUDPTransportFactory({
             !isValidPort(targetPort)
           )
         ) {
+          console.warn(
+            `[UDP-Debug] [${logPrefix}] Respuesta remota descartada: endpoint dinámico ` +
+              `de ${gameName} aún no detectado.`
+          );
+
           debugLog(
             `Respuesta remota descartada temporalmente: ` +
               `todavía no se detecta el endpoint UDP de ${gameName}.`
@@ -447,6 +615,12 @@ function createUDPTransportFactory({
           targetAddress,
           (error) => {
             if (error) {
+              console.error(
+                `[UDP-Debug] [${logPrefix}] Error enviando a ${gameName} cliente ` +
+                  `(${targetAddress}:${targetPort}):`,
+                describeError(error)
+              );
+
               console.error(
                 `[${logPrefix}] Remoto → ${gameName} cliente ` +
                   `(${targetAddress}:${targetPort}):`,
@@ -527,6 +701,10 @@ function createUDPTransportFactory({
 
         closed = true;
 
+        console.log(
+          `[UDP-Debug] [${logPrefix}] Cerrando socket UDP cliente.`
+        );
+
         learnedClientAddress =
           null;
 
@@ -535,7 +713,12 @@ function createUDPTransportFactory({
 
         try {
           socket.close();
-        } catch {}
+        } catch (error) {
+          console.error(
+            `[UDP-Debug] [${logPrefix}] Excepción cerrando socket UDP cliente:`,
+            describeError(error)
+          );
+        }
       },
     };
   }

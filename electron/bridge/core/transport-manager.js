@@ -1,4 +1,4 @@
-// electron/bridge/quake3/transport-manager.js
+/// electron/bridge/core/transport-manager.js
 
 const TRANSPORT_MODE = Object.freeze({
   NONE: "none",
@@ -30,11 +30,33 @@ function normalizePacket(packet) {
   }
 }
 
+function describeError(error) {
+  if (!error) {
+    return null;
+  }
+
+  return {
+    message: error.message,
+    stack: error.stack,
+  };
+}
+
 function createTransportManager({
   label = "transport",
   onPacket = null,
   onModeChange = null,
 } = {}) {
+  console.log(
+    `[Bridge-Q3-Transport:${label}] [TM-Debug] createTransportManager() invocado:`,
+    {
+      label,
+      hasOnPacket:
+        typeof onPacket === "function",
+      hasOnModeChange:
+        typeof onModeChange === "function",
+    }
+  );
+
   let mode = TRANSPORT_MODE.NONE;
 
   let webrtcChannel = null;
@@ -84,17 +106,31 @@ function createTransportManager({
   }
 
   function setMode(nextMode) {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [TM-Debug] setMode() invocado:`,
+      { modoActual: mode, modoSolicitado: nextMode }
+    );
+
     if (
       !Object.values(
         TRANSPORT_MODE
       ).includes(nextMode)
     ) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Modo de transporte inválido:`,
+        { nextMode }
+      );
+
       throw new Error(
         `Modo de transporte inválido: ${nextMode}`
       );
     }
 
     if (mode === nextMode) {
+      console.log(
+        `[Bridge-Q3-Transport:${label}] [TM-Debug] setMode(): modo sin cambios, no hace nada.`
+      );
+
       return;
     }
 
@@ -113,6 +149,11 @@ function createTransportManager({
       });
     } catch (error) {
       console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en onModeChange:`,
+        describeError(error)
+      );
+
+      console.error(
         `[Bridge-Q3-Transport:${label}] Error en onModeChange:`,
         error.message
       );
@@ -124,7 +165,12 @@ function createTransportManager({
       return Boolean(
         webrtcChannel?.isOpen?.()
       );
-    } catch {
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en isWebRTCOpen():`,
+        describeError(error)
+      );
+
       return false;
     }
   }
@@ -134,7 +180,12 @@ function createTransportManager({
       return Boolean(
         relayTransport?.isOpen?.()
       );
-    } catch {
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en isRelayOpen():`,
+        describeError(error)
+      );
+
       return false;
     }
   }
@@ -148,10 +199,20 @@ function createTransportManager({
     }
 
     try {
+      console.log(
+        `[Bridge-Q3-Transport:${label}] [TM-Debug] connectRelayIfNeeded(): ` +
+          "invocando relayTransport.connect()..."
+      );
+
       relayTransport.connect?.();
 
       return isRelayOpen();
     } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción activando relay:`,
+        describeError(error)
+      );
+
       console.error(
         `[Bridge-Q3-Transport:${label}] Error activando relay:`,
         error.message
@@ -178,6 +239,12 @@ function createTransportManager({
     metadata = {}
   ) {
     if (closed) {
+      console.warn(
+        `[Bridge-Q3-Transport:${label}] [TM-Debug] receive() llamado con manager cerrado; ` +
+          "paquete ignorado.",
+        { source }
+      );
+
       return false;
     }
 
@@ -186,6 +253,11 @@ function createTransportManager({
 
     if (!buffer) {
       registerDroppedPacket();
+
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Paquete remoto no pudo normalizarse:`,
+        { source }
+      );
 
       warn(
         `Paquete remoto inválido desde ${source}`
@@ -217,6 +289,12 @@ function createTransportManager({
         buffer.length
       );
 
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] No hay packetHandler registrado; ` +
+          "paquete descartado.",
+        { source, bytes: buffer.length }
+      );
+
       warn(
         `No existe onPacket para procesar ${buffer.length} bytes`
       );
@@ -239,6 +317,11 @@ function createTransportManager({
     } catch (error) {
       registerDroppedPacket(
         buffer.length
+      );
+
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción procesando paquete remoto:`,
+        { source, bytes: buffer.length, ...describeError(error) }
       );
 
       console.error(
@@ -273,11 +356,28 @@ function createTransportManager({
   }
 
   function useWebRTC(channel) {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [STEP 5] transportManager.useWebRTC() invocado:`,
+      {
+        label,
+        closed,
+        canalRecibido: Boolean(channel),
+      }
+    );
+
     if (closed) {
+      console.warn(
+        `[Bridge-Q3-Transport:${label}] [STEP 5] useWebRTC(): manager ya cerrado, se ignora.`
+      );
+
       return false;
     }
 
     if (!channel) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [STEP 5] useWebRTC(): no se proporcionó canal.`
+      );
+
       warn(
         "No se proporcionó un DataChannel."
       );
@@ -287,14 +387,34 @@ function createTransportManager({
 
     webrtcChannel = channel;
 
-    setMode(
-      TRANSPORT_MODE.WEBRTC
+    try {
+      setMode(
+        TRANSPORT_MODE.WEBRTC
+      );
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [STEP 5] [TM-ERROR] Excepción en setMode(WEBRTC):`,
+        describeError(error)
+      );
+
+      throw error;
+    }
+
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [STEP 5] transportManager.useWebRTC() completado. ` +
+        "Modo actual:",
+      { mode }
     );
 
     return true;
   }
 
   function useRelay(transport) {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [TM-Debug] useRelay() invocado:`,
+      { closed, transportRecibido: Boolean(transport) }
+    );
+
     if (closed) {
       return false;
     }
@@ -313,7 +433,12 @@ function createTransportManager({
     ) {
       try {
         relayTransport.close?.();
-      } catch {}
+      } catch (error) {
+        console.error(
+          `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción cerrando relay anterior:`,
+          describeError(error)
+        );
+      }
     }
 
     relayTransport = transport;
@@ -333,6 +458,11 @@ function createTransportManager({
   }
 
   function disableWebRTC() {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [TM-Debug] disableWebRTC() invocado. Modo actual:`,
+      { mode }
+    );
+
     webrtcChannel = null;
 
     if (
@@ -352,9 +482,19 @@ function createTransportManager({
   }
 
   function disableRelay() {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [TM-Debug] disableRelay() invocado. Modo actual:`,
+      { mode }
+    );
+
     try {
       relayTransport?.close?.();
-    } catch {}
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción cerrando relayTransport en disableRelay():`,
+        describeError(error)
+      );
+    }
 
     relayTransport = null;
 
@@ -379,9 +519,18 @@ function createTransportManager({
       return false;
     }
 
-    webrtcChannel.sendMessageBinary(
-      buffer
-    );
+    try {
+      webrtcChannel.sendMessageBinary(
+        buffer
+      );
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en sendMessageBinary():`,
+        { bytes: buffer?.length, ...describeError(error) }
+      );
+
+      throw error;
+    }
 
     return true;
   }
@@ -405,11 +554,20 @@ function createTransportManager({
       }
     }
 
-    return Boolean(
-      relayTransport.send(
-        buffer
-      )
-    );
+    try {
+      return Boolean(
+        relayTransport.send(
+          buffer
+        )
+      );
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en relayTransport.send():`,
+        { bytes: buffer?.length, ...describeError(error) }
+      );
+
+      throw error;
+    }
   }
 
   function send(packet) {
@@ -422,6 +580,10 @@ function createTransportManager({
 
     if (!buffer) {
       registerDroppedPacket();
+
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] No se pudo normalizar el paquete local.`
+      );
 
       warn(
         "No se pudo normalizar el paquete local."
@@ -501,6 +663,11 @@ function createTransportManager({
       }
     } catch (error) {
       console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción enviando mediante ${mode}:`,
+        { bytes: buffer?.length, ...describeError(error) }
+      );
+
+      console.error(
         `[Bridge-Q3-Transport:${label}] Error enviando mediante ${mode}:`,
         error.message
       );
@@ -565,7 +732,12 @@ function createTransportManager({
         relayTransport
           ?.getState?.() ??
         null;
-    } catch {
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en relayTransport.getState():`,
+        describeError(error)
+      );
+
       relayState = null;
     }
 
@@ -589,6 +761,11 @@ function createTransportManager({
   }
 
   function close() {
+    console.log(
+      `[Bridge-Q3-Transport:${label}] [TM-Debug] close() invocado. Modo actual:`,
+      { mode, closed }
+    );
+
     if (closed) {
       return;
     }
@@ -597,7 +774,12 @@ function createTransportManager({
 
     try {
       relayTransport?.close?.();
-    } catch {}
+    } catch (error) {
+      console.error(
+        `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción cerrando relayTransport en close():`,
+        describeError(error)
+      );
+    }
 
     webrtcChannel = null;
     relayTransport = null;
