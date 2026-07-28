@@ -2,6 +2,32 @@
 
 let deps = null;
 
+function getDebugStateId(state) {
+  globalThis.__RETROLINK_STATE_IDS__ ||=
+    new WeakMap();
+
+  globalThis.__RETROLINK_STATE_ID_COUNTER__ ||=
+    0;
+
+  if (
+    state &&
+    typeof state === "object" &&
+    !globalThis.__RETROLINK_STATE_IDS__.has(state)
+  ) {
+    globalThis.__RETROLINK_STATE_ID_COUNTER__ += 1;
+
+    globalThis.__RETROLINK_STATE_IDS__.set(
+      state,
+      globalThis.__RETROLINK_STATE_ID_COUNTER__
+    );
+  }
+
+  return state &&
+    typeof state === "object"
+      ? globalThis.__RETROLINK_STATE_IDS__.get(state)
+      : null;
+}
+
 function initializeTransport(
   injectedDeps
 ) {
@@ -287,9 +313,12 @@ function ensureClientTransportResources() {
     throw error;
   }
 
+  const stateDebugId = getDebugStateId(state);
+
   console.log(
     "[Transport-Debug] [CLIENT-STEP 1] estado obtenido:",
     {
+      stateDebugId: stateDebugId,
       clientPort: state.clientPort,
       transportManagerYaExiste:
         Boolean(
@@ -436,9 +465,20 @@ function ensureClientTransportResources() {
     );
   }
 
+  const stateFinal = deps.getState();
+  const stateFinalDebugId = getDebugStateId(stateFinal);
+
   console.log(
     "[Transport-Debug] [CLIENT-STEP 4] ensureClientTransportResources completado " +
-      "(nota: el bind UDP puede seguir pendiente de forma asíncrona)."
+      "(nota: el bind UDP puede seguir pendiente de forma asíncrona).",
+    {
+      stateDebugId: stateFinalDebugId,
+      clientPort: stateFinal.clientPort,
+      hasTransportManager:
+        Boolean(stateFinal.transportManager),
+      hasUDPTransport:
+        Boolean(stateFinal.udpTransport),
+    }
   );
 
   return state;

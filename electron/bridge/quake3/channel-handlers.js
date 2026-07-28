@@ -1,5 +1,31 @@
 // electron/bridge/quake3/channel-handlers.js
 
+function getDebugStateId(state) {
+  globalThis.__RETROLINK_STATE_IDS__ ||=
+    new WeakMap();
+
+  globalThis.__RETROLINK_STATE_ID_COUNTER__ ||=
+    0;
+
+  if (
+    state &&
+    typeof state === "object" &&
+    !globalThis.__RETROLINK_STATE_IDS__.has(state)
+  ) {
+    globalThis.__RETROLINK_STATE_ID_COUNTER__ += 1;
+
+    globalThis.__RETROLINK_STATE_IDS__.set(
+      state,
+      globalThis.__RETROLINK_STATE_ID_COUNTER__
+    );
+  }
+
+  return state &&
+    typeof state === "object"
+      ? globalThis.__RETROLINK_STATE_IDS__.get(state)
+      : null;
+}
+
 function createChannelHandlers() {
   let deps = null;
 
@@ -107,9 +133,12 @@ function createChannelHandlers() {
   function onClientChannelOpen() {
     const state = deps.getState();
 
+    const stateDebugId = getDebugStateId(state);
+
     console.log(
       `[CLIENT-OPEN 1] DataChannel cliente abierto; puerto=${state.clientPort}`,
       {
+        stateDebugId: stateDebugId,
         clientPort: state.clientPort,
         hasChannel: Boolean(state.channel),
         hasTransportManager:
@@ -134,23 +163,38 @@ function createChannelHandlers() {
     }
 
     console.log(
-      "[CLIENT-OPEN 2] Llamando ensureClientTransportResources()..."
+      "[CLIENT-OPEN 2] Llamando ensureClientTransportResources()...",
+      {
+        stateDebugId: getDebugStateId(deps.getState()),
+      }
     );
 
     deps.ensureClientTransportResources();
 
+    const stateAfter = deps.getState();
+    const stateAfterDebugId = getDebugStateId(stateAfter);
+
     console.log(
       "[CLIENT-OPEN 3] ensureClientTransportResources() completado.",
       {
+        stateDebugId: stateAfterDebugId,
+        clientPort: stateAfter.clientPort,
         hasTransportManager:
-          Boolean(state.transportManager),
+          Boolean(stateAfter.transportManager),
         hasUDPTransport:
-          Boolean(state.udpTransport),
+          Boolean(stateAfter.udpTransport),
       }
     );
 
     console.log(
-      "[CLIENT-OPEN 4] Llamando transportManager.useWebRTC()..."
+      "[CLIENT-OPEN 4] Llamando transportManager.useWebRTC()...",
+      {
+        stateDebugId: getDebugStateId(deps.getState()),
+        hasTransportManager:
+          Boolean(deps.getState().transportManager),
+        hasChannel:
+          Boolean(deps.getState().channel),
+      }
     );
 
     state.transportManager.useWebRTC(
