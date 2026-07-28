@@ -1,159 +1,202 @@
-// electron/bridge/quake3/watchdog.js
+// electron/bridge/core/watchdog.js
 
-let deps = null;
+function createWatchdogModule() {
+  let deps = null;
 
-function initializeWatchdog(injectedDeps) {
-  deps = injectedDeps;
-}
-
-function createHostWatchdog(
-  socketId,
-  client
-) {
-  deps.clearClientTimeout(client);
-
-  client.iceTimeoutHandle =
-    setTimeout(() => {
-      if (
-        client.iceConnectionState ===
-          "connected" ||
-        client.iceConnectionState ===
-          "completed"
-      ) {
-        return;
-      }
-
-      /*
-       * Evita fallback duplicado si onStateChange("failed")
-       * ya activó Relay para este mismo cliente.
-       */
-      if (
-        client.switchingToRelay ||
-        client.transportManager
-          ?.isRelayOpen() ||
-        deps.isRelayActiveOrConnecting(
-          client.relayTransport
-        )
-      ) {
-        return;
-      }
-
-      const candidates =
-        deps.describeCandidateTypes(
-          client.gatheredCandidateTypes
-        );
-
-      console.error(
-        `[Bridge-Q3] Timeout ICE con ${socketId}. Estado: ${
-          client.iceConnectionState ||
-          "desconocido"
-        }. Candidatos: ${candidates}.`
-      );
-
-      client.transportManager
-        ?.disableWebRTC();
-
-      const relayStarted =
-        deps.activateHostRelay(
-          socketId,
-          "ice-timeout"
-        );
-
-      if (relayStarted) {
-        deps.closeHostWebRTCResources(
-          socketId,
-          client
-        );
-      }
-
-      deps.sendStatus(
-        relayStarted
-          ? "P2P agotó el tiempo de espera. Intentando Relay..."
-          : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
-      );
-    }, deps.ICE_CONNECT_TIMEOUT_MS);
-}
-
-function createClientWatchdog() {
-  const state = deps.getState();
-
-  if (state.iceTimeoutHandle) {
-    clearTimeout(
-      state.iceTimeoutHandle
-    );
+  function initializeWatchdog(injectedDeps) {
+    deps = injectedDeps;
   }
 
-  state.iceTimeoutHandle =
-    setTimeout(() => {
-      const state = deps.getState();
-
-      if (
-        state.iceConnectionState ===
-          "connected" ||
-        state.iceConnectionState ===
-          "completed"
-      ) {
-        return;
-      }
-
-      /*
-       * Evita fallback duplicado si onStateChange("failed")
-       * ya activó Relay.
-       */
-      if (
-        state.switchingToRelay ||
-        state.transportManager
-          ?.isRelayOpen() ||
-        deps.isRelayActiveOrConnecting(
-          state.relayTransport
-        )
-      ) {
-        return;
-      }
-
-      const candidates =
-        deps.describeCandidateTypes(
-          state.gatheredCandidateTypes
-        );
-
-      console.error(
-        `[Bridge-Q3] Timeout ICE cliente. Estado: ${
-          state.iceConnectionState ||
-          "desconocido"
-        }. Candidatos: ${candidates}.`
+  function assertInitialized() {
+    if (!deps) {
+      throw new Error(
+        "[Watchdog] El módulo no fue inicializado."
       );
+    }
+  }
 
-      if (state.iceTimeoutHandle) {
-        clearTimeout(
-          state.iceTimeoutHandle
+  function createHostWatchdog(
+    socketId,
+    client
+  ) {
+    assertInitialized();
+
+    deps.clearClientTimeout(client);
+
+    client.iceTimeoutHandle =
+      setTimeout(() => {
+        const currentClient =
+          deps.getState()
+            .clients
+            .get(socketId);
+
+        if (!currentClient) {
+          return;
+        }
+
+        if (
+          currentClient.iceConnectionState ===
+            "connected" ||
+          currentClient.iceConnectionState ===
+            "completed" ||
+          currentClient.transportManager
+            ?.isWebRTCOpen()
+        ) {
+          currentClient.iceTimeoutHandle =
+            null;
+
+          return;
+        }
+
+        if (
+          currentClient.switchingToRelay ||
+          currentClient.transportManager
+            ?.isRelayOpen() ||
+          deps.isRelayActiveOrConnecting(
+            currentClient.relayTransport
+          )
+        ) {
+          currentClient.iceTimeoutHandle =
+            null;
+
+          return;
+        }
+
+        const candidates =
+          deps.describeCandidateTypes(
+            currentClient
+              .gatheredCandidateTypes
+          );
+
+        console.error(
+          `${deps.logPrefix} Timeout ICE con ${socketId}. Estado: ${
+            currentClient
+              .iceConnectionState ||
+            "desconocido"
+          }. Candidatos: ${candidates}.`
         );
 
-        state.iceTimeoutHandle =
+        currentClient.iceTimeoutHandle =
           null;
-      }
 
-      state.transportManager
-        ?.disableWebRTC();
+        currentClient.transportManager
+          ?.disableWebRTC();
 
-      const relayStarted =
-        deps.activateClientRelay(
-          "ice-timeout"
+        const relayStarted =
+          deps.activateHostRelay(
+            socketId,
+            "ice-timeout"
+          );
+
+        if (relayStarted) {
+          deps.closeHostWebRTCResources(
+            socketId,
+            currentClient
+          );
+        }
+
+        deps.sendStatus(
+          relayStarted
+            ? "P2P agotó el tiempo de espera. Intentando Relay..."
+            : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
+        );
+      }, deps.ICE_CONNECT_TIMEOUT_MS);
+  }
+
+  function createClientWatchdog() {
+    assertInitialized();
+
+    const state = deps.getState();
+
+    if (state.iceTimeoutHandle) {
+      clearTimeout(
+        state.iceTimeoutHandle
+      );
+    }
+
+    state.iceTimeoutHandle =
+      setTimeout(() => {
+        const currentState =
+          deps.getState();
+
+        if (
+          currentState
+            .iceConnectionState ===
+              "connected" ||
+          currentState
+            .iceConnectionState ===
+              "completed" ||
+          currentState
+            .transportManager
+            ?.isWebRTCOpen()
+        ) {
+          currentState.iceTimeoutHandle =
+            null;
+
+          return;
+        }
+
+        if (
+          currentState
+            .switchingToRelay ||
+          currentState
+            .transportManager
+            ?.isRelayOpen() ||
+          deps.isRelayActiveOrConnecting(
+            currentState
+              .relayTransport
+          )
+        ) {
+          currentState.iceTimeoutHandle =
+            null;
+
+          return;
+        }
+
+        const candidates =
+          deps.describeCandidateTypes(
+            currentState
+              .gatheredCandidateTypes
+          );
+
+        console.error(
+          `${deps.logPrefix} Timeout ICE cliente. Estado: ${
+            currentState
+              .iceConnectionState ||
+            "desconocido"
+          }. Candidatos: ${candidates}.`
         );
 
-      if (relayStarted) {
-        deps.closeClientWebRTCResources();
-      }
+        currentState.iceTimeoutHandle =
+          null;
 
-      deps.sendStatus(
-        relayStarted
-          ? "P2P agotó el tiempo de espera. Intentando Relay..."
-          : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
-      );
-    }, deps.ICE_CONNECT_TIMEOUT_MS);
+        currentState.transportManager
+          ?.disableWebRTC();
+
+        const relayStarted =
+          deps.activateClientRelay(
+            "ice-timeout"
+          );
+
+        if (relayStarted) {
+          deps.closeClientWebRTCResources();
+        }
+
+        deps.sendStatus(
+          relayStarted
+            ? "P2P agotó el tiempo de espera. Intentando Relay..."
+            : "Tiempo de espera agotado. La red puede requerir un servidor TURN."
+        );
+      }, deps.ICE_CONNECT_TIMEOUT_MS);
+  }
+
+  return {
+    initializeWatchdog,
+    createHostWatchdog,
+    createClientWatchdog,
+  };
 }
 
 module.exports = {
-  initializeWatchdog,
-  createHostWatchdog,
-  createClientWatchdog,
+  createWatchdogModule,
 };

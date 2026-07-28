@@ -263,6 +263,8 @@ function createPeerModule() {
 
     peer.onLocalDescription(
       (sdp, type) => {
+        const state = deps.getState();
+
         console.log(
           "[DEBUG-PEER] Descripción local host generada:",
           {
@@ -332,6 +334,8 @@ function createPeerModule() {
 
     peer.onLocalCandidate(
       (candidate, mid) => {
+        const state = deps.getState();
+
         const type =
           deps.getCandidateType(candidate);
 
@@ -398,6 +402,8 @@ function createPeerModule() {
     });
 
     channel.onClosed(() => {
+      const state = deps.getState();
+
       console.log(
         `${deps.logPrefix} Canal cerrado: ${socketId}`
       );
@@ -575,6 +581,14 @@ function createPeerModule() {
 
     peer.onStateChange(
       (connectionState) => {
+        /*
+         * Se relee el estado actual en el momento del evento
+         * en vez de usar la referencia cerrada al crear el
+         * peer, para evitar escribir sobre un estado huérfano
+         * si hubo un resetBridge() de por medio.
+         */
+        const state = deps.getState();
+
         state.iceConnectionState =
           connectionState;
 
@@ -657,6 +671,8 @@ function createPeerModule() {
 
     peer.onGatheringStateChange(
       (gatheringState) => {
+        const state = deps.getState();
+
         console.log(
           `${deps.logPrefix} Gathering cliente: ${gatheringState}`
         );
@@ -675,6 +691,8 @@ function createPeerModule() {
 
     peer.onLocalDescription(
       (sdp, type) => {
+        const state = deps.getState();
+
         console.log(
           `${deps.logPrefix} Descripción local cliente: ${type}`
         );
@@ -719,6 +737,8 @@ function createPeerModule() {
 
     peer.onLocalCandidate(
       (candidate, mid) => {
+        const state = deps.getState();
+
         const type =
           deps.getCandidateType(candidate);
 
@@ -745,19 +765,21 @@ function createPeerModule() {
     );
 
     peer.onDataChannel((channel) => {
+      const state = deps.getState();
+
       state.channel = channel;
 
       channel.onOpen(() => {
-    console.log("[TEST] DataChannel OPEN");
-
-    // No llamamos al handler todavía.
-    });
+        deps.onClientChannelOpen();
+      });
 
       channel.onMessage(
         deps.handleChannelMessage
       );
 
       channel.onClosed(() => {
+        const state = deps.getState();
+
         deps.stopKeepAlive("self");
 
         state.transportManager

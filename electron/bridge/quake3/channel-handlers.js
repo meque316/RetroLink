@@ -60,6 +60,24 @@ function createChannelHandlers() {
     );
 
     /*
+     * El DataChannel ya está abierto: el watchdog ICE ya
+     * no tiene motivo para disparar. Se cancela aquí para
+     * no depender únicamente de que iceConnectionState
+     * llegue a "connected"/"completed" a tiempo.
+     */
+    if (client.iceTimeoutHandle) {
+      clearTimeout(
+        client.iceTimeoutHandle
+      );
+
+      client.iceTimeoutHandle = null;
+
+      console.log(
+        `[Bridge-Q3] Watchdog ICE cancelado para ${socketId} (DataChannel abierto).`
+      );
+    }
+
+    /*
      * WebRTC volvió a estar disponible: disableRelay() ya
      * cierra el relayTransport internamente (una sola vez).
      * Aquí solo soltamos la referencia local, sin volver a
@@ -111,6 +129,24 @@ function createChannelHandlers() {
     state.transportManager.useWebRTC(
       state.channel
     );
+
+    /*
+     * El DataChannel ya está abierto: el watchdog ICE ya
+     * no tiene motivo para disparar. Se cancela aquí para
+     * no depender únicamente de que iceConnectionState
+     * llegue a "connected"/"completed" a tiempo.
+     */
+    if (state.iceTimeoutHandle) {
+      clearTimeout(
+        state.iceTimeoutHandle
+      );
+
+      state.iceTimeoutHandle = null;
+
+      console.log(
+        `[Bridge-Q3] Watchdog ICE cancelado (cliente, DataChannel abierto).`
+      );
+    }
 
     /*
      * Igual que en el host: disableRelay() ya cierra el

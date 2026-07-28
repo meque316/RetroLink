@@ -71,9 +71,7 @@ const {
 } = require("./keepalive");
 
 const {
-  initializeWatchdog,
-  createHostWatchdog,
-  createClientWatchdog,
+  createWatchdogModule,
 } = require("./watchdog");
 
 const {
@@ -245,6 +243,12 @@ function createBridge({
    * evitando el antiguo singleton global compartido.
    */
   const peer = createPeerModule();
+
+  /*
+   * Cada bridge posee su propia instancia del watchdog ICE,
+   * evitando el antiguo singleton global compartido.
+   */
+  const watchdog = createWatchdogModule();
 
   /*
    * Cada juego define su rango virtual de clientes.
@@ -430,10 +434,13 @@ function createBridge({
 
     watchdog: {
       initialize:
-        initializeWatchdog,
+        watchdog.initializeWatchdog,
 
-      createHostWatchdog,
-      createClientWatchdog,
+      createHostWatchdog:
+        watchdog.createHostWatchdog,
+
+      createClientWatchdog:
+        watchdog.createClientWatchdog,
 
       describeCandidateTypes,
       ICE_CONNECT_TIMEOUT_MS,
