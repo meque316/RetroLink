@@ -83,9 +83,7 @@ const {
 } = require("./cleanup");
 
 const {
-  initializeTransport,
-  ensureHostTransportResources,
-  ensureClientTransportResources,
+  createTransportModule,
 } = require("./transport");
 
 const {
@@ -251,6 +249,11 @@ function createBridge({
   const watchdog = createWatchdogModule();
 
   /*
+   * Cada bridge posee su propia instancia del módulo de transporte.
+   */
+  const transport = createTransportModule();
+
+  /*
    * Cada juego define su rango virtual de clientes.
    * El motor genérico encuentra el siguiente puerto disponible.
    */
@@ -398,14 +401,17 @@ function createBridge({
 
     transport: {
       initialize:
-        initializeTransport,
+        transport.initializeTransport,
 
       createTransportManager,
       createHostUDPProxy,
       createClientUDPTransport,
 
-      ensureHostTransportResources,
-      ensureClientTransportResources,
+      ensureHostTransportResources:
+        transport.ensureHostTransportResources,
+
+      ensureClientTransportResources:
+        transport.ensureClientTransportResources,
     },
 
     relay: {
