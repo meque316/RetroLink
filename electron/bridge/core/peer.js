@@ -747,9 +747,11 @@ function createPeerModule() {
     peer.onDataChannel((channel) => {
       state.channel = channel;
 
-      channel.onOpen(
-        deps.onClientChannelOpen
-      );
+      channel.onOpen(() => {
+    console.log("[TEST] DataChannel OPEN");
+
+    // No llamamos al handler todavía.
+    });
 
       channel.onMessage(
         deps.handleChannelMessage
