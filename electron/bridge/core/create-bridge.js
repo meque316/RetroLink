@@ -75,23 +75,16 @@ const {
 } = require("./watchdog");
 
 const {
-  initializeCleanup,
-  closeHostWebRTCResources,
-  closeClientWebRTCResources,
-  clearClientResources,
-  cleanupClient,
+  createCleanupModule,
 } = require("./cleanup");
+
+const {
+  createRelayModule,
+} = require("./relay");
 
 const {
   createTransportModule,
 } = require("./transport");
-
-const {
-  initializeRelay,
-  isRelayActiveOrConnecting,
-  activateHostRelay,
-  activateClientRelay,
-} = require("./relay");
 
 const {
   configureSignaling,
@@ -118,7 +111,7 @@ function createBridge({
   channels,
   localTransport = null,
   connectingStatus =
-    "Conectando al servidor de seÃ±ales...",
+    "Conectando al servidor de señales...",
 } = {}) {
   if (!identity) {
     throw new TypeError(
@@ -137,7 +130,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] sendStatus debe ser una funciÃ³n."
+      "[CreateBridge] sendStatus debe ser una función."
     );
   }
 
@@ -210,7 +203,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.initializeChannelHandlers debe ser una funciÃ³n."
+      "[CreateBridge] channels.initializeChannelHandlers debe ser una función."
     );
   }
 
@@ -219,7 +212,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.handleChannelMessage debe ser una funciÃ³n."
+      "[CreateBridge] channels.handleChannelMessage debe ser una función."
     );
   }
 
@@ -228,7 +221,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.onHostChannelOpen debe ser una funciÃ³n."
+      "[CreateBridge] channels.onHostChannelOpen debe ser una función."
     );
   }
 
@@ -237,7 +230,7 @@ function createBridge({
     "function"
   ) {
     throw new TypeError(
-      "[CreateBridge] channels.onClientChannelOpen debe ser una funciÃ³n."
+      "[CreateBridge] channels.onClientChannelOpen debe ser una función."
     );
   }
 
@@ -252,6 +245,18 @@ function createBridge({
    * evitando el antiguo singleton global compartido.
    */
   const watchdog = createWatchdogModule();
+
+  /*
+   * Cada bridge posee su propia instancia de cleanup,
+   * evitando el antiguo singleton global compartido.
+   */
+  const cleanup = createCleanupModule();
+
+  /*
+   * Cada bridge posee su propia instancia de relay,
+   * evitando el antiguo singleton global compartido.
+   */
+  const relay = createRelayModule();
 
   /*
    * Por defecto se utiliza el transporte UDP genérico. Los juegos
@@ -326,7 +331,7 @@ function createBridge({
 
   /*
    * El engine mantiene el estado y expone
-   * la API pÃºblica del bridge.
+   * la API pública del bridge.
    */
   const engine =
     createGameNetworkEngine({
@@ -341,14 +346,14 @@ function createBridge({
     engine.getMutableState();
 
   /*
-   * Todos los mÃ³dulos acceden al estado actual
-   * mediante esta funciÃ³n.
+   * Todos los módulos acceden al estado actual
+   * mediante esta función.
    */
   const getState =
     () => state;
 
   /*
-   * Restablece una sesiÃ³n anterior y sustituye
+   * Restablece una sesión anterior y sustituye
    * la instancia mutable del estado.
    */
   const resetBridge =
@@ -363,7 +368,8 @@ function createBridge({
         },
 
       clearAllKeepAlives,
-      clearClientResources,
+      clearClientResources:
+        cleanup.clearClientResources,
 
       /*
        * bridge-reset agrega los corchetes.
@@ -388,7 +394,7 @@ function createBridge({
     });
 
   /*
-   * Inicializa todos los mÃ³dulos internos.
+   * Inicializa todos los módulos internos.
    */
   initializeBridgeModules({
     getState,
@@ -396,13 +402,18 @@ function createBridge({
 
     cleanup: {
       initialize:
-        initializeCleanup,
+        cleanup.initializeCleanup,
 
       stopKeepAlive,
 
-      closeHostWebRTCResources,
-      closeClientWebRTCResources,
-      cleanupClient,
+      closeHostWebRTCResources:
+        cleanup.closeHostWebRTCResources,
+
+      closeClientWebRTCResources:
+        cleanup.closeClientWebRTCResources,
+
+      cleanupClient:
+        cleanup.cleanupClient,
     },
 
     transport: {
@@ -422,13 +433,18 @@ function createBridge({
 
     relay: {
       initialize:
-        initializeRelay,
+        relay.initializeRelay,
 
       createSocketRelayTransport,
 
-      isRelayActiveOrConnecting,
-      activateHostRelay,
-      activateClientRelay,
+      isRelayActiveOrConnecting:
+        relay.isRelayActiveOrConnecting,
+
+      activateHostRelay:
+        relay.activateHostRelay,
+
+      activateClientRelay:
+        relay.activateClientRelay,
     },
 
     channels: {
@@ -473,7 +489,7 @@ function createBridge({
   });
 
   /*
-   * Punto de entrada de una nueva sesiÃ³n.
+   * Punto de entrada de una nueva sesión.
    */
   const startBridge =
     createBridgeStarter({
@@ -528,7 +544,8 @@ function createBridge({
       flushClientCandidates:
         peer.flushClientCandidates,
 
-      cleanupClient,
+      cleanupClient:
+        cleanup.cleanupClient,
 
       logPrefix,
 
@@ -568,4 +585,3 @@ function createBridge({
 module.exports = {
   createBridge,
 };
-

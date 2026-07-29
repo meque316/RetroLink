@@ -1,369 +1,375 @@
-// electron/bridge/quake3/relay.js
+// electron/bridge/core/relay.js
 
-let deps = null;
+function createRelayModule() {
+  let deps = null;
 
-function initializeRelay(injectedDeps) {
-  deps = injectedDeps;
-}
-
-function isRelayActiveOrConnecting(
-  relayTransport
-) {
-  if (!relayTransport) {
-    return false;
+  function initializeRelay(injectedDeps) {
+    deps = injectedDeps;
   }
 
-  if (relayTransport.isOpen?.()) {
-    return true;
+  function isRelayActiveOrConnecting(
+    relayTransport
+  ) {
+    if (!relayTransport) {
+      return false;
+    }
+
+    if (relayTransport.isOpen?.()) {
+      return true;
+    }
+
+    const relayState =
+      relayTransport.getState?.();
+
+    return (
+      relayState?.state ===
+        "connecting" ||
+      relayState?.state === "open"
+    );
   }
 
-  const relayState =
-    relayTransport.getState?.();
+  function normalizeErrorMessage(
+    error
+  ) {
+    return (
+      error?.message ||
+      String(error)
+    );
+  }
 
-  return (
-    relayState?.state ===
-      "connecting" ||
-    relayState?.state === "open"
-  );
-}
+  /*
+   * Activa (o reutiliza) el transporte Relay de un cliente
+   * del host concreto. Es idempotente:
+   *
+   * - Si ya hay un relay abierto o conectando, no crea otro
+   *   ni vuelve a llamar useRelay().
+   * - Si hay un relay CLOSED/ERROR, lo descarta y crea uno
+   *   nuevo.
+   * - useRelay() se llama exactamente una vez, justo después
+   *   de crear el relayTransport (useRelay() ya dispara
+   *   connect() internamente).
+   * - Los callbacks capturan la instancia local (relayTransport)
+   *   y se ignoran a sí mismos si client.relayTransport ya
+   *   cambió (instancia obsoleta).
+   */
+  function activateHostRelay(
+    socketId,
+    reason = "ice-failed"
+  ) {
+    const state = deps.getState();
 
-function normalizeErrorMessage(
-  error
-) {
-  return (
-    error?.message ||
-    String(error)
-  );
-}
+    const client =
+      deps.ensureHostTransportResources(
+        socketId
+      );
 
-/*
- * Activa (o reutiliza) el transporte Relay de un cliente
- * del host concreto. Es idempotente:
- *
- * - Si ya hay un relay abierto o conectando, no crea otro
- *   ni vuelve a llamar useRelay().
- * - Si hay un relay CLOSED/ERROR, lo descarta y crea uno
- *   nuevo.
- * - useRelay() se llama exactamente una vez, justo después
- *   de crear el relayTransport (useRelay() ya dispara
- *   connect() internamente).
- * - Los callbacks capturan la instancia local (relayTransport)
- *   y se ignoran a sí mismos si client.relayTransport ya
- *   cambió (instancia obsoleta).
- */
-function activateHostRelay(
-  socketId,
-  reason = "ice-failed"
-) {
-  const state = deps.getState();
+    if (
+      !client ||
+      !state.signalingSocket ||
+      !state.roomId
+    ) {
+      return false;
+    }
 
-  const client =
-    deps.ensureHostTransportResources(
-      socketId
+    if (
+      isRelayActiveOrConnecting(
+        client.relayTransport
+      )
+    ) {
+      return true;
+    }
+
+    if (client.relayTransport) {
+      try {
+        client.relayTransport.close?.();
+      } catch {}
+
+      client.relayTransport = null;
+    }
+
+    client.switchingToRelay = true;
+
+    const relayTransport =
+      deps.createSocketRelayTransport({
+        socket:
+          state.signalingSocket,
+        roomId: state.roomId,
+        isHost: true,
+        peerSocketId: socketId,
+        reason,
+
+        onPacket(buffer, metadata) {
+          if (
+            client.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          client.transportManager
+            ?.handleRelayMessage(
+              buffer,
+              metadata
+            );
+        },
+
+        onConnected() {
+          if (
+            client.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          client.switchingToRelay =
+            false;
+
+          deps.sendStatus(
+            "Relay activado con el cliente."
+          );
+        },
+
+        onDisconnected() {
+          if (
+            client.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          client.relayTransport = null;
+          client.switchingToRelay =
+            false;
+
+          const currentMode =
+            client.transportManager
+              ?.getState?.()
+              ?.mode;
+
+          if (currentMode === "relay") {
+            client.transportManager.disableRelay();
+          }
+        },
+
+        onError(error) {
+          if (
+            client.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          const message =
+            normalizeErrorMessage(
+              error
+            );
+
+          console.error(
+            `[Bridge-Q3] Error relay host ${socketId}:`,
+            message
+          );
+
+          client.switchingToRelay =
+            false;
+
+          if (
+            !client.transportManager
+              ?.isWebRTCOpen()
+          ) {
+            deps.sendStatus(
+              `No se pudo conectar con el jugador ${socketId}: falló WebRTC y Relay.`
+            );
+          }
+        },
+
+        onRateLimited(info) {
+          if (
+            client.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          console.warn(
+            `[Bridge-Q3] Relay host limitado para ${socketId}:`,
+            info
+          );
+        },
+      });
+
+    client.relayTransport =
+      relayTransport;
+
+    client.transportManager?.useRelay(
+      relayTransport
     );
 
-  if (
-    !client ||
-    !state.signalingSocket ||
-    !state.roomId
-  ) {
-    return false;
-  }
-
-  if (
-    isRelayActiveOrConnecting(
-      client.relayTransport
-    )
-  ) {
     return true;
   }
 
-  if (client.relayTransport) {
-    try {
-      client.relayTransport.close?.();
-    } catch {}
-
-    client.relayTransport = null;
-  }
-
-  client.switchingToRelay = true;
-
-  const relayTransport =
-    deps.createSocketRelayTransport({
-      socket:
-        state.signalingSocket,
-      roomId: state.roomId,
-      isHost: true,
-      peerSocketId: socketId,
-      reason,
-
-      onPacket(buffer, metadata) {
-        if (
-          client.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        client.transportManager
-          ?.handleRelayMessage(
-            buffer,
-            metadata
-          );
-      },
-
-      onConnected() {
-        if (
-          client.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        client.switchingToRelay =
-          false;
-
-        deps.sendStatus(
-          "Relay activado con el cliente."
-        );
-      },
-
-      onDisconnected() {
-        if (
-          client.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        client.relayTransport = null;
-        client.switchingToRelay =
-          false;
-
-        const currentMode =
-          client.transportManager
-            ?.getState?.()
-            ?.mode;
-
-        if (currentMode === "relay") {
-          client.transportManager.disableRelay();
-        }
-      },
-
-      onError(error) {
-        if (
-          client.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        const message =
-          normalizeErrorMessage(
-            error
-          );
-
-        console.error(
-          `[Bridge-Q3] Error relay host ${socketId}:`,
-          message
-        );
-
-        client.switchingToRelay =
-          false;
-
-        if (
-          !client.transportManager
-            ?.isWebRTCOpen()
-        ) {
-          deps.sendStatus(
-            `No se pudo conectar con el jugador ${socketId}: falló WebRTC y Relay.`
-          );
-        }
-      },
-
-      onRateLimited(info) {
-        if (
-          client.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        console.warn(
-          `[Bridge-Q3] Relay host limitado para ${socketId}:`,
-          info
-        );
-      },
-    });
-
-  client.relayTransport =
-    relayTransport;
-
-  client.transportManager?.useRelay(
-    relayTransport
-  );
-
-  return true;
-}
-
-/*
- * Igual que activateHostRelay(), pero para el cliente
- * local. No usa peerSocketId: el cliente se relaciona con
- * el host únicamente mediante roomId.
- */
-function activateClientRelay(
-  reason = "ice-failed"
-) {
-  const state = deps.getState();
-
-  deps.ensureClientTransportResources();
-
-  if (
-    !state.signalingSocket ||
-    !state.roomId
+  /*
+   * Igual que activateHostRelay(), pero para el cliente
+   * local. No usa peerSocketId: el cliente se relaciona con
+   * el host únicamente mediante roomId.
+   */
+  function activateClientRelay(
+    reason = "ice-failed"
   ) {
-    return false;
-  }
+    const state = deps.getState();
 
-  if (
-    isRelayActiveOrConnecting(
-      state.relayTransport
-    )
-  ) {
-    return true;
-  }
+    deps.ensureClientTransportResources();
 
-  if (state.relayTransport) {
-    try {
-      state.relayTransport.close?.();
-    } catch {}
+    if (
+      !state.signalingSocket ||
+      !state.roomId
+    ) {
+      return false;
+    }
 
-    state.relayTransport = null;
-  }
+    if (
+      isRelayActiveOrConnecting(
+        state.relayTransport
+      )
+    ) {
+      return true;
+    }
 
-  state.switchingToRelay = true;
+    if (state.relayTransport) {
+      try {
+        state.relayTransport.close?.();
+      } catch {}
 
-  const relayTransport =
-    deps.createSocketRelayTransport({
-      socket:
-        state.signalingSocket,
-      roomId: state.roomId,
-      isHost: false,
-      peerSocketId: null,
-      reason,
+      state.relayTransport = null;
+    }
 
-      onPacket(buffer, metadata) {
-        if (
-          state.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
+    state.switchingToRelay = true;
 
-        state.transportManager
-          ?.handleRelayMessage(
-            buffer,
-            metadata
-          );
-      },
+    const relayTransport =
+      deps.createSocketRelayTransport({
+        socket:
+          state.signalingSocket,
+        roomId: state.roomId,
+        isHost: false,
+        peerSocketId: null,
+        reason,
 
-      onConnected() {
-        if (
-          state.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
+        onPacket(buffer, metadata) {
+          if (
+            state.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
 
-        state.switchingToRelay =
-          false;
-
-        deps.sendStatus(
-          "Conexión establecida mediante Relay."
-        );
-      },
-
-      onDisconnected() {
-        if (
-          state.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
-
-        state.relayTransport = null;
-        state.switchingToRelay =
-          false;
-
-        const currentMode =
           state.transportManager
-            ?.getState?.()
-            ?.mode;
+            ?.handleRelayMessage(
+              buffer,
+              metadata
+            );
+        },
 
-        if (currentMode === "relay") {
-          state.transportManager.disableRelay();
-        }
-      },
+        onConnected() {
+          if (
+            state.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
 
-      onError(error) {
-        if (
-          state.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
+          state.switchingToRelay =
+            false;
 
-        const message =
-          normalizeErrorMessage(
-            error
-          );
-
-        console.error(
-          "[Bridge-Q3] Error relay cliente:",
-          message
-        );
-
-        state.switchingToRelay =
-          false;
-
-        if (
-          !state.transportManager
-            ?.isWebRTCOpen()
-        ) {
           deps.sendStatus(
-            "No se pudo conectar: falló WebRTC y Relay."
+            "Conexión establecida mediante Relay."
           );
-        }
-      },
+        },
 
-      onRateLimited(info) {
-        if (
-          state.relayTransport !==
-          relayTransport
-        ) {
-          return;
-        }
+        onDisconnected() {
+          if (
+            state.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
 
-        console.warn(
-          "[Bridge-Q3] Relay cliente limitado:",
-          info
-        );
-      },
-    });
+          state.relayTransport = null;
+          state.switchingToRelay =
+            false;
 
-  state.relayTransport =
-    relayTransport;
+          const currentMode =
+            state.transportManager
+              ?.getState?.()
+              ?.mode;
 
-  state.transportManager?.useRelay(
-    relayTransport
-  );
+          if (currentMode === "relay") {
+            state.transportManager.disableRelay();
+          }
+        },
 
-  return true;
+        onError(error) {
+          if (
+            state.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          const message =
+            normalizeErrorMessage(
+              error
+            );
+
+          console.error(
+            "[Bridge-Q3] Error relay cliente:",
+            message
+          );
+
+          state.switchingToRelay =
+            false;
+
+          if (
+            !state.transportManager
+              ?.isWebRTCOpen()
+          ) {
+            deps.sendStatus(
+              "No se pudo conectar: falló WebRTC y Relay."
+            );
+          }
+        },
+
+        onRateLimited(info) {
+          if (
+            state.relayTransport !==
+            relayTransport
+          ) {
+            return;
+          }
+
+          console.warn(
+            "[Bridge-Q3] Relay cliente limitado:",
+            info
+          );
+        },
+      });
+
+    state.relayTransport =
+      relayTransport;
+
+    state.transportManager?.useRelay(
+      relayTransport
+    );
+
+    return true;
+  }
+
+  return {
+    initializeRelay,
+    isRelayActiveOrConnecting,
+    activateHostRelay,
+    activateClientRelay,
+  };
 }
 
 module.exports = {
-  initializeRelay,
-  isRelayActiveOrConnecting,
-  activateHostRelay,
-  activateClientRelay,
+  createRelayModule,
 };
