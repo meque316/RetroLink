@@ -81,6 +81,7 @@ function clearClientResources(
   if (client) {
     client.relayTransport = null;
     client.switchingToRelay = false;
+    client.closingWebRTCForRelay = false;
   }
 
   try {

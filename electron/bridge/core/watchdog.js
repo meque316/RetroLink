@@ -24,7 +24,7 @@ function createWatchdogModule() {
     deps.clearClientTimeout(client);
 
     client.iceTimeoutHandle =
-      setTimeout(() => {
+      setTimeout(async () => {
         const currentClient =
           deps.getState()
             .clients
@@ -69,7 +69,7 @@ function createWatchdogModule() {
           );
 
         console.error(
-          `${deps.logPrefix} Timeout ICE con ${socketId}. Estado: ${
+          `${deps.logPrefix || "[Bridge]"} Timeout ICE con ${socketId}. Estado: ${
             currentClient
               .iceConnectionState ||
             "desconocido"
@@ -82,16 +82,77 @@ function createWatchdogModule() {
         currentClient.transportManager
           ?.disableWebRTC();
 
-        const relayStarted =
-          deps.activateHostRelay(
-            socketId,
-            "ice-timeout"
+        /*
+         * Marcamos la transición ANTES de esperar a Relay:
+         * evita que channel.onClosed() (u otro evento
+         * concurrente) elimine al cliente de state.clients
+         * mientras activateHostRelay() todavía se está
+         * inicializando.
+         */
+        currentClient.switchingToRelay =
+          true;
+
+        console.log(
+          `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Iniciando fallback host: ${socketId}`
+        );
+
+        let relayStarted = false;
+
+        try {
+          relayStarted =
+            await deps.activateHostRelay(
+              socketId,
+              "ice-timeout"
+            );
+        } catch (error) {
+          console.error(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error activando Relay host:`,
+            error
           );
 
+          relayStarted = false;
+        }
+
+        /*
+         * El cliente pudo haber sido eliminado mientras
+         * esperábamos (ej. desconexión real). Releemos el
+         * estado antes de tocar sus recursos.
+         */
+        const clientAfterRelay =
+          deps.getState()
+            .clients
+            .get(socketId);
+
+        if (!clientAfterRelay) {
+          return;
+        }
+
         if (relayStarted) {
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay host inicializado: ${socketId}`
+          );
+
+          clientAfterRelay.closingWebRTCForRelay =
+            true;
+
           deps.closeHostWebRTCResources(
             socketId,
-            currentClient
+            clientAfterRelay
+          );
+
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cerrando WebRTC después de activar Relay: ${socketId}`
+          );
+
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cliente conservado durante transición: ${socketId}`
+          );
+        } else {
+          clientAfterRelay.switchingToRelay =
+            false;
+
+          console.error(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay host no pudo iniciarse: ${socketId}`
           );
         }
 
@@ -115,7 +176,7 @@ function createWatchdogModule() {
     }
 
     state.iceTimeoutHandle =
-      setTimeout(() => {
+      setTimeout(async () => {
         const currentState =
           deps.getState();
 
@@ -160,7 +221,7 @@ function createWatchdogModule() {
           );
 
         console.error(
-          `${deps.logPrefix} Timeout ICE cliente. Estado: ${
+          `${deps.logPrefix || "[Bridge]"} Timeout ICE cliente. Estado: ${
             currentState
               .iceConnectionState ||
             "desconocido"
@@ -173,13 +234,56 @@ function createWatchdogModule() {
         currentState.transportManager
           ?.disableWebRTC();
 
-        const relayStarted =
-          deps.activateClientRelay(
-            "ice-timeout"
+        currentState.switchingToRelay =
+          true;
+
+        console.log(
+          `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Iniciando fallback cliente`
+        );
+
+        let relayStarted = false;
+
+        try {
+          relayStarted =
+            await deps.activateClientRelay(
+              "ice-timeout"
+            );
+        } catch (error) {
+          console.error(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error activando Relay cliente:`,
+            error
           );
 
+          relayStarted = false;
+        }
+
+        const stateAfterRelay =
+          deps.getState();
+
         if (relayStarted) {
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay cliente inicializado`
+          );
+
+          stateAfterRelay.closingWebRTCForRelay =
+            true;
+
           deps.closeClientWebRTCResources();
+
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cerrando WebRTC después de activar Relay (cliente)`
+          );
+
+          console.log(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cliente conservado durante transición (self)`
+          );
+        } else {
+          stateAfterRelay.switchingToRelay =
+            false;
+
+          console.error(
+            `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay cliente no pudo iniciarse`
+          );
         }
 
         deps.sendStatus(

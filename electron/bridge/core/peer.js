@@ -65,6 +65,191 @@ function createPeerModule() {
       });
   }
 
+  /*
+   * Maneja la transición a Relay cuando el ICE del host falla.
+   * IMPORTANTE: no cerramos WebRTC hasta confirmar que
+   * activateHostRelay() terminó y devolvió éxito. Esto evita la
+   * condición de carrera donde channel.onClosed() eliminaba al
+   * cliente de state.clients antes de que Relay pudiera usar sus
+   * recursos (activateHostRelay es asíncrona).
+   */
+  async function handleHostIceFailed(
+    socketId,
+    client,
+    reason
+  ) {
+    if (
+      client.switchingToRelay ||
+      client.transportManager
+        ?.isRelayOpen() ||
+      deps.isRelayActiveOrConnecting(
+        client.relayTransport
+      )
+    ) {
+      return;
+    }
+
+    deps.clearClientTimeout(client);
+
+    client.transportManager
+      ?.disableWebRTC();
+
+    client.switchingToRelay = true;
+
+    console.log(
+      `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Iniciando fallback host: ${socketId}`
+    );
+
+    let relayStarted = false;
+
+    try {
+      relayStarted =
+        await deps.activateHostRelay(
+          socketId,
+          reason
+        );
+    } catch (error) {
+      console.error(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error activando Relay host:`,
+        error
+      );
+
+      relayStarted = false;
+    }
+
+    const currentClient =
+      deps.getState().clients.get(
+        socketId
+      );
+
+    if (!currentClient) {
+      return;
+    }
+
+    if (relayStarted) {
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay host inicializado: ${socketId}`
+      );
+
+      currentClient.closingWebRTCForRelay =
+        true;
+
+      deps.closeHostWebRTCResources(
+        socketId,
+        currentClient
+      );
+
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cerrando WebRTC después de activar Relay: ${socketId}`
+      );
+
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cliente conservado durante transición: ${socketId}`
+      );
+    } else {
+      currentClient.switchingToRelay =
+        false;
+
+      console.error(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay host no pudo iniciarse: ${socketId}`
+      );
+    }
+
+    deps.sendStatus(
+      relayStarted
+        ? "Falló P2P. Intentando conexión mediante Relay..."
+        : "Falló la conexión P2P con el cliente."
+    );
+  }
+
+  /*
+   * Equivalente a handleHostIceFailed() pero para el cliente.
+   */
+  async function handleClientIceFailed(
+    reason
+  ) {
+    const state = deps.getState();
+
+    if (
+      state.switchingToRelay ||
+      state.transportManager
+        ?.isRelayOpen() ||
+      deps.isRelayActiveOrConnecting(
+        state.relayTransport
+      )
+    ) {
+      return;
+    }
+
+    if (state.iceTimeoutHandle) {
+      clearTimeout(
+        state.iceTimeoutHandle
+      );
+
+      state.iceTimeoutHandle = null;
+    }
+
+    state.transportManager
+      ?.disableWebRTC();
+
+    state.switchingToRelay = true;
+
+    console.log(
+      `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Iniciando fallback cliente`
+    );
+
+    let relayStarted = false;
+
+    try {
+      relayStarted =
+        await deps.activateClientRelay(
+          reason
+        );
+    } catch (error) {
+      console.error(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error activando Relay cliente:`,
+        error
+      );
+
+      relayStarted = false;
+    }
+
+    const currentState =
+      deps.getState();
+
+    if (relayStarted) {
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay cliente inicializado`
+      );
+
+      currentState.closingWebRTCForRelay =
+        true;
+
+      deps.closeClientWebRTCResources();
+
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cerrando WebRTC después de activar Relay (cliente)`
+      );
+
+      console.log(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Cliente conservado durante transición (self)`
+      );
+    } else {
+      currentState.switchingToRelay =
+        false;
+
+      console.error(
+        `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Relay cliente no pudo iniciarse`
+      );
+    }
+
+    deps.sendStatus(
+      relayStarted
+        ? "Falló P2P. Intentando conexión mediante Relay..."
+        : "Falló la conexión P2P."
+    );
+  }
+
   function createHost(
     NDC,
     signaling,
@@ -203,42 +388,21 @@ function createPeerModule() {
         ) {
           /*
            * Evita fallback duplicado si el watchdog ya
-           * activó Relay para este cliente.
+           * activó Relay para este cliente. La lógica de
+           * transición vive en handleHostIceFailed(), que
+           * espera a que Relay confirme éxito antes de
+           * cerrar WebRTC.
            */
-          if (
-            client.switchingToRelay ||
-            client.transportManager
-              ?.isRelayOpen() ||
-            deps.isRelayActiveOrConnecting(
-              client.relayTransport
-            )
-          ) {
-            return;
-          }
-
-          deps.clearClientTimeout(client);
-
-          client.transportManager
-            ?.disableWebRTC();
-
-          const relayStarted =
-            deps.activateHostRelay(
-              socketId,
-              "ice-failed"
+          handleHostIceFailed(
+            socketId,
+            client,
+            "ice-failed"
+          ).catch((error) => {
+            console.error(
+              `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error inesperado en fallback host:`,
+              error
             );
-
-          if (relayStarted) {
-            deps.closeHostWebRTCResources(
-              socketId,
-              client
-            );
-          }
-
-          deps.sendStatus(
-            relayStarted
-              ? "Falló P2P. Intentando conexión mediante Relay..."
-              : "Falló la conexión P2P con el cliente."
-          );
+          });
         }
       }
     );
@@ -405,7 +569,30 @@ function createPeerModule() {
       const state = deps.getState();
 
       console.log(
-        `${deps.logPrefix} Canal cerrado: ${socketId}`
+        `${deps.logPrefix || "[Bridge]"} Canal cerrado: ${socketId}`
+      );
+
+      console.log(
+        "[Relay-Debug] channel.onClosed host",
+        {
+          socketId,
+          clientExists:
+            state.clients.has(socketId),
+          switchingToRelay:
+            client.switchingToRelay,
+          closingWebRTCForRelay:
+            client.closingWebRTCForRelay,
+          relayOpen:
+            client.transportManager
+              ?.isRelayOpen?.(),
+          relayActiveOrConnecting:
+            deps.isRelayActiveOrConnecting(
+              client.relayTransport
+            ),
+          clientsConocidos: [
+            ...state.clients.keys(),
+          ],
+        }
       );
 
       deps.stopKeepAlive(socketId);
@@ -413,7 +600,14 @@ function createPeerModule() {
       client.transportManager
         ?.disableWebRTC();
 
-      client.channel = null;
+      /*
+       * Solo borramos la referencia si sigue siendo el mismo
+       * canal: evita que un callback antiguo elimine un canal
+       * nuevo creado después.
+       */
+      if (client.channel === channel) {
+        client.channel = null;
+      }
 
       const relayUsable =
         Boolean(
@@ -421,14 +615,16 @@ function createPeerModule() {
             ?.isRelayOpen()
         ) ||
         client.switchingToRelay ||
+        client.closingWebRTCForRelay ||
         deps.isRelayActiveOrConnecting(
           client.relayTransport
         );
 
       /*
-       * Si el relay sigue disponible o intentando conectar,
-       * NO destruimos el cliente: la salida real del jugador
-       * se maneja mediante "webrtc-client-left".
+       * Si el relay sigue disponible, intentando conectar, o
+       * hay una transición a Relay en curso, NO destruimos al
+       * cliente: la salida real del jugador se maneja mediante
+       * "webrtc-client-left".
        */
       if (!relayUsable) {
         deps.cleanupClient(socketId);
@@ -624,47 +820,18 @@ function createPeerModule() {
         ) {
           /*
            * Evita fallback duplicado si el watchdog ya
-           * activó Relay.
+           * activó Relay. La lógica de transición vive en
+           * handleClientIceFailed(), que espera a que Relay
+           * confirme éxito antes de cerrar WebRTC.
            */
-          if (
-            state.switchingToRelay ||
-            state.transportManager
-              ?.isRelayOpen() ||
-            deps.isRelayActiveOrConnecting(
-              state.relayTransport
-            )
-          ) {
-            return;
-          }
-
-          if (
-            state.iceTimeoutHandle
-          ) {
-            clearTimeout(
-              state.iceTimeoutHandle
+          handleClientIceFailed(
+            "ice-failed"
+          ).catch((error) => {
+            console.error(
+              `${deps.logPrefix || "[Bridge]"} [Relay-Fallback] Error inesperado en fallback cliente:`,
+              error
             );
-
-            state.iceTimeoutHandle =
-              null;
-          }
-
-          state.transportManager
-            ?.disableWebRTC();
-
-          const relayStarted =
-            deps.activateClientRelay(
-              "ice-failed"
-            );
-
-          if (relayStarted) {
-            deps.closeClientWebRTCResources();
-          }
-
-          deps.sendStatus(
-            relayStarted
-              ? "Falló P2P. Intentando conexión mediante Relay..."
-              : "Falló la conexión P2P."
-          );
+          });
         }
       }
     );
@@ -785,7 +952,13 @@ function createPeerModule() {
         state.transportManager
           ?.disableWebRTC();
 
-        state.channel = null;
+        /*
+         * Solo borramos la referencia si sigue siendo el
+         * mismo canal, por si ya se creó uno nuevo.
+         */
+        if (state.channel === channel) {
+          state.channel = null;
+        }
 
         const relayUsable =
           Boolean(
@@ -793,6 +966,7 @@ function createPeerModule() {
               ?.isRelayOpen()
           ) ||
           state.switchingToRelay ||
+          state.closingWebRTCForRelay ||
           deps.isRelayActiveOrConnecting(
             state.relayTransport
           );
