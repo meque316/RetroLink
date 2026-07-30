@@ -27,21 +27,28 @@
   "build": {
     "appId": "com.retrolink.app",
     "productName": "RetroLink",
+    "asar": true,
     "directories": {
       "output": "dist"
     },
+    "artifactName": "${productName}-Setup-${version}.${ext}",
     "files": [
       "electron/**/*",
       "client/dist/**/*",
       "node_modules/**/*"
     ],
     "win": {
-      "target": "nsis",
+      "target": [
+        "nsis"
+      ],
+      "icon": "electron/build/icon.ico",
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     }
   }
 }
