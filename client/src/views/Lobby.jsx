@@ -1,18 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import Room from "./Room";
+import socket from "../socket";
 
-import {
-  Users,
-  Wifi,
-  Plus,
-  Gamepad2,
-} from "lucide-react";
+import { Gamepad2, Plus, Search, SlidersHorizontal } from "lucide-react";
 
 import Sidebar from "../components/lobby/Sidebar";
 import OnlineUsers from "../components/lobby/OnlineUsers";
 import FriendsPanel from "../components/lobby/FriendsPanel";
 import LibraryPanel from "../components/lobby/LibraryPanel";
 import CreateRoomModal from "../components/lobby/CreateRoomModal";
+import LobbyRoomCard from "../components/lobby/LobbyRoomCard";
 
 import useFriends from "../hooks/useFriends";
 import useLibrary from "../hooks/useLibrary";
@@ -152,15 +149,16 @@ function Lobby() {
   const [currentUser, setCurrentUser] = useState(null);
   const [activeView, setActiveView] = useState("lobby");
   const [showModal, setShowModal] = useState(false);
+  const [roomSearch, setRoomSearch] = useState("");
+  const [roomFilter, setRoomFilter] = useState("all");
   const [roomName, setRoomName] = useState("");
+  const pendingCreatedRoomRef = useRef(null);
   const [selectedGame, setSelectedGame] = useState(
     SUPPORTED_GAMES[0]
   );
 
   const [gameOptions, setGameOptions] = useState(() =>
-    getDefaultOptionsForGame(
-      SUPPORTED_GAMES[0].id
-    )
+    getDefaultOptionsForGame(SUPPORTED_GAMES[0].id)
   );
 
   const {
@@ -217,7 +215,44 @@ function Lobby() {
     );
   }, [selectedGame?.id]);
 
+  useEffect(() => {
+    const pendingRoom = pendingCreatedRoomRef.current;
+
+    if (!pendingRoom || currentRoom || rooms.length === 0) {
+      return;
+    }
+
+    const createdRoom = rooms.find((candidate) => {
+      const candidateGameId =
+        candidate.gameId ?? candidate.game;
+
+      return (
+        candidate.host === socket.id &&
+        candidate.name === pendingRoom.name &&
+        (candidateGameId === pendingRoom.gameId ||
+          candidate.game === pendingRoom.gameName)
+      );
+    });
+
+    if (!createdRoom) {
+      return;
+    }
+
+    pendingCreatedRoomRef.current = null;
+    joinRoom(createdRoom);
+  }, [rooms, currentRoom, joinRoom]);
+
   const handleCreateRoom = () => {
+    const expectedRoomName =
+      roomName.trim() ||
+      `${currentUser?.username || "Player"}'s Room`;
+
+    pendingCreatedRoomRef.current = {
+      name: expectedRoomName,
+      gameId: selectedGame?.id,
+      gameName: selectedGame?.name,
+    };
+
     createRoom({
       roomName,
       selectedGame,
@@ -255,8 +290,135 @@ function Lobby() {
     );
   }
 
+  const visibleRooms = rooms.filter((room) => {
+    const query = roomSearch.trim().toLowerCase();
+    const gameIdentifier = room.gameId || room.game;
+    const matchesSearch =
+      !query ||
+      room.name?.toLowerCase().includes(query) ||
+      room.game?.toLowerCase().includes(query);
+
+    const matchesFilter =
+      roomFilter === "all" ||
+      (roomFilter === "configured" &&
+        library.some((game) => game.id === gameIdentifier && game.exePath));
+
+    return matchesSearch && matchesFilter;
+  });
+
+  const renderLobby = () => (
+    <>
+      <header className="mb-6 flex flex-col gap-5 border-b border-zinc-800/80 pb-6 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-green-400">
+            RetroLink
+          </p>
+          <h1 className="text-3xl font-bold tracking-tight text-white">Lobby</h1>
+          <p className="mt-1 text-zinc-400">
+            Encuentra una partida o crea una nueva sala.
+          </p>
+        </div>
+
+        <div className="flex w-full flex-col gap-3 sm:flex-row lg:w-auto">
+          <label className="relative min-w-0 flex-1 lg:w-72">
+            <Search
+              size={18}
+              className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500"
+            />
+            <input
+              type="search"
+              value={roomSearch}
+              onChange={(event) => setRoomSearch(event.target.value)}
+              placeholder="Buscar salas..."
+              className="h-12 w-full rounded-xl border border-zinc-800 bg-[#101720] pl-11 pr-4 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-green-500/60"
+            />
+          </label>
+
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-green-500 px-5 font-semibold text-black transition hover:bg-green-400"
+            type="button"
+          >
+            <Plus size={19} />
+            Crear sala
+          </button>
+        </div>
+      </header>
+
+      <section className="mb-5 flex flex-col gap-3 rounded-2xl border border-zinc-800 bg-[#0f151d] p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setRoomFilter("all")}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              roomFilter === "all"
+                ? "bg-green-500/15 text-green-400"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            }`}
+          >
+            Todas <span className="ml-1 text-xs opacity-70">{rooms.length}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setRoomFilter("configured")}
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+              roomFilter === "configured"
+                ? "bg-green-500/15 text-green-400"
+                : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
+            }`}
+          >
+            Mis juegos
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 px-2 text-xs text-zinc-500">
+          <SlidersHorizontal size={14} />
+          {visibleRooms.length} {visibleRooms.length === 1 ? "sala visible" : "salas visibles"}
+        </div>
+      </section>
+
+      {visibleRooms.length === 0 ? (
+        <section className="flex min-h-[360px] flex-col items-center justify-center rounded-3xl border border-dashed border-zinc-700 bg-[#101720]/70 px-6 text-center">
+          <div className="mb-5 flex h-20 w-20 items-center justify-center rounded-3xl border border-green-500/20 bg-green-500/10 text-green-400">
+            <Gamepad2 size={36} />
+          </div>
+          <h2 className="text-2xl font-semibold text-white">
+            {rooms.length === 0 ? "No hay salas activas" : "No encontramos salas"}
+          </h2>
+          <p className="mt-2 max-w-md text-zinc-500">
+            {rooms.length === 0
+              ? "Sé el primero en crear una sala y reúne a tus amigos."
+              : "Prueba con otro nombre o cambia el filtro seleccionado."}
+          </p>
+          {rooms.length === 0 && (
+            <button
+              type="button"
+              onClick={() => setShowModal(true)}
+              className="mt-6 flex items-center gap-2 rounded-xl bg-green-500 px-5 py-3 font-semibold text-black transition hover:bg-green-400"
+            >
+              <Plus size={18} />
+              Crear sala
+            </button>
+          )}
+        </section>
+      ) : (
+        <div className="space-y-3">
+          {visibleRooms.map((room) => (
+            <LobbyRoomCard
+              key={room.id}
+              room={room}
+              supported={isGameSupported(room.gameId || room.game)}
+              onJoinRoom={joinRoom}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+
   return (
-    <div className="h-screen overflow-hidden bg-[#0b0f14] text-white flex">
+    <div className="flex h-screen overflow-hidden bg-[#090e14] text-white">
       <CreateRoomModal
         isOpen={showModal}
         onClose={() => setShowModal(false)}
@@ -282,164 +444,34 @@ function Lobby() {
         logout={logout}
       />
 
-      <main className="flex-1 min-h-0 p-8 overflow-y-auto [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-zinc-700 [&::-webkit-scrollbar-thumb]:rounded-full">
-        {activeView === "lobby" && (
-          <>
-            <div className="flex items-center justify-between mb-8">
-              <div>
-                <h2 className="text-3xl font-semibold">
-                  Game Rooms
-                </h2>
+      <main className="min-h-0 flex-1 overflow-y-auto px-5 py-6 md:px-8 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-zinc-700">
+        <div className="mx-auto w-full max-w-6xl">
+          {activeView === "lobby" && renderLobby()}
 
-                <p className="text-zinc-400 mt-1">
-                  Join or host retro multiplayer sessions
-                </p>
-              </div>
+          {activeView === "friends" && (
+            <FriendsPanel
+              friends={friends}
+              onlineUsers={onlineUsers}
+              friendRequest={friendRequest}
+              setFriendRequest={setFriendRequest}
+              friendLoading={friendLoading}
+              friendError={friendError}
+              setFriendError={setFriendError}
+              sendFriendRequest={sendFriendRequest}
+              acceptFriend={acceptFriend}
+              removeFriend={removeFriend}
+            />
+          )}
 
-              <button
-                onClick={() => setShowModal(true)}
-                className="flex items-center gap-2 bg-green-500 hover:bg-green-400 text-black px-5 py-3 rounded-xl font-semibold transition"
-                type="button"
-              >
-                <Plus size={18} />
-                Host Match
-              </button>
-            </div>
-
-            <div className="space-y-5">
-              {rooms.length === 0 ? (
-                <div className="bg-[#11161d] border border-zinc-800 rounded-2xl p-10 text-center text-zinc-500">
-                  No active rooms. Create one 🚀
-                </div>
-              ) : (
-                rooms.map((room) => {
-                  const gameIdentifier =
-                    room.gameId || room.game;
-
-                  const supported =
-                    isGameSupported(gameIdentifier);
-
-                  const isCS16 =
-                    room.gameId === "cs16";
-
-                  const isUT99 =
-                    room.gameId === "ut99";
-
-                  return (
-                    <div
-                      key={room.id}
-                      className={`bg-[#11161d] border rounded-2xl p-5 hover:border-green-500 transition flex flex-col sm:flex-row items-center justify-between gap-6 ${
-                        supported
-                          ? "border-zinc-800"
-                          : "border-zinc-800/50 opacity-60"
-                      }`}
-                    >
-                      <div className="flex items-center gap-5 w-full sm:w-auto">
-                        <div className="w-24 h-24 rounded-xl bg-gradient-to-br from-green-500/20 to-zinc-900 border border-zinc-700 flex items-center justify-center text-green-400 shrink-0">
-                          <Gamepad2 size={34} />
-                        </div>
-
-                        <div className="flex-1 min-w-0">
-                          <h3 className="text-xl font-semibold flex items-center gap-2 flex-wrap">
-                            {room.name}
-
-                            {!supported && (
-                              <span className="text-[10px] bg-yellow-500/20 text-yellow-500 px-2 py-0.5 rounded-full">
-                                No soportado
-                              </span>
-                            )}
-                          </h3>
-
-                          <span className="inline-block mt-2 text-xs px-3 py-1 rounded-full bg-green-500/10 text-green-400">
-                            {room.game}
-                          </span>
-
-                          {room.gameOptions &&
-                            isCS16 && (
-                              <p className="text-xs text-zinc-500 mt-2">
-                                {room.gameOptions.map} ·{" "}
-                                {
-                                  room.gameOptions
-                                    .maxPlayers
-                                }{" "}
-                                players
-                              </p>
-                            )}
-
-                          {room.gameOptions &&
-                            isUT99 && (
-                              <p className="text-xs text-zinc-500 mt-2">
-                                {room.gameOptions.map} ·{" "}
-                                {room.gameOptions.gameType} ·{" "}
-                                {
-                                  room.gameOptions
-                                    .maxPlayers
-                                }{" "}
-                                players
-                              </p>
-                            )}
-
-                          <div className="flex flex-wrap gap-4 text-zinc-400 text-sm mt-4">
-                            <div className="flex items-center gap-2">
-                              <Users size={16} />
-                              {room.players} player(s)
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <Wifi size={16} />
-                              P2P Ready
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={() =>
-                          supported && joinRoom(room)
-                        }
-                        disabled={!supported}
-                        className={`px-5 py-2 rounded-xl font-semibold transition w-full sm:w-auto ${
-                          supported
-                            ? "bg-green-500 hover:bg-green-400 text-black"
-                            : "bg-zinc-700 text-zinc-500 cursor-not-allowed"
-                        }`}
-                        type="button"
-                      >
-                        {supported
-                          ? "Join Room"
-                          : "No disponible"}
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </>
-        )}
-
-        {activeView === "friends" && (
-          <FriendsPanel
-            friends={friends}
-            onlineUsers={onlineUsers}
-            friendRequest={friendRequest}
-            setFriendRequest={setFriendRequest}
-            friendLoading={friendLoading}
-            friendError={friendError}
-            setFriendError={setFriendError}
-            sendFriendRequest={sendFriendRequest}
-            acceptFriend={acceptFriend}
-            removeFriend={removeFriend}
-          />
-        )}
-
-        {activeView === "library" && (
-          <LibraryPanel
-            games={GAMES}
-            library={library}
-            onAddGame={handleAddGame}
-            onRemoveGame={handleRemoveGame}
-          />
-        )}
+          {activeView === "library" && (
+            <LibraryPanel
+              games={GAMES}
+              library={library}
+              onAddGame={handleAddGame}
+              onRemoveGame={handleRemoveGame}
+            />
+          )}
+        </div>
       </main>
 
       <OnlineUsers
@@ -450,6 +482,7 @@ function Lobby() {
       />
     </div>
   );
+
 }
 
 export default Lobby;

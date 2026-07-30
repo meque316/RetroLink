@@ -74,7 +74,7 @@ function RoomChat({
   };
 
   return (
-    <div className="w-full lg:w-80 bg-[#121821] rounded-3xl border border-zinc-800 flex flex-col h-[300px] lg:h-auto lg:max-h-[90vh]">
+    <div className="flex h-full min-h-[360px] w-full flex-col rounded-2xl border border-zinc-800 bg-[#111821]">
       <div className="p-4 border-b border-zinc-800">
         <h3 className="font-semibold">Room Chat</h3>
       </div>

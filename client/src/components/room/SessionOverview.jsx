@@ -1,178 +1,150 @@
 import {
+  Check,
   CheckCircle2,
   Clock3,
-  Crown,
   Gamepad2,
+  Link2,
   Users,
 } from "lucide-react";
 
-function OverviewItem({
+function StatusItem({
   icon: Icon,
-  label,
   value,
-  valueClassName = "text-white",
+  label,
+  ok,
 }) {
   return (
-    <div className="flex min-w-0 items-center gap-3 rounded-xl border border-zinc-800 bg-[#0b1118] px-4 py-3">
-      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-zinc-900 text-indigo-400">
-        <Icon size={17} />
+    <div className="flex min-w-0 flex-col items-center justify-center text-center">
+      <div
+        className={`flex h-12 w-12 items-center justify-center rounded-full border ${
+          ok
+            ? "border-green-500/30 bg-green-500/15 text-green-400"
+            : "border-zinc-700 bg-zinc-900 text-zinc-500"
+        }`}
+      >
+        <Icon size={22} />
       </div>
 
-      <div className="min-w-0">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">
-          {label}
-        </p>
+      <p
+        className={`mt-3 text-lg font-bold ${
+          ok ? "text-green-400" : "text-zinc-300"
+        }`}
+      >
+        {value}
+      </p>
 
-        <p
-          className={`mt-1 truncate text-sm font-semibold ${valueClassName}`}
-          title={String(value)}
-        >
-          {value}
-        </p>
-      </div>
+      <p className="mt-0.5 text-xs leading-relaxed text-zinc-400">
+        {label}
+      </p>
     </div>
-  );
-}
-
-function getMemberId(member) {
-  return member?.id ?? member?.socketId ?? member;
-}
-
-function getMemberName(member, index = 0) {
-  return (
-    member?.username ??
-    member?.name ??
-    `Player ${index + 1}`
   );
 }
 
 function SessionOverview({
   room,
   readyPlayers = [],
+  connectionReady = false,
+  gameConfigured = false,
 }) {
   const members = room?.members ?? [];
-  const hostId = room?.host;
-
-  const hostIndex = members.findIndex(
-    (member) => getMemberId(member) === hostId
-  );
-
-  const hostMember =
-    hostIndex >= 0
-      ? members[hostIndex]
-      : null;
-
-  const hostName = hostMember
-    ? getMemberName(hostMember, hostIndex)
-    : "Waiting...";
-
   const playerCount = members.length;
   const readyCount = readyPlayers.length;
+  const everyoneReady =
+    playerCount > 0 && readyCount >= playerCount;
 
-  const maxPlayers =
-    room?.gameOptions?.maxplayers ??
-    room?.gameOptions?.maxPlayers ??
-    room?.maxPlayers ??
-    null;
+  const allReady =
+    everyoneReady &&
+    connectionReady &&
+    gameConfigured;
 
   const gameName =
     room?.game ??
     room?.gameName ??
     room?.gameId ??
-    "Unknown game";
-
-  const everyoneReady =
-    playerCount > 0 &&
-    readyCount >= playerCount;
-
-  const nobodyReady =
-    readyCount === 0;
-
-  let sessionStatus = "Waiting for players";
-  let statusIcon = Clock3;
-  let statusValueClass =
-    "text-yellow-300";
-
-  if (everyoneReady) {
-    sessionStatus = "Ready to start";
-    statusIcon = CheckCircle2;
-    statusValueClass =
-      "text-green-300";
-  } else if (!nobodyReady) {
-    sessionStatus = "Players preparing";
-    statusIcon = Clock3;
-    statusValueClass =
-      "text-yellow-300";
-  }
-
-  const StatusIcon = statusIcon;
+    "Juego";
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-zinc-800 bg-[#111821]">
-      <header className="flex flex-col gap-3 border-b border-zinc-800 px-4 py-4 sm:flex-row sm:items-center sm:justify-between md:px-5">
-        <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-indigo-400">
-            Session
-          </p>
-
-          <h2 className="mt-1 text-base font-semibold text-white">
-            Match overview
-          </h2>
-        </div>
-
-        <div
-          className={`flex w-fit items-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold ${
-            everyoneReady
-              ? "border-green-500/20 bg-green-500/10 text-green-400"
-              : "border-yellow-500/20 bg-yellow-500/10 text-yellow-400"
-          }`}
-        >
-          <StatusIcon size={14} />
-          {sessionStatus}
-        </div>
+    <section className="overflow-hidden rounded-2xl border border-zinc-800 bg-[#111821] shadow-2xl shadow-black/10">
+      <header className="border-b border-zinc-800 px-5 py-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-300">
+          Estado de la partida
+        </p>
       </header>
 
-      <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 md:p-5 xl:grid-cols-5">
-        <OverviewItem
-          icon={Gamepad2}
-          label="Game"
-          value={gameName}
-        />
+      <div className="grid gap-6 p-5 lg:grid-cols-[320px_minmax(0,1fr)] lg:p-7">
+        <div className="flex items-center gap-5 border-b border-zinc-800 pb-6 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-7">
+          <div
+            className={`flex h-24 w-24 shrink-0 items-center justify-center rounded-full border-4 ${
+              allReady
+                ? "border-green-500 text-green-400"
+                : "border-yellow-500/60 text-yellow-400"
+            }`}
+          >
+            {allReady ? (
+              <Check size={48} strokeWidth={2.5} />
+            ) : (
+              <Clock3 size={42} />
+            )}
+          </div>
 
-        <OverviewItem
-          icon={Crown}
-          label="Host"
-          value={hostName}
-          valueClassName="text-yellow-300"
-        />
+          <div>
+            <h2
+              className={`text-2xl font-bold ${
+                allReady
+                  ? "text-green-400"
+                  : "text-yellow-300"
+              }`}
+            >
+              {allReady
+                ? "¡Todo listo!"
+                : "Preparando..."}
+            </h2>
 
-        <OverviewItem
-          icon={Users}
-          label="Players"
-          value={
-            maxPlayers
-              ? `${playerCount} / ${maxPlayers}`
-              : playerCount
-          }
-        />
+            <p className="mt-2 text-sm leading-relaxed text-zinc-400">
+              {allReady
+                ? "Puedes iniciar la partida."
+                : "Esperando que se complete la sesión."}
+            </p>
+          </div>
+        </div>
 
-        <OverviewItem
-          icon={CheckCircle2}
-          label="Ready"
-          value={`${readyCount} / ${playerCount}`}
-          valueClassName={
-            everyoneReady
-              ? "text-green-300"
-              : "text-white"
-          }
-        />
+        <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+          <StatusItem
+            icon={Users}
+            value={`${playerCount} / ${playerCount || 0}`}
+            label="Jugadores conectados"
+            ok={playerCount > 0}
+          />
 
-        <OverviewItem
-          icon={StatusIcon}
-          label="Status"
-          value={sessionStatus}
-          valueClassName={statusValueClass}
-        />
+          <StatusItem
+            icon={CheckCircle2}
+            value={`${readyCount} / ${playerCount}`}
+            label="Todos ready"
+            ok={everyoneReady}
+          />
+
+          <StatusItem
+            icon={Link2}
+            value={connectionReady ? "P2P" : "..."}
+            label={
+              connectionReady
+                ? "Conexión establecida"
+                : "Conectando"
+            }
+            ok={connectionReady}
+          />
+
+          <StatusItem
+            icon={Gamepad2}
+            value={gameName}
+            label={
+              gameConfigured
+                ? "Juego configurado"
+                : "Falta configurar"
+            }
+            ok={gameConfigured}
+          />
+        </div>
       </div>
     </section>
   );

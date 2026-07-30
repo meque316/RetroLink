@@ -5,26 +5,19 @@ import {
 } from "react";
 
 import {
-  Gamepad2,
-  Radio,
-  Settings2,
+  Info,
+  LogOut,
   Users,
 } from "lucide-react";
 
 import socket from "../socket";
 
-import SectionCard from "../components/common/SectionCard";
-
 import RoomChat from "../components/room/RoomChat";
 import PlayersList from "../components/room/PlayersList";
 import RoomHeader from "../components/room/RoomHeader";
-import RelayStatus from "../components/room/RelayStatus";
-import IPSelector from "../components/room/IPSelector";
-import GamePathPanel from "../components/room/GamePathPanel";
 import RoomActions from "../components/room/RoomActions";
 import SessionOverview from "../components/room/SessionOverview";
-
-import MatchInfoPanel from "../components/room/match-info/MatchInfoPanel";
+import AdvancedRoomSettings from "../components/room/AdvancedRoomSettings";
 
 import useRoomSocket from "../hooks/useRoomSocket";
 import useRoomRelay from "../hooks/useRoomRelay";
@@ -46,40 +39,23 @@ function getStoredUser() {
   }
 }
 
-function Room({
-  room,
-  leaveRoom,
-}) {
+function Room({ room, leaveRoom }) {
   const [editingName, setEditingName] =
     useState(false);
-
   const [newRoomName, setNewRoomName] =
     useState("");
-
   const [messages, setMessages] =
     useState([]);
-
   const [chatInput, setChatInput] =
     useState("");
-
   const [showEmotes, setShowEmotes] =
     useState(false);
-
-  const [
-    emoteCategory,
-    setEmoteCategory,
-  ] = useState(0);
+  const [emoteCategory, setEmoteCategory] =
+    useState(0);
 
   const chatEndRef = useRef(null);
-
   const currentUser = getStoredUser();
-
-  /*
-   * Se mantiene basado en la sala recibida por props
-   * para no cambiar el contrato actual de los hooks.
-   */
-  const isHost =
-    room?.host === socket.id;
+  const isHost = room?.host === socket.id;
 
   const {
     gamePath,
@@ -91,10 +67,7 @@ function Room({
     relayStep,
     hostIP,
     hostIPReceived,
-  } = useRoomRelay({
-    room,
-    isHost,
-  });
+  } = useRoomRelay({ room, isHost });
 
   const {
     currentRoom,
@@ -123,17 +96,22 @@ function Room({
     handleIPSelect,
   } = useHostIPSelector(isHost);
 
-  const activeRoom =
-    currentRoom ?? room;
+  const activeRoom = currentRoom ?? room;
+  const members = activeRoom?.members ?? [];
+  const playerCount = members.length;
+  const readyCount = readyPlayers.length;
+  const isReady = readyPlayers.includes(socket.id);
 
-  const members =
-    activeRoom?.members ?? [];
+  const isGameConfigured = Boolean(gamePath);
+  const isConnectionReady = relayStatus === "ok";
+  const everyoneReady =
+    playerCount > 0 && readyCount >= playerCount;
 
-  const readyCount =
-    readyPlayers.length;
-
-  const isReady =
-    readyPlayers.includes(socket.id);
+  const canStartMatch =
+    isHost &&
+    isGameConfigured &&
+    isConnectionReady &&
+    everyoneReady;
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
@@ -159,168 +137,160 @@ function Room({
 
   const insertEmote = (emote) => {
     setChatInput(
-      (previousValue) =>
-        previousValue + emote
+      (previousValue) => previousValue + emote
     );
   };
 
   return (
     <div className="h-full overflow-y-auto bg-[#080c11] text-white">
-      <div className="mx-auto flex min-h-full w-full max-w-[1500px] flex-col gap-4 p-4 md:p-6 xl:p-8">
-        <div className="rounded-2xl border border-zinc-800 bg-[#111821] px-4 py-4 shadow-2xl shadow-black/20 md:px-6 md:py-5">
-          <RoomHeader
-            room={activeRoom}
-            isHost={isHost}
-            editingName={editingName}
-            setEditingName={setEditingName}
-            newRoomName={newRoomName}
-            setNewRoomName={setNewRoomName}
-            saveRoomName={
-              handleSaveRoomName
-            }
-            onLeave={handleLeave}
-          />
-        </div>
-
-        <SessionOverview
+      <div className="mx-auto flex min-h-full w-full max-w-[1540px] flex-col gap-4 p-4 md:p-6 xl:p-8">
+        <RoomHeader
           room={activeRoom}
-          readyPlayers={readyPlayers}
+          isHost={isHost}
+          editingName={editingName}
+          setEditingName={setEditingName}
+          newRoomName={newRoomName}
+          setNewRoomName={setNewRoomName}
+          saveRoomName={handleSaveRoomName}
         />
 
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <main className="grid min-w-0 auto-rows-min grid-cols-1 gap-4 lg:grid-cols-2">
-            <SectionCard
-              title="Match"
-              description="Configuración de la partida"
-              icon={Gamepad2}
-              className="lg:col-span-2"
-            >
-              <MatchInfoPanel
-                gameId={activeRoom?.gameId}
-                gameOptions={
-                  activeRoom?.gameOptions
-                }
-              />
-            </SectionCard>
+          <main className="flex min-w-0 flex-col gap-4">
+            <SessionOverview
+              room={activeRoom}
+              readyPlayers={readyPlayers}
+              connectionReady={isConnectionReady}
+              gameConfigured={isGameConfigured}
+            />
 
-            <SectionCard
-              title={`Players (${members.length})`}
-              description={`${readyCount} jugador${
-                readyCount === 1
-                  ? ""
-                  : "es"
-              } listo${
-                readyCount === 1
-                  ? ""
-                  : "s"
+            <section
+              className={`rounded-2xl border px-5 py-4 ${
+                canStartMatch
+                  ? "border-green-500/30 bg-green-500/10"
+                  : "border-zinc-800 bg-[#111821]"
               }`}
-              icon={Users}
             >
-              <PlayersList
-                members={members}
-                hostId={activeRoom?.host}
-                readyPlayers={readyPlayers}
-              />
-            </SectionCard>
+              <div className="flex items-start gap-3">
+                <div
+                  className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                    canStartMatch
+                      ? "bg-green-500/15 text-green-400"
+                      : "bg-zinc-900 text-zinc-500"
+                  }`}
+                >
+                  <Users size={19} />
+                </div>
 
-            <SectionCard
-              title="Connection"
-              description="Estado de la red y del bridge"
-              icon={Radio}
-            >
-              <div className="space-y-4">
-                <IPSelector
-                  isHost={isHost}
-                  selectedIP={selectedIP}
-                  availableIPs={availableIPs}
-                  showIPSelector={
-                    showIPSelector
-                  }
-                  setShowIPSelector={
-                    setShowIPSelector
-                  }
-                  isLoadingIPs={
-                    isLoadingIPs
-                  }
-                  onIPSelect={
-                    handleIPSelect
-                  }
-                />
-
-                {!isHost && (
-                  <div
-                    className={`rounded-xl border px-4 py-3 text-sm ${
-                      hostIPReceived
-                        ? "border-green-500/20 bg-green-500/10 text-green-400"
-                        : "border-yellow-500/20 bg-yellow-500/10 text-yellow-400"
+                <div>
+                  <p
+                    className={`font-semibold ${
+                      canStartMatch
+                        ? "text-green-300"
+                        : "text-zinc-200"
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-xs font-semibold uppercase tracking-wider">
-                        Host IP
-                      </span>
+                    {canStartMatch
+                      ? "Todos los jugadores están conectados y listos."
+                      : "Preparando la sesión multijugador"}
+                  </p>
 
-                      <span className="font-mono text-xs">
-                        {hostIPReceived
-                          ? hostIP
-                          : "Waiting..."}
-                      </span>
-                    </div>
-                  </div>
-                )}
+                  <p className="mt-1 text-sm text-zinc-400">
+                    {canStartMatch
+                      ? "El host puede iniciar la partida cuando quiera."
+                      : "RetroLink habilitará el inicio cuando se complete la preparación."}
+                  </p>
+                </div>
+              </div>
+            </section>
 
-                <RelayStatus
-                  relayStatus={relayStatus}
-                  relayStep={relayStep}
+            <section className="overflow-hidden rounded-2xl border border-zinc-800 bg-[#111821]">
+              <header className="border-b border-zinc-800 px-5 py-4">
+                <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-zinc-300">
+                  Jugadores ({playerCount})
+                </h2>
+              </header>
+
+              <div className="p-3 md:p-4">
+                <PlayersList
+                  members={members}
+                  hostId={activeRoom?.host}
+                  readyPlayers={readyPlayers}
+                  connectionReady={isConnectionReady}
+                  gameConfigured={isGameConfigured}
+                  currentUser={currentUser}
+                  currentUserId={socket.id}
                 />
               </div>
-            </SectionCard>
+            </section>
 
-            <SectionCard
-              title="Game Installation"
-              description="Ejecutable utilizado para iniciar el juego"
-              icon={Settings2}
-              className="lg:col-span-2"
-            >
-              <GamePathPanel
-                game={activeRoom?.game}
-                gamePath={gamePath}
-                onBrowse={
-                  handleBrowseGame
-                }
-              />
-            </SectionCard>
-
-            <div className="lg:col-span-2">
-              <RoomActions
-                isReady={isReady}
-                isHost={isHost}
-                onToggleReady={toggleReady}
-                onStartMatch={startMatch}
-              />
-            </div>
+            <RoomActions
+              isReady={isReady}
+              isHost={isHost}
+              canStartMatch={canStartMatch}
+              everyoneReady={everyoneReady}
+              connectionReady={isConnectionReady}
+              gameConfigured={isGameConfigured}
+              onToggleReady={toggleReady}
+              onStartMatch={startMatch}
+            />
           </main>
 
-          <aside className="min-h-[420px] xl:min-h-0">
-            <RoomChat
-              messages={messages}
-              currentUser={currentUser}
-              chatInput={chatInput}
-              setChatInput={setChatInput}
-              showEmotes={showEmotes}
-              setShowEmotes={setShowEmotes}
-              emoteCategory={emoteCategory}
-              setEmoteCategory={
-                setEmoteCategory
-              }
-              sendMessage={
-                handleSendMessage
-              }
-              insertEmote={insertEmote}
-              chatEndRef={chatEndRef}
+          <aside className="flex min-h-[520px] flex-col gap-4 xl:min-h-0">
+            <div className="min-h-[360px] flex-1">
+              <RoomChat
+                messages={messages}
+                currentUser={currentUser}
+                chatInput={chatInput}
+                setChatInput={setChatInput}
+                showEmotes={showEmotes}
+                setShowEmotes={setShowEmotes}
+                emoteCategory={emoteCategory}
+                setEmoteCategory={setEmoteCategory}
+                sendMessage={handleSendMessage}
+                insertEmote={insertEmote}
+                chatEndRef={chatEndRef}
+              />
+            </div>
+
+            <AdvancedRoomSettings
+              room={activeRoom}
+              gamePath={gamePath}
+              onBrowseGame={handleBrowseGame}
+              relayStatus={relayStatus}
+              relayStep={relayStep}
+              isHost={isHost}
+              selectedIP={selectedIP}
+              availableIPs={availableIPs}
+              showIPSelector={showIPSelector}
+              setShowIPSelector={setShowIPSelector}
+              isLoadingIPs={isLoadingIPs}
+              onIPSelect={handleIPSelect}
+              hostIP={hostIP}
+              hostIPReceived={hostIPReceived}
             />
           </aside>
         </div>
+
+        <footer className="flex flex-col gap-3 rounded-2xl border border-zinc-800 bg-[#111821] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-2 text-sm text-zinc-400">
+            <Info
+              size={18}
+              className="mt-0.5 shrink-0 text-sky-400"
+            />
+            <span>
+              Asegúrate de que todos tengan el juego correctamente configurado.
+            </span>
+          </div>
+
+          <button
+            onClick={handleLeave}
+            type="button"
+            className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-500/40 px-5 text-sm font-semibold text-red-400 transition hover:bg-red-500/10"
+          >
+            <LogOut size={17} />
+            Abandonar sala
+          </button>
+        </footer>
       </div>
     </div>
   );
