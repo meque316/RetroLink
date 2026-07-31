@@ -121,6 +121,9 @@ export function registerRoomEvents({
             username:
               user.username,
 
+            avatar:
+              user.avatar,
+
             gameReady:
               hasConfiguredGame(
                 socket.id,
@@ -192,8 +195,11 @@ export function registerRoomEvents({
           room
         );
 
+      const onlineUser =
+        onlineUsers[socket.id];
+
       const username =
-        onlineUsers[socket.id]
+        onlineUser
           ?.username ||
         user.username;
 
@@ -202,6 +208,12 @@ export function registerRoomEvents({
           socket.id,
 
         username,
+
+        avatar:
+          onlineUser
+            ?.avatar ||
+          user.avatar ||
+          "",
 
         gameReady:
           hasGame,
