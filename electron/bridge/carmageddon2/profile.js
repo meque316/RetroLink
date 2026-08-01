@@ -6,8 +6,8 @@ const {
 
 const MAX_CLIENTS = 16;
 
-const DEBUG_IPX =
-  process.env.RETROLINK_DEBUG_IPX === "1";
+// Activado temporalmente para depurar el transporte IPX.
+const DEBUG_IPX = true;
 
 module.exports = {
   id: "carmageddon2",
