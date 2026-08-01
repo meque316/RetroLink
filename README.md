@@ -185,7 +185,7 @@ Si encuentras un error intenta incluir:
 - Capturas de pantalla
 - Logs
 
-Esto facilita enormemente la reproducción del problema.
+Esto facilita enormemente la resolución del problema.
 
 ---
 
