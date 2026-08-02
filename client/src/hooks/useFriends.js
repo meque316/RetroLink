@@ -1,89 +1,208 @@
 import { useState } from "react";
 
-const API_URL = "https://retrolink-server.onrender.com";
+import {
+  authFetch,
+  getStoredToken,
+} from "../utils/auth";
+
+const API_URL =
+  "https://retrolink-server.onrender.com";
 
 export default function useFriends() {
-  const [friends, setFriends] = useState([]);
-  const [friendRequest, setFriendRequest] = useState("");
-  const [friendLoading, setFriendLoading] = useState(false);
-  const [friendError, setFriendError] = useState("");
+  const [friends, setFriends] =
+    useState([]);
+
+  const [
+    friendRequest,
+    setFriendRequest,
+  ] = useState("");
+
+  const [
+    friendLoading,
+    setFriendLoading,
+  ] = useState(false);
+
+  const [
+    friendError,
+    setFriendError,
+  ] = useState("");
 
   const fetchFriends = async () => {
-    const token = localStorage.getItem("token");
-
-    try {
-      const res = await fetch(`${API_URL}/api/friends`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const data = await res.json();
-      setFriends(data.friendships || []);
-    } catch (error) {
-      console.error("Error fetching friends:", error);
+    /*
+     * No hacemos la petición si todavía no existe
+     * una sesión. Esto evita un 401 innecesario al
+     * montar componentes antes de iniciar sesión.
+     */
+    if (!getStoredToken()) {
+      setFriends([]);
+      return;
     }
-  };
-
-  const sendFriendRequest = async () => {
-    if (!friendRequest.trim()) return;
-
-    setFriendLoading(true);
-    setFriendError("");
-
-    const token = localStorage.getItem("token");
 
     try {
-      const res = await fetch(`${API_URL}/api/friends/request`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ username: friendRequest.trim() }),
-      });
+      const response = await authFetch(
+        `${API_URL}/api/friends`
+      );
 
-      const data = await res.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
 
-      if (!res.ok) {
-        setFriendError(data.message || "Error al enviar la solicitud");
+      const data =
+        await response.json();
+
+      setFriends(
+        data.friendships || []
+      );
+    } catch (error) {
+      if (
+        error.message ===
+        "SESSION_EXPIRED"
+      ) {
         return;
       }
 
-      setFriendRequest("");
-      fetchFriends();
-    } catch {
-      setFriendError("Connection error");
-    } finally {
-      setFriendLoading(false);
+      console.error(
+        "[Friends] Error obteniendo amigos:",
+        error
+      );
     }
   };
 
-  const acceptFriend = async (friendshipId) => {
-    const token = localStorage.getItem("token");
+  const sendFriendRequest =
+    async () => {
+      const username =
+        friendRequest.trim();
 
+      if (!username) {
+        return;
+      }
+
+      setFriendLoading(true);
+      setFriendError("");
+
+      try {
+        const response =
+          await authFetch(
+            `${API_URL}/api/friends/request`,
+            {
+              method: "POST",
+
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body: JSON.stringify({
+                username,
+              }),
+            }
+          );
+
+        const data =
+          await response
+            .json()
+            .catch(() => ({}));
+
+        if (!response.ok) {
+          setFriendError(
+            data.message ||
+              "No se pudo enviar la solicitud."
+          );
+
+          return;
+        }
+
+        setFriendRequest("");
+
+        await fetchFriends();
+      } catch (error) {
+        if (
+          error.message ===
+          "SESSION_EXPIRED"
+        ) {
+          return;
+        }
+
+        console.error(
+          "[Friends] Error enviando solicitud:",
+          error
+        );
+
+        setFriendError(
+          "Error de conexión con el servidor."
+        );
+      } finally {
+        setFriendLoading(false);
+      }
+    };
+
+  const acceptFriend = async (
+    friendshipId
+  ) => {
     try {
-      await fetch(`${API_URL}/api/friends/accept/${friendshipId}`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const response =
+        await authFetch(
+          `${API_URL}/api/friends/accept/${friendshipId}`,
+          {
+            method: "PUT",
+          }
+        );
 
-      fetchFriends();
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      await fetchFriends();
     } catch (error) {
-      console.error("Error accepting friend:", error);
+      if (
+        error.message ===
+        "SESSION_EXPIRED"
+      ) {
+        return;
+      }
+
+      console.error(
+        "[Friends] Error aceptando amistad:",
+        error
+      );
     }
   };
 
-  const removeFriend = async (friendshipId) => {
-    const token = localStorage.getItem("token");
-
+  const removeFriend = async (
+    friendshipId
+  ) => {
     try {
-      await fetch(`${API_URL}/api/friends/${friendshipId}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const response =
+        await authFetch(
+          `${API_URL}/api/friends/${friendshipId}`,
+          {
+            method: "DELETE",
+          }
+        );
 
-      fetchFriends();
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      await fetchFriends();
     } catch (error) {
-      console.error("Error removing friend:", error);
+      if (
+        error.message ===
+        "SESSION_EXPIRED"
+      ) {
+        return;
+      }
+
+      console.error(
+        "[Friends] Error eliminando amistad:",
+        error
+      );
     }
   };
 

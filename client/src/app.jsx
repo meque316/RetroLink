@@ -9,6 +9,14 @@ import Lobby from "./views/Lobby";
 import Login from "./views/Login";
 import Register from "./views/Register";
 
+import {
+  clearStoredSession,
+  getStoredToken,
+  getStoredUser,
+  isTokenExpired,
+  onSessionExpired,
+} from "./utils/auth";
+
 function App() {
   const [user, setUser] =
     useState(null);
@@ -16,71 +24,111 @@ function App() {
   const [view, setView] =
     useState("login");
 
+  const [
+    authMessage,
+    setAuthMessage,
+  ] = useState("");
+
   /*
-  CHECK SAVED SESSION
-  */
+   * CHECK SAVED SESSION
+   */
   useEffect(() => {
     const savedUser =
-      localStorage.getItem(
-        "user"
-      );
+      getStoredUser();
 
     const token =
-      localStorage.getItem(
-        "token"
+      getStoredToken();
+
+    if (!savedUser || !token) {
+      return;
+    }
+
+    if (isTokenExpired(token)) {
+      clearStoredSession();
+
+      setAuthMessage(
+        "Tu sesión ha expirado. Inicia sesión nuevamente."
       );
 
-    if (
-      savedUser &&
-      token
-    ) {
+      setView("login");
+      return;
+    }
+
+    try {
       setUser(
         JSON.parse(savedUser)
       );
 
       setView("lobby");
+    } catch (error) {
+      console.error(
+        "[App] Sesión guardada inválida:",
+        error
+      );
+
+      clearStoredSession();
+
+      setUser(null);
+      setView("login");
     }
   }, []);
 
   /*
-  LOGIN SUCCESS
-  */
+   * GLOBAL SESSION EXPIRATION
+   *
+   * authFetch dispara este evento cuando detecta
+   * un token vencido o una respuesta HTTP 401.
+   */
+  useEffect(() => {
+    return onSessionExpired(() => {
+      setUser(null);
+
+      setAuthMessage(
+        "Tu sesión ha expirado. Inicia sesión nuevamente."
+      );
+
+      setView("login");
+    });
+  }, []);
+
+  /*
+   * LOGIN SUCCESS
+   */
   const handleLoginSuccess =
     (userData) => {
+      setAuthMessage("");
       setUser(userData);
       setView("lobby");
     };
 
   /*
-  LOGOUT
-  */
+   * LOGOUT
+   */
   const handleLogout = () => {
-    localStorage.removeItem(
-      "token"
-    );
-
-    localStorage.removeItem(
-      "user"
-    );
+    clearStoredSession();
 
     setUser(null);
+    setAuthMessage("");
     setView("login");
   };
 
   /*
-  AUTH VIEWS
-  */
+   * AUTH VIEWS
+   */
   if (view === "login") {
     return (
       <Login
+        key="login-view"
+        authMessage={
+          authMessage
+        }
         onLoginSuccess={
           handleLoginSuccess
         }
-        goToRegister={() =>
-          setView(
-            "register"
-          )
-        }
+        goToRegister={() => {
+          setAuthMessage("");
+          setView("register");
+        }}
       />
     );
   }
@@ -88,16 +136,18 @@ function App() {
   if (view === "register") {
     return (
       <Register
-        goToLogin={() =>
-          setView("login")
-        }
+        key="register-view"
+        goToLogin={() => {
+          setAuthMessage("");
+          setView("login");
+        }}
       />
     );
   }
 
   /*
-  LOBBY
-  */
+   * LOBBY
+   */
   return (
     <MainLayout>
       <Lobby
