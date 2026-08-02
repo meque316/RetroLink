@@ -220,7 +220,18 @@ Los juegos compatibles pertenecen a sus respectivos propietarios y deben adquiri
 
 Gracias a todas las personas que han participado en las pruebas de RetroLink.
 
-Cada reporte de errores y cada prueba de conexión ha ayudado a mejorar el proyecto.
+Fabio(Kingtoa)
+
+Danilo(DDMGAMER)
+
+Felipe(yonwicks)
+
+Diego(Nirvana)
+
+Maxi(El Maxi culiao)
+
+
+y mi abuela y mi tío Lalo que me prestaron espacio para hacer pruebas de relay!
 
 ---
 
