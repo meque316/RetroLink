@@ -8,6 +8,8 @@ import MainLayout from "./layouts/MainLayout";
 import Lobby from "./views/Lobby";
 import Login from "./views/Login";
 import Register from "./views/Register";
+import ForgotPassword from "./views/ForgotPassword";
+import ResetPassword from "./views/ResetPassword";
 
 import {
   clearStoredSession,
@@ -17,22 +19,73 @@ import {
   onSessionExpired,
 } from "./utils/auth";
 
+function getInitialAuthView() {
+  const params =
+    new URLSearchParams(
+      window.location.search
+    );
+
+  const resetToken =
+    params.get("token");
+
+  const isResetPath =
+    window.location.pathname.includes(
+      "reset-password"
+    );
+
+  if (
+    isResetPath &&
+    resetToken
+  ) {
+    return {
+      view: "reset-password",
+      resetToken,
+    };
+  }
+
+  return {
+    view: "login",
+    resetToken: "",
+  };
+}
+
 function App() {
+  const initialAuthState =
+    getInitialAuthView();
+
   const [user, setUser] =
     useState(null);
 
   const [view, setView] =
-    useState("login");
+    useState(
+      initialAuthState.view
+    );
+
+  const [
+    resetToken,
+    setResetToken,
+  ] = useState(
+    initialAuthState.resetToken
+  );
 
   const [
     authMessage,
     setAuthMessage,
   ] = useState("");
 
-  /*
-   * CHECK SAVED SESSION
-   */
   useEffect(() => {
+    /*
+     * No debemos restaurar una sesión y abrir el
+     * Lobby cuando el usuario llegó mediante un
+     * enlace de recuperación.
+     */
+    if (
+      initialAuthState.view ===
+      "reset-password"
+    ) {
+      return;
+    }
+
     const savedUser =
       getStoredUser();
 
@@ -73,12 +126,6 @@ function App() {
     }
   }, []);
 
-  /*
-   * GLOBAL SESSION EXPIRATION
-   *
-   * authFetch dispara este evento cuando detecta
-   * un token vencido o una respuesta HTTP 401.
-   */
   useEffect(() => {
     return onSessionExpired(() => {
       setUser(null);
@@ -91,9 +138,18 @@ function App() {
     });
   }, []);
 
-  /*
-   * LOGIN SUCCESS
-   */
+  const showLogin = () => {
+    setResetToken("");
+    setAuthMessage("");
+    setView("login");
+
+    window.history.replaceState(
+      {},
+      "",
+      "/"
+    );
+  };
+
   const handleLoginSuccess =
     (userData) => {
       setAuthMessage("");
@@ -101,9 +157,6 @@ function App() {
       setView("lobby");
     };
 
-  /*
-   * LOGOUT
-   */
   const handleLogout = () => {
     clearStoredSession();
 
@@ -112,9 +165,6 @@ function App() {
     setView("login");
   };
 
-  /*
-   * AUTH VIEWS
-   */
   if (view === "login") {
     return (
       <Login
@@ -129,6 +179,12 @@ function App() {
           setAuthMessage("");
           setView("register");
         }}
+        goToForgotPassword={() => {
+          setAuthMessage("");
+          setView(
+            "forgot-password"
+          );
+        }}
       />
     );
   }
@@ -137,17 +193,48 @@ function App() {
     return (
       <Register
         key="register-view"
-        goToLogin={() => {
-          setAuthMessage("");
-          setView("login");
+        goToLogin={showLogin}
+      />
+    );
+  }
+
+  if (
+    view ===
+    "forgot-password"
+  ) {
+    return (
+      <ForgotPassword
+        key="forgot-password-view"
+        goToLogin={showLogin}
+      />
+    );
+  }
+
+  if (
+    view ===
+    "reset-password"
+  ) {
+    return (
+      <ResetPassword
+        key="reset-password-view"
+        token={resetToken}
+        goToLogin={showLogin}
+        requestNewLink={() => {
+          setResetToken("");
+          setView(
+            "forgot-password"
+          );
+
+          window.history.replaceState(
+            {},
+            "",
+            "/"
+          );
         }}
       />
     );
   }
 
-  /*
-   * LOBBY
-   */
   return (
     <MainLayout>
       <Lobby

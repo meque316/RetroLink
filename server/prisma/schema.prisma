@@ -8,13 +8,17 @@ datasource db {
 }
 
 model User {
-  id          String       @id @default(uuid())
-  email       String       @unique
-  username    String       @unique
-  password    String
-  role        String       @default("USER")
-  avatar      String?      @default("")
-  createdAt   DateTime     @default(now())
+  id        String   @id @default(uuid())
+  email     String   @unique
+  username  String   @unique
+  password  String
+  role      String   @default("USER")
+  avatar    String?  @default("")
+  createdAt DateTime @default(now())
+
+  passwordResetTokenHash      String?
+  passwordResetTokenExpiresAt DateTime?
+  passwordChangedAt           DateTime?
 
   friendships Friendship[] @relation("UserFriendships")
   friendOf    Friendship[] @relation("FriendOf")
@@ -27,6 +31,6 @@ model Friendship {
   status    String   @default("pending")
   createdAt DateTime @default(now())
 
-  user      User     @relation("UserFriendships", fields: [userId], references: [id])
-  friend    User     @relation("FriendOf", fields: [friendId], references: [id])
+  user   User @relation("UserFriendships", fields: [userId], references: [id])
+  friend User @relation("FriendOf", fields: [friendId], references: [id])
 }
