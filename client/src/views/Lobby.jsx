@@ -37,6 +37,11 @@ const SUPPORTED_GAMES = [
     name: "Carmageddon II: Carpocalypse Now",
     year: "1998",
   },
+  {
+    id: "aom",  
+    name: "Age of Mythology",
+    year: "2002",
+  },
 ];
 
 const GAMES_IN_DEVELOPMENT = [
@@ -121,6 +126,7 @@ const DEFAULT_OPTIONS_BY_GAME = {
   cs16: DEFAULT_CS16_OPTIONS,
   ut99: DEFAULT_UT99_OPTIONS,
   carmageddon2: {},
+  aom: {},
 };
 
 const isGameSupported = (gameIdOrName) => {

@@ -4,12 +4,14 @@ const quake3 = require("./quake3");
 const cs16 = require("./cs16");
 const carmageddon2 = require("./carmageddon2");
 const ut99 = require("./ut99");
+const aom = require("./aom");
 
 const gamesRegistry = {
   [quake3.id]: quake3,
   [cs16.id]: cs16,
   [carmageddon2.id]: carmageddon2,
   [ut99.id]: ut99,
+  [aom.id]: aom,
 };
 
 const GAME_ALIASES = {
@@ -66,6 +68,14 @@ const GAME_ALIASES = {
   "unreal tournament game of the year edition": "ut99",
   "unrealtournament": "ut99",
   "unreal tournament 1999": "ut99",
+
+    // Age of Mythology: Extended Edition
+  aom: "aom",
+  "age of mythology": "aom",
+  "age of mythology extended edition": "aom",
+  "age of mythology: extended edition": "aom",
+  "age of mythology ee": "aom",
+  aomx: "aom",
 };
 
 function normalizeGameId(gameId) {

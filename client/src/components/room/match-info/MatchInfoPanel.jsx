@@ -1,6 +1,7 @@
 import CS16MatchInfo from "./CS16MatchInfo";
 import Quake3MatchInfo from "./Quake3MatchInfo";
 import UT99MatchInfo from "./UT99MatchInfo";
+import AOMMatchInfo from "./AOMMatchInfo";
 
 export default function MatchInfoPanel({
   gameId,
@@ -31,6 +32,12 @@ export default function MatchInfoPanel({
           gameOptions={gameOptions}
         />
       );
+    case "aom":  
+      return (
+        <AOMMatchInfo
+          gameOptions={gameOptions}
+        />
+      );  
 
     default:
       return null;

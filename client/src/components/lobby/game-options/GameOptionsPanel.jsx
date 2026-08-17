@@ -1,6 +1,7 @@
 import CS16Options from "./CS16Options";
 import Quake3Options from "./Quake3Options";
 import UT99Options from "./UT99Options";
+import AOMOptions from "./AOMOptions";  // <-- Agregar
 
 export default function GameOptionsPanel({
   gameId,
@@ -38,6 +39,13 @@ export default function GameOptionsPanel({
     case "ut99":
       return (
         <UT99Options
+          {...sharedProps}
+        />
+      );
+
+    case "aom":  // <-- Agregar
+      return (
+        <AOMOptions
           {...sharedProps}
         />
       );

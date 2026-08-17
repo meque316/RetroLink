@@ -29,6 +29,11 @@ const bridgeProfiles = {
     label: "UT99",
     bridge: require("./profiles/ut99"),
   },
+  
+  aom: {
+    label: "Age of Mythology",
+    bridge: require("./profiles/aom"),
+  },
 };
 
 const DEFAULT_GAME_ID = "quake3";
