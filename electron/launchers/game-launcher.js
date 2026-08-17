@@ -98,7 +98,7 @@ function createProcess({
       `[Game Launcher] Usando modo especial para Carmageddon 2`
     );
 
-    const process = spawn(
+    const childProcess = spawn(
       gamePath,
       args,
       {
@@ -109,15 +109,15 @@ function createProcess({
       }
     );
 
-    process.unref();
-    return process;
+    childProcess.unref();
+    return childProcess;
   }
 
   // Caso especial: Age of Mythology
   // AoM necesita:
   // 1. El directorio de trabajo correcto (cwd)
   // 2. Shell habilitado para que funcione correctamente
-  // 3. Variables de entorno adecuadas
+  // 3. El path del ejecutable entre comillas (por los espacios)
   if (isAoM) {
     console.log(
       `[Game Launcher] Usando modo especial para Age of Mythology`
@@ -126,14 +126,17 @@ function createProcess({
       `[Game Launcher] Directorio de trabajo: ${gameDir}`
     );
 
-    const process = spawn(
-      gamePath,
+    // IMPORTANTE: Envolver gamePath entre comillas para manejar espacios
+    const quotedGamePath = `"${gamePath}"`;
+
+    const childProcess = spawn(
+      quotedGamePath,
       args,
       {
         cwd: gameDir,
         stdio: "inherit",
         windowsHide: false,
-        shell: true, // IMPORTANTE: AoM necesita shell
+        shell: true,
         env: {
           ...process.env,
           CD: gameDir,
@@ -141,20 +144,20 @@ function createProcess({
       }
     );
 
-    process.on("error", (error) => {
+    childProcess.on("error", (error) => {
       console.error(
         `[Game Launcher] Error spawning AoM:`,
         error.message
       );
     });
 
-    process.on("close", (code) => {
+    childProcess.on("close", (code) => {
       console.log(
         `[Game Launcher] AoM closed with code: ${code}`
       );
     });
 
-    return process;
+    return childProcess;
   }
 
   // Para todos los demás juegos
@@ -162,7 +165,7 @@ function createProcess({
     `[Game Launcher] Usando modo estándar`
   );
 
-  const process = spawn(
+  const childProcess = spawn(
     gamePath,
     args,
     {
@@ -173,20 +176,20 @@ function createProcess({
     }
   );
 
-  process.on("error", (error) => {
+  childProcess.on("error", (error) => {
     console.error(
       `[Game Launcher] Error spawning process:`,
       error.message
     );
   });
 
-  process.on("close", (code) => {
+  childProcess.on("close", (code) => {
     console.log(
       `[Game Launcher] Process closed with code: ${code}`
     );
   });
 
-  return process;
+  return childProcess;
 }
 
 async function launchStandardGame({
@@ -257,7 +260,7 @@ async function launchStandardGame({
     `[Game Launcher] Working directory: ${gameDir}`
   );
 
-  const process = createProcess({
+  const childProcess = createProcess({
     gamePath,
     args,
     gameDir,
@@ -265,7 +268,7 @@ async function launchStandardGame({
   });
 
   return {
-    process,
+    process: childProcess,
     args,
   };
 }
