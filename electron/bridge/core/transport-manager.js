@@ -1,3 +1,5 @@
+// electron/bridge/core/transport-manager.js
+
 /// electron/bridge/core/transport-manager.js
 
 const TRANSPORT_MODE = Object.freeze({
@@ -71,6 +73,10 @@ function createTransportManager({
     typeof onModeChange === "function"
       ? onModeChange
       : null;
+
+  // ===== NUEVO: Callback para recibir mensajes =====
+  let receiveCallback = null;
+  // ===== FIN NUEVO =====
 
   let closed = false;
 
@@ -284,6 +290,19 @@ function createTransportManager({
       );
     }
 
+    // ===== NUEVO: Llamar al callback de recepción si existe =====
+    if (typeof receiveCallback === 'function') {
+      try {
+        receiveCallback(buffer, { source, mode, ...metadata });
+      } catch (error) {
+        console.error(
+          `[Bridge-Q3-Transport:${label}] [TM-ERROR] Excepción en receiveCallback:`,
+          describeError(error)
+        );
+      }
+    }
+    // ===== FIN NUEVO =====
+
     if (!packetHandler) {
       registerDroppedPacket(
         buffer.length
@@ -354,6 +373,24 @@ function createTransportManager({
       metadata
     );
   }
+
+  // ===== NUEVO: Método para registrar callback de recepción =====
+  function onReceive(callback) {
+    if (typeof callback === 'function') {
+      receiveCallback = callback;
+      console.log(
+        `[Bridge-Q3-Transport:${label}] [TM-Debug] onReceive() registrado correctamente`
+      );
+      return true;
+    } else {
+      console.warn(
+        `[Bridge-Q3-Transport:${label}] [TM-Debug] onReceive() llamado sin callback válido`
+      );
+      receiveCallback = null;
+      return false;
+    }
+  }
+  // ===== FIN NUEVO =====
 
   function useWebRTC(channel) {
     console.log(
@@ -806,6 +843,10 @@ function createTransportManager({
 
     handleWebRTCMessage,
     handleRelayMessage,
+
+    // ===== NUEVO: Exportar onReceive =====
+    onReceive,
+    // ===== FIN NUEVO =====
 
     setPacketHandler,
     setModeChangeHandler,
