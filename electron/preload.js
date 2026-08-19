@@ -87,6 +87,14 @@ contextBridge.exposeInMainWorld(
     offClientPortAssigned: () =>
       ipcRenderer.removeAllListeners("client-port-assigned"),
 
+    // ===== NUEVO: Evento para actualizar el puerto del cliente =====
+    onClientPortUpdate: (callback) =>
+      ipcRenderer.on("client-port-update", (_, port) => callback(port)),
+
+    offClientPortUpdate: () =>
+      ipcRenderer.removeAllListeners("client-port-update"),
+    // ===== FIN NUEVO =====
+
     onClientConnected: (callback) =>
       ipcRenderer.on("client-connected", (_, data) => callback(data)),
 

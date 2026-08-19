@@ -113,6 +113,7 @@ function AdvancedRoomSettings({
             <MatchInfoPanel
               gameId={room?.gameId}
               gameOptions={room?.gameOptions}
+              isHost={isHost}
             />
           </div>
 

@@ -113,6 +113,7 @@ function attachGameProcessEvents({
 }
 
 function registerGameHandlers() {
+  // ===== Handler: Seleccionar ejecutable del juego =====
   ipcMain.handle(
     "select-game-exe",
     async () => {
@@ -134,6 +135,7 @@ function registerGameHandlers() {
     }
   );
 
+  // ===== Handler: Lanzar el juego =====
   ipcMain.handle(
     "launch-game",
     async (
@@ -171,6 +173,7 @@ function registerGameHandlers() {
         const bridge =
           getBridge(realGameId);
 
+        // Caso especial: UT99
         if (realGameId === "ut99") {
           if (
             isHost &&
@@ -223,6 +226,7 @@ function registerGameHandlers() {
           };
         }
 
+        // Juegos estándar
         const result =
           await launchStandardGame({
             game,
@@ -274,6 +278,7 @@ function registerGameHandlers() {
     }
   );
 
+  // ===== Handler: Matar el proceso del juego =====
   ipcMain.handle(
     "kill-game",
     async () => {
@@ -284,6 +289,11 @@ function registerGameHandlers() {
       };
     }
   );
+
+  // ===== ELIMINADOS: handlers duplicados =====
+  // get-client-port → ya existe en relay.handlers.js
+  // get-bridge-state → ya existe en relay.handlers.js
+  // get-host-ip → ya existe en network.handlers.js (con la lógica correcta)
 }
 
 module.exports = registerGameHandlers;

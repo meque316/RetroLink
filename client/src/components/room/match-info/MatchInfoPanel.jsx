@@ -6,6 +6,7 @@ import AOMMatchInfo from "./AOMMatchInfo";
 export default function MatchInfoPanel({
   gameId,
   gameOptions,
+  isHost,
 }) {
   if (!gameId || !gameOptions) {
     return null;
@@ -36,6 +37,7 @@ export default function MatchInfoPanel({
       return (
         <AOMMatchInfo
           gameOptions={gameOptions}
+          isHost={isHost}
         />
       );  
 

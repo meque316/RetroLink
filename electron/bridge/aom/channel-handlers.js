@@ -1,5 +1,7 @@
 // electron/bridge/aom/channel-handlers.js
 
+const { BrowserWindow } = require('electron');
+
 function getDebugStateId(state) {
   globalThis.__RETROLINK_STATE_IDS__ ||=
     new WeakMap();
@@ -176,6 +178,19 @@ function createChannelHandlers() {
       );
 
       return;
+    }
+
+    // Enviar el puerto al frontend
+    try {
+      const mainWindow = BrowserWindow.getAllWindows()[0];
+      if (mainWindow && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('client-port-update', state.clientPort);
+        console.log(
+          `[AoM] Puerto ${state.clientPort} enviado al frontend`
+        );
+      }
+    } catch (error) {
+      console.error('[AoM] Error enviando puerto al frontend:', error.message);
     }
 
     deps.ensureClientTransportResources();

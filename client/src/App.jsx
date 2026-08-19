@@ -1,3 +1,5 @@
+// client/src/App.jsx
+
 import React, {
   useEffect,
   useState,
@@ -137,6 +139,34 @@ function App() {
       setView("login");
     });
   }, []);
+
+  // ===== NUEVO: Escuchar eventos del backend (usando retroLink) =====
+  useEffect(() => {
+    // Escuchar eventos del backend para actualizar el puerto del cliente
+    if (window.retroLink) {
+      // Evento para actualizar el puerto del cliente
+      window.retroLink.onClientPortUpdate((port) => {
+        console.log('[App] Puerto recibido desde backend:', port);
+        // Disparar evento personalizado para que otros componentes lo escuchen
+        window.dispatchEvent(new CustomEvent('client-port-update', { detail: port }));
+      });
+
+      // Evento para actualizar el estado del bridge (opcional)
+      window.retroLink.onBridgeStatus((status) => {
+        console.log('[App] Estado del bridge:', status);
+        window.dispatchEvent(new CustomEvent('bridge-status-update', { detail: status }));
+      });
+    }
+
+    return () => {
+      // Limpiar listeners
+      if (window.retroLink) {
+        window.retroLink.offClientPortUpdate();
+        window.retroLink.offBridgeStatus();
+      }
+    };
+  }, []);
+  // ===== FIN NUEVO =====
 
   const showLogin = () => {
     setResetToken("");

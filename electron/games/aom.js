@@ -21,7 +21,7 @@ module.exports = {
 
   normalizeOptions,
 
-  getHostArgs(options = {}, extraArgs = []) {
+  getHostArgs(extraArgs = []) {
     const safeExtraArgs =
       Array.isArray(extraArgs)
         ? extraArgs
@@ -52,7 +52,7 @@ module.exports = {
     return [overrideArg, ...safeExtraArgs];
   },
 
-  getClientArgs(port, options = {}, extraArgs = []) {
+  getClientArgs(port, extraArgs = []) {
     const safeExtraArgs =
       Array.isArray(extraArgs)
         ? extraArgs

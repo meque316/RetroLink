@@ -1,3 +1,5 @@
+// client/src/components/room/Room.jsx
+
 import {
   useEffect,
   useRef,
@@ -18,6 +20,7 @@ import RoomHeader from "../components/room/RoomHeader";
 import RoomActions from "../components/room/RoomActions";
 import SessionOverview from "../components/room/SessionOverview";
 import AdvancedRoomSettings from "../components/room/AdvancedRoomSettings";
+import ConnectionInfo from "../components/room/ConnectionInfo";
 
 import useRoomSocket from "../hooks/useRoomSocket";
 import useRoomRelay from "../hooks/useRoomRelay";
@@ -52,6 +55,8 @@ function Room({ room, leaveRoom }) {
     useState(false);
   const [emoteCategory, setEmoteCategory] =
     useState(0);
+
+  const [clientPort, setClientPort] = useState(null);
 
   const chatEndRef = useRef(null);
   const currentUser = getStoredUser();
@@ -95,6 +100,34 @@ function Room({ room, leaveRoom }) {
     isLoadingIPs,
     handleIPSelect,
   } = useHostIPSelector(isHost);
+
+  // Obtener y escuchar el puerto del cliente
+  useEffect(() => {
+    const getPort = async () => {
+      try {
+        const port = await window.retroLink?.getClientPort?.();
+        if (port) {
+          setClientPort(port);
+          console.log('[Room] Puerto del cliente:', port);
+        }
+      } catch (error) {
+        console.error('[Room] Error obteniendo puerto:', error);
+      }
+    };
+
+    getPort();
+
+    const handlePortUpdate = (event) => {
+      console.log('[Room] Evento de puerto recibido:', event.detail);
+      setClientPort(event.detail);
+    };
+
+    window.addEventListener('client-port-update', handlePortUpdate);
+
+    return () => {
+      window.removeEventListener('client-port-update', handlePortUpdate);
+    };
+  }, []);
 
   const activeRoom = currentRoom ?? room;
   const members = activeRoom?.members ?? [];
@@ -161,6 +194,11 @@ function Room({ room, leaveRoom }) {
               readyPlayers={readyPlayers}
               connectionReady={isConnectionReady}
               gameConfigured={isGameConfigured}
+            />
+
+            <ConnectionInfo
+              gameId={activeRoom?.gameId || activeRoom?.game}
+              clientPort={clientPort}
             />
 
             <section
