@@ -129,6 +129,62 @@ function Room({ room, leaveRoom }) {
     };
   }, []);
 
+  // ===== NUEVO: Función Test Game =====
+  const handleTestGame = async () => {
+    try {
+      console.log('[Room] 🧪 Iniciando Test Game...');
+
+      // Mostrar mensaje en el chat
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          username: 'Sistema',
+          message: '🧪 Iniciando modo Test Game...',
+          isSystem: true,
+        },
+      ]);
+
+      const result = await window.retroLink?.testGame?.(activeRoom?.id);
+
+      if (result?.success) {
+        console.log('[Room] ✅ Test Game iniciado correctamente');
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            username: 'Sistema',
+            message: `✅ Test Game: ${result.message || 'Cliente simulado conectado'}`,
+            isSystem: true,
+          },
+        ]);
+      } else {
+        console.error('[Room] ❌ Error en Test Game:', result?.error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            username: 'Sistema',
+            message: `❌ Error en Test Game: ${result?.error || 'Error desconocido'}`,
+            isSystem: true,
+          },
+        ]);
+      }
+    } catch (error) {
+      console.error('[Room] Error en Test Game:', error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          username: 'Sistema',
+          message: `❌ Error en Test Game: ${error.message}`,
+          isSystem: true,
+        },
+      ]);
+    }
+  };
+  // ===== FIN NUEVO =====
+
   const activeRoom = currentRoom ?? room;
   const members = activeRoom?.members ?? [];
   const playerCount = members.length;
@@ -270,6 +326,7 @@ function Room({ room, leaveRoom }) {
               gameConfigured={isGameConfigured}
               onToggleReady={toggleReady}
               onStartMatch={startMatch}
+              onTestGame={handleTestGame}
             />
           </main>
 

@@ -199,6 +199,7 @@ function createUDPTransportFactory({
     socketId,
     clientPort,
     onGamePacket,
+    onNetBIOS, // <-- NUEVO: Callback para NetBIOS
   }) {
     console.log(
       `[UDP-Debug] [${logPrefix}] [HOST-STEP 2] createHostUDPProxy() invocado:`,
@@ -241,6 +242,41 @@ function createUDPTransportFactory({
           `desde ${remoteInfo.address}:${remoteInfo.port}`
         );
 
+        // === NUEVO: DETECTAR NetBIOS ===
+        // AoM y otros juegos clásicos usan NetBIOS (puerto 137) para discovery
+        // También detectamos broadcast y multicast que pueden estar relacionados
+        const isNetBIOS =
+          remoteInfo.port === 137 ||
+          remoteInfo.port === 138 ||
+          remoteInfo.port === 139 ||
+          remoteInfo.address === '255.255.255.255' ||
+          remoteInfo.address === '192.168.1.255' ||
+          remoteInfo.address === '224.0.0.252' ||
+          remoteInfo.address.endsWith('.255');
+
+        if (isNetBIOS && typeof onNetBIOS === 'function') {
+          debugLog(
+            `NetBIOS detectado en puerto ${remoteInfo.port} ` +
+            `desde ${remoteInfo.address}:${remoteInfo.port}`
+          );
+
+          // Llamar al callback de NetBIOS para que channel-handlers lo reenvíe
+          try {
+            onNetBIOS(message, remoteInfo);
+          } catch (error) {
+            console.error(
+              `[UDP-Debug] [${logPrefix}] Error en onNetBIOS:`,
+              describeError(error)
+            );
+          }
+
+          // No seguir procesando como paquete normal
+          // (NetBIOS no debe ir al juego, solo a otros clientes)
+          return;
+        }
+        // === FIN NUEVO ===
+
+        // Procesar paquete normal (para juegos como Quake III, CS 1.6, UT99, etc.)
         const forwarded =
           safelyForwardGamePacket({
             message,

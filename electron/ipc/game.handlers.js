@@ -25,6 +25,7 @@ const {
 
 const {
   getBridge,
+  getActiveBridge,
 } = require("../bridge/bridge-registry");
 
 const {
@@ -290,10 +291,30 @@ function registerGameHandlers() {
     }
   );
 
-  // ===== ELIMINADOS: handlers duplicados =====
-  // get-client-port → ya existe en relay.handlers.js
-  // get-bridge-state → ya existe en relay.handlers.js
-  // get-host-ip → ya existe en network.handlers.js (con la lógica correcta)
+  // ===== NUEVO: Handler Test Game =====
+  ipcMain.handle('test-game', async (_, roomId) => {
+    try {
+      console.log('[IPC] 🧪 Test Game iniciado para sala:', roomId);
+
+      const bridge = getActiveBridge();
+      if (!bridge) {
+        throw new Error('No hay bridge activo');
+      }
+
+      const result = await bridge.testGame?.(roomId);
+
+      if (!result) {
+        throw new Error('El bridge no soporta testGame');
+      }
+
+      console.log('[IPC] ✅ Test Game completado:', result);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('[IPC] ❌ Error en Test Game:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+  // ===== FIN NUEVO =====
 }
 
 module.exports = registerGameHandlers;

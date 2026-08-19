@@ -7,16 +7,22 @@
       http-equiv="Content-Security-Policy"
       content="
         default-src 'self';
-        script-src 'self';
-        style-src 'self' 'unsafe-inline';
-        img-src 'self' data: blob: https:;
-        font-src 'self' data:;
+        script-src 'self' 'unsafe-inline' http://localhost:5173;
+        style-src 'self' 'unsafe-inline' http://localhost:5173;
+        img-src
+          'self'
+          data:
+          http://localhost:5173
+          https://res.cloudinary.com
+          https:;
+        font-src 'self' data: http://localhost:5173;
         connect-src
           'self'
           http://localhost:4000
           ws://localhost:4000
           https://retrolink-server.onrender.com
-          wss://retrolink-server.onrender.com;
+          wss://retrolink-server.onrender.com
+          https://api.ipify.org;
       "
     />
 

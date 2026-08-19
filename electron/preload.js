@@ -124,5 +124,10 @@ contextBridge.exposeInMainWorld(
 
     offGameDetected: () =>
       ipcRenderer.removeAllListeners("game-detected"),
+
+    // ============ NUEVO: TEST GAME ============
+    testGame: (roomId) =>
+      ipcRenderer.invoke("test-game", roomId),
+    // ============ FIN NUEVO ============
   }
 );

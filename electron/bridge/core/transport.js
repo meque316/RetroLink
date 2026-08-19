@@ -64,7 +64,8 @@ function createTransportModule() {
    * porque el modo Relay también necesita reutilizarlo.
    */
   function ensureHostTransportResources(
-    socketId
+    socketId,
+    options = {} // <-- NUEVO: Aceptar opciones
   ) {
     console.log(
       "[Transport-Debug] [HOST-STEP 1] entrando a ensureHostTransportResources:",
@@ -209,6 +210,10 @@ function createTransportModule() {
           }
         );
 
+        // ===== NUEVO: Extraer onNetBIOS de options =====
+        const onNetBIOS = options.onNetBIOS || null;
+        // ===== FIN NUEVO =====
+
         client.udpTransport ||=
           deps.createHostUDPProxy({
             socketId,
@@ -247,6 +252,10 @@ function createTransportModule() {
                 throw error;
               }
             },
+
+            // ===== NUEVO: Pasar onNetBIOS =====
+            onNetBIOS: onNetBIOS,
+            // ===== FIN NUEVO =====
           });
 
         console.log(

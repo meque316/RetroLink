@@ -254,6 +254,45 @@ function createWindow() {
     }
   );
 
+  // ===== CSP: Inyectar política de seguridad corregida =====
+  win.webContents.on("did-finish-load", () => {
+    try {
+      const csp = `
+        default-src 'self';
+        script-src 'self' 'unsafe-inline' http://localhost:5173;
+        style-src 'self' 'unsafe-inline' http://localhost:5173;
+        img-src 'self' data: http://localhost:5173 https://res.cloudinary.com https:;
+        font-src 'self' data: http://localhost:5173;
+        connect-src 'self'
+          http://localhost:4000
+          ws://localhost:4000
+          https://retrolink-server.onrender.com
+          wss://retrolink-server.onrender.com
+          https://api.ipify.org;
+      `;
+
+      win.webContents.executeJavaScript(`
+        // Eliminar CSP existente
+        const existingMeta = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+        if (existingMeta) {
+          existingMeta.remove();
+        }
+
+        // Crear nuevo meta con CSP corregido
+        const meta = document.createElement('meta');
+        meta.httpEquiv = 'Content-Security-Policy';
+        meta.content = \`${csp.replace(/\s+/g, ' ').trim()}\`;
+        document.head.appendChild(meta);
+
+        console.log('[MAIN-DIAG] CSP inyectado correctamente');
+      `).catch((error) => {
+        console.error('[MAIN-DIAG] Error inyectando CSP:', error.message);
+      });
+    } catch (error) {
+      console.error('[MAIN-DIAG] Error configurando CSP:', error.message);
+    }
+  });
+  // ===== FIN CSP =====
 
   if (isDev) {
     win.loadURL(

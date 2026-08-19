@@ -3,6 +3,7 @@ import {
   Clock3,
   LockKeyhole,
   Play,
+  FlaskConical,
 } from "lucide-react";
 
 function getBlockedReason({
@@ -34,6 +35,7 @@ function RoomActions({
   gameConfigured,
   onToggleReady,
   onStartMatch,
+  onTestGame, // <-- NUEVO
 }) {
   const blockedReason = getBlockedReason({
     gameConfigured,
@@ -48,6 +50,7 @@ function RoomActions({
       </h2>
 
       <div className="flex flex-col gap-3 sm:flex-row">
+        {/* Botón Ready / Unready */}
         <button
           onClick={onToggleReady}
           type="button"
@@ -74,6 +77,7 @@ function RoomActions({
           </span>
         </button>
 
+        {/* Botón Iniciar partida (solo host) */}
         {isHost && (
           <button
             onClick={onStartMatch}
@@ -102,6 +106,24 @@ function RoomActions({
           </button>
         )}
       </div>
+
+      {/* ===== NUEVO: Botón Test Game (solo host) ===== */}
+      {isHost && (
+        <div className="mt-3">
+          <button
+            onClick={onTestGame}
+            type="button"
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-purple-500/30 bg-purple-500/5 px-5 py-3 text-sm font-semibold text-purple-400 transition hover:bg-purple-500/15"
+          >
+            <FlaskConical size={18} />
+            🧪 Test Game (Simular Cliente)
+          </button>
+          <p className="mt-1 text-center text-xs text-zinc-500">
+            Simula un cliente para probar el bridge sin otro usuario
+          </p>
+        </div>
+      )}
+      {/* ===== FIN NUEVO ===== */}
 
       <div className="mt-4 flex items-center justify-center gap-2 text-center text-xs text-zinc-500">
         {!canStartMatch && isHost && (

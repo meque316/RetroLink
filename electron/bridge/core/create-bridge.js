@@ -552,34 +552,113 @@ function createBridge({
       connectingStatus,
     });
 
+  // ===== NUEVO: Método testGame =====
+  const testGame = async (roomId) => {
+    console.log(`[${identity.bridgeName}] 🧪 Test Game en sala ${roomId}`);
+
+    const currentState = getState();
+
+    // Verificar si ya hay clientes
+    if (currentState.clients.size > 0) {
+      console.log(`[${identity.bridgeName}] Ya hay ${currentState.clients.size} cliente(s) real(es).`);
+      return {
+        success: true,
+        message: `${currentState.clients.size} cliente(s) conectado(s)`,
+        clients: currentState.clients.size,
+      };
+    }
+
+    // Crear un cliente simulado
+    const fakeSocketId = `test-client-${Date.now()}`;
+
+    console.log(`[${identity.bridgeName}] No hay clientes reales. Simulando cliente local...`);
+
+    // ===== NUEVO: Crear un DataChannel simulado con isOpen =====
+    let isOpen = true;
+
+    const fakeChannel = {
+      send: (data) => {
+        console.log(`[${identity.bridgeName}] 📤 DataChannel simulado enviando ${data?.length || 0} bytes`);
+        return true;
+      },
+      close: () => {
+        console.log(`[${identity.bridgeName}] 🔒 DataChannel simulado cerrado`);
+        isOpen = false;
+      },
+      isOpen: () => {
+        return isOpen;
+      },
+      readyState: 'open',
+      label: `test-channel-${fakeSocketId}`,
+      id: Math.floor(Math.random() * 1000),
+    };
+    // ===== FIN NUEVO =====
+
+    // Guardar el channel simulado en el estado
+    currentState.channel = fakeChannel;
+
+    // Simular la conexión del cliente
+    currentState.clients.set(fakeSocketId, {
+      clientPort: currentState.clientPort || 2300,
+      transportManager: currentState.transportManager,
+      udpTransport: currentState.udpTransport,
+      isTestClient: true,
+      channel: fakeChannel,
+    });
+
+    // Simular la apertura del DataChannel
+    if (onHostChannelOpen) {
+      try {
+        onHostChannelOpen(fakeSocketId, fakeChannel);
+        console.log(`[${identity.bridgeName}] ✅ DataChannel simulado abierto para ${fakeSocketId}`);
+      } catch (error) {
+        console.error(`[${identity.bridgeName}] Error simulando DataChannel:`, error.message);
+        currentState.clients.delete(fakeSocketId);
+        currentState.channel = null;
+        return {
+          success: false,
+          error: error.message,
+        };
+      }
+    } else {
+      console.warn(`[${identity.bridgeName}] No se pudo simular DataChannel: onHostChannelOpen no disponible`);
+      return {
+        success: false,
+        error: 'No se pudo simular la conexión del cliente',
+      };
+    }
+
+    console.log(`[${identity.bridgeName}] ✅ Cliente simulado conectado: ${fakeSocketId}`);
+
+    return {
+      success: true,
+      message: 'Cliente simulado conectado correctamente',
+      clientId: fakeSocketId,
+      clients: currentState.clients.size,
+    };
+  };
+  // ===== FIN NUEVO =====
+
   /*
    * API utilizada por Electron y los handlers IPC.
    */
   engine.setHandlers({
-    start:
-      startBridge,
-
-    reset:
-      resetBridge,
-
-    getState:
-      getBridgeState,
-
-    getClientPort:
-      () =>
-        typeof transport.getClientPort ===
-          "function"
-          ? transport.getClientPort()
-          : getState()
-              .clientPort,
-
-    getHostIP:
-      () =>
-        getState()
-          .hostIP,
+    start: startBridge,
+    reset: resetBridge,
+    getState: getBridgeState,
+    getClientPort: () =>
+      typeof transport.getClientPort === "function"
+        ? transport.getClientPort()
+        : getState().clientPort,
+    getHostIP: () => getState().hostIP,
   });
 
-  return engine.toBridgeAPI();
+  // ===== NUEVO: Obtener bridge API y agregar testGame manualmente =====
+  const bridgeAPI = engine.toBridgeAPI();
+  bridgeAPI.testGame = testGame;
+  console.log(`[${identity.bridgeName}] testGame agregado al bridge API`);
+  return bridgeAPI;
+  // ===== FIN NUEVO =====
 }
 
 module.exports = {

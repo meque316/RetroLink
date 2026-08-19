@@ -72,10 +72,38 @@ function createChannelHandlers() {
     const state =
       deps.getState();
 
-    const client =
-      deps.ensureHostTransportResources(
-        socketId
+    // ===== NUEVO: Callback para NetBIOS =====
+    // Este callback se ejecuta cuando el proxy UDP detecta tráfico NetBIOS
+    const netBIOSCallback = (buffer, remoteInfo) => {
+      console.log(
+        `[Bridge-AoM] NetBIOS detectado desde ${remoteInfo.address}:${remoteInfo.port}, ` +
+        `reenviando a ${state.clients.size} clientes`
       );
+
+      // Reenviar a todos los clientes conectados (excepto el que envió)
+      for (const [otherSocketId, otherClient] of state.clients) {
+        if (otherSocketId !== socketId && otherClient.transportManager) {
+          try {
+            otherClient.transportManager.send(buffer);
+            console.log(`[Bridge-AoM] NetBIOS reenviado a ${otherSocketId}`);
+          } catch (error) {
+            console.error(
+              `[Bridge-AoM] Error reenviando NetBIOS a ${otherSocketId}:`,
+              error.message
+            );
+          }
+        }
+      }
+    };
+    // ===== FIN NUEVO =====
+
+    // Pasar el callback a ensureHostTransportResources
+    const client = deps.ensureHostTransportResources(
+      socketId,
+      {
+        onNetBIOS: netBIOSCallback
+      }
+    );
 
     if (!client) {
       return;
@@ -133,6 +161,10 @@ function createChannelHandlers() {
 
     deps.sendStatus(
       `¡${connected} jugador(es) conectado(s)! Listos para jugar.`
+    );
+
+    console.log(
+      `[Bridge-AoM] NetBIOS reenvío configurado para ${socketId}`
     );
   }
 
@@ -256,6 +288,39 @@ function createChannelHandlers() {
     console.log(
       "[AoM-CLIENT-OPEN] Cliente completamente inicializado."
     );
+
+    // ===== NUEVO: El cliente también debe recibir NetBIOS =====
+    // Cuando el transportManager recibe un mensaje, verificar si es NetBIOS
+    // y reenviarlo al juego local
+    if (state.transportManager && state.udpTransport) {
+      console.log(`[Bridge-AoM] Cliente configurado para recibir NetBIOS`);
+
+      // Guardar referencia al transportManager para no perderla
+      const transportManager = state.transportManager;
+      const udpTransport = state.udpTransport;
+
+      // Escuchar mensajes entrantes del transportManager
+      // Nota: dependiendo de la implementación, puede ser onReceive o un evento similar
+      // Si transportManager tiene un método onReceive, lo usamos
+      if (typeof transportManager.onReceive === 'function') {
+        transportManager.onReceive((buffer) => {
+          // Verificar si parece ser NetBIOS (sin saber el puerto, por el contenido)
+          // o simplemente reenviar todo al juego local en el puerto 137
+          try {
+            // Reenviar al juego local en el puerto 137 (NetBIOS)
+            udpTransport.sendToGame(buffer);
+            console.log(`[Bridge-AoM] NetBIOS reenviado al juego local`);
+          } catch (error) {
+            console.error(`[Bridge-AoM] Error reenviando NetBIOS al juego local:`, error.message);
+          }
+        });
+      } else {
+        // Si no hay onReceive, intentamos con un approach alternativo
+        // (esto depende de cómo esté implementado transportManager)
+        console.warn(`[Bridge-AoM] transportManager no tiene método onReceive, NetBIOS puede no funcionar en el cliente`);
+      }
+    }
+    // ===== FIN NUEVO =====
   }
 
   return {
