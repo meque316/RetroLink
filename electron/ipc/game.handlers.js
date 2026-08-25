@@ -157,8 +157,20 @@ function registerGameHandlers() {
       }
 
       try {
-        const realGameId =
-          getRealGameId(gameId);
+        // ===== NUEVO: Normalizar gameId antes de usarlo =====
+        let realGameId = getRealGameId(gameId);
+        
+        // Si no se encuentra, intentar con una versión normalizada
+        if (!realGameId) {
+          const normalizedId = gameId.toLowerCase().trim().replace(/\s+/g, ' ');
+          realGameId = getRealGameId(normalizedId);
+        }
+        
+        // Si aún no se encuentra, intentar con el gameId original
+        if (!realGameId) {
+          realGameId = gameId;
+        }
+        // ===== FIN NUEVO =====
 
         const game =
           getGame(realGameId);
@@ -291,7 +303,7 @@ function registerGameHandlers() {
     }
   );
 
-  // ===== NUEVO: Handler Test Game =====
+  // ===== Handler Test Game =====
   ipcMain.handle('test-game', async (_, roomId) => {
     try {
       console.log('[IPC] 🧪 Test Game iniciado para sala:', roomId);
@@ -314,7 +326,6 @@ function registerGameHandlers() {
       return { success: false, error: error.message };
     }
   });
-  // ===== FIN NUEVO =====
 }
 
 module.exports = registerGameHandlers;

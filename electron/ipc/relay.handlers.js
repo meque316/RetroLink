@@ -11,6 +11,8 @@ const {
   clearActiveBridge,
 } = require("../bridge/bridge-registry");
 
+const { getRealGameId } = require("../games/index.js"); // <-- Agregar esta línea
+
 function registerRelayHandlers() {
   ipcMain.handle(
     "start-relay",
@@ -30,15 +32,26 @@ function registerRelayHandlers() {
           }
         );
 
-        const bridge =
-          getBridge(gameId);
+        // ===== NUEVO: Normalizar gameId =====
+        let realGameId = getRealGameId(gameId);
+        if (!realGameId) {
+          const normalizedId = gameId.toLowerCase().trim().replace(/\s+/g, ' ');
+          realGameId = getRealGameId(normalizedId);
+        }
+        if (!realGameId) {
+          realGameId = gameId; // Fallback
+        }
+        console.log(`[Handlers] gameId normalizado: "${gameId}" → "${realGameId}"`);
+        // ===== FIN NUEVO =====
 
-        setActiveBridge(bridge);
+        const bridge = getBridge(realGameId);
+
+        setActiveBridge(bridge, realGameId);
 
         return await bridge.startBridge(
           roomId,
           isHost,
-          gameId
+          realGameId
         );
       } catch (error) {
         console.error(
