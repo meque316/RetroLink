@@ -1,190 +1,127 @@
-// electron/bridge/dow_soulstorm/channel-handlers.js
+// electron/bridge/bridge-registry.js
 
-function getDebugStateId(state) {
-  globalThis.__RETROLINK_STATE_IDS__ ||=
-    new WeakMap();
+const path = require("path");
 
-  globalThis.__RETROLINK_STATE_ID_COUNTER__ ||=
-    0;
+const gamesPath = path.join(
+  __dirname,
+  "../games/index.js"
+);
 
-  if (
-    state &&
-    typeof state === "object" &&
-    !globalThis.__RETROLINK_STATE_IDS__.has(state)
-  ) {
-    globalThis.__RETROLINK_STATE_ID_COUNTER__ += 1;
+const { getRealGameId } = require(gamesPath);
 
-    globalThis.__RETROLINK_STATE_IDS__.set(
-      state,
-      globalThis.__RETROLINK_STATE_ID_COUNTER__
-    );
+const bridgeProfiles = {
+  quake3: {
+    label: "Quake III",
+    bridge: require("./profiles/quake3"),
+  },
+
+  cs16: {
+    label: "CS 1.6",
+    bridge: require("./profiles/cs16"),
+  },
+
+  carmageddon2: {
+    label: "Carmageddon 2",
+    bridge: require("./profiles/carmageddon2"),
+  },
+
+  ut99: {
+    label: "UT99",
+    bridge: require("./profiles/ut99"),
+  },
+  
+  aom: {
+    label: "Age of Mythology",
+    bridge: require("./profiles/aom"),
+  },
+
+  dow_soulstorm: {
+    label: "Warhammer 40,000: Dawn of War - Soulstorm",
+    bridge: require("./profiles/dow_soulstorm"),
+  },
+};
+
+const DEFAULT_GAME_ID = "quake3";
+
+let activeBridge = null;
+let activeGameId = null;
+
+function getBridgeProfile(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  if (realGameId && bridgeProfiles[realGameId]) {
+    return {
+      gameId: realGameId,
+      ...bridgeProfiles[realGameId],
+    };
   }
 
-  return state &&
-    typeof state === "object"
-      ? globalThis.__RETROLINK_STATE_IDS__.get(state)
-      : null;
-}
-
-function createChannelHandlers() {
-  let deps = null;
-
-  function initializeChannelHandlers(injectedDeps) {
-    deps = injectedDeps;
-  }
-
-  function handleChannelMessage(
-    message,
-    socketId = null
-  ) {
-    const state = deps.getState();
-
-    const buffer =
-      deps.normalizeMessage(message);
-
-    if (deps.isKeepAlive(buffer)) {
-      return;
-    }
-
-    if (state.isHost) {
-      const client =
-        state.clients.get(socketId);
-
-      client?.transportManager
-        ?.handleWebRTCMessage(buffer);
-
-      return;
-    }
-
-    state.transportManager
-      ?.handleWebRTCMessage(buffer);
-  }
-
-  function onHostChannelOpen(
-    socketId,
-    channel
-  ) {
-    const state = deps.getState();
-
-    const client = deps.ensureHostTransportResources(socketId);
-
-    if (!client) {
-      return;
-    }
-
-    console.log(
-      `[Bridge-DoW] DataChannel host abierto para ${socketId}`
-    );
-
-    client.channel = channel;
-    client.transportManager.useWebRTC(channel);
-
-    if (client.iceTimeoutHandle) {
-      clearTimeout(client.iceTimeoutHandle);
-      client.iceTimeoutHandle = null;
-
-      console.log(
-        `[Bridge-DoW] Watchdog ICE cancelado para ${socketId} (DataChannel abierto).`
-      );
-    }
-
-    if (client.relayTransport) {
-      client.transportManager.disableRelay();
-      client.relayTransport = null;
-    }
-
-    client.switchingToRelay = false;
-
-    deps.startKeepAlive(socketId, channel);
-
-    const connected =
-      [...state.clients.values()].filter(
-        (item) =>
-          item.transportManager?.isWebRTCOpen() ||
-          item.transportManager?.isRelayOpen()
-      ).length;
-
-    deps.sendStatus(
-      `¡${connected} jugador(es) conectado(s)! Listos para jugar.`
-    );
-  }
-
-  function onClientChannelOpen() {
-    const state = deps.getState();
-
-    const stateDebugId = getDebugStateId(state);
-
-    console.log(
-      `[DoW-CLIENT-OPEN 1] DataChannel cliente abierto; puerto=${state.clientPort}`,
-      {
-        stateDebugId,
-        clientPort: state.clientPort,
-        hasChannel: Boolean(state.channel),
-        hasTransportManager: Boolean(state.transportManager),
-        hasUDPTransport: Boolean(state.udpTransport),
-        iceState: state.iceConnectionState,
-      }
-    );
-
-    if (!state.clientPort) {
-      console.error(
-        "[DoW-CLIENT-OPEN ERROR] No se recibió clientPort."
-      );
-
-      deps.sendStatus(
-        "Error: no se recibió el puerto local del cliente."
-      );
-
-      return;
-    }
-
-    deps.ensureClientTransportResources();
-
-    const stateAfter = deps.getState();
-
-    console.log(
-      "[DoW-CLIENT-OPEN 2] Recursos de transporte preparados.",
-      {
-        stateDebugId: getDebugStateId(stateAfter),
-        clientPort: stateAfter.clientPort,
-        hasTransportManager: Boolean(stateAfter.transportManager),
-        hasUDPTransport: Boolean(stateAfter.udpTransport),
-      }
-    );
-
-    state.transportManager.useWebRTC(state.channel);
-
-    if (state.iceTimeoutHandle) {
-      clearTimeout(state.iceTimeoutHandle);
-      state.iceTimeoutHandle = null;
-    }
-
-    if (state.relayTransport) {
-      state.transportManager.disableRelay();
-      state.relayTransport = null;
-    }
-
-    state.switchingToRelay = false;
-
-    deps.startKeepAlive("self", state.channel);
-
-    deps.sendStatus(
-      "¡Conexión P2P establecida! Listos para jugar."
-    );
-
-    console.log(
-      "[DoW-CLIENT-OPEN] Cliente completamente inicializado."
-    );
-  }
+  console.warn(
+    `[Bridge Registry] No existe un perfil para "${gameId}". ` +
+      `Se usará ${bridgeProfiles[DEFAULT_GAME_ID].label}.`
+  );
 
   return {
-    initializeChannelHandlers,
-    handleChannelMessage,
-    onHostChannelOpen,
-    onClientChannelOpen,
+    gameId: DEFAULT_GAME_ID,
+    ...bridgeProfiles[DEFAULT_GAME_ID],
   };
 }
 
+function getBridge(gameId) {
+  const profile = getBridgeProfile(gameId);
+
+  console.log(
+    `[Handlers] Usando bridge para ${profile.label}`
+  );
+
+  return profile.bridge;
+}
+
+function setActiveBridge(bridge, gameId = null) {
+  activeBridge = bridge;
+  activeGameId = gameId
+    ? getRealGameId(gameId)
+    : null;
+}
+
+function getActiveBridge() {
+  return (
+    activeBridge ||
+    bridgeProfiles[DEFAULT_GAME_ID].bridge
+  );
+}
+
+function getActiveGameId() {
+  return activeGameId;
+}
+
+function clearActiveBridge() {
+  activeBridge = null;
+  activeGameId = null;
+}
+
+function hasBridgeProfile(gameId) {
+  const realGameId = getRealGameId(gameId);
+
+  return Boolean(
+    realGameId &&
+      bridgeProfiles[realGameId]
+  );
+}
+
+function getRegisteredBridgeIds() {
+  return Object.keys(bridgeProfiles);
+}
+
 module.exports = {
-  createChannelHandlers,
+  getBridge,
+  getBridgeProfile,
+
+  setActiveBridge,
+  getActiveBridge,
+  getActiveGameId,
+  clearActiveBridge,
+
+  hasBridgeProfile,
+  getRegisteredBridgeIds,
 };
