@@ -5,7 +5,7 @@ const cs16 = require("./cs16");
 const carmageddon2 = require("./carmageddon2");
 const ut99 = require("./ut99");
 const aom = require("./aom");
-const dow_soulstorm = require("./dow_soulstorm"); // <-- Agregar
+const dow_soulstorm = require("./dow_soulstorm");
 
 const gamesRegistry = {
   [quake3.id]: quake3,
@@ -13,7 +13,7 @@ const gamesRegistry = {
   [carmageddon2.id]: carmageddon2,
   [ut99.id]: ut99,
   [aom.id]: aom,
-  [dow_soulstorm.id]: dow_soulstorm, // <-- Agregar
+  [dow_soulstorm.id]: dow_soulstorm,
 };
 
 const GAME_ALIASES = {
@@ -83,18 +83,21 @@ const GAME_ALIASES = {
   dow_soulstorm: "dow_soulstorm",
   "dawn of war": "dow_soulstorm",
   "dawn of war soulstorm": "dow_soulstorm",
-  "warhammer 40000 dawn of war": "dow_soulstorm",
-  "warhammer 40,000 dawn of war": "dow_soulstorm",
-  "warhammer 40000": "dow_soulstorm",
-  "warhammer 40k": "dow_soulstorm",
-  soulstorm: "dow_soulstorm",
-  dow: "dow_soulstorm",
+  "soulstorm": "dow_soulstorm",
+  "dow": "dow_soulstorm",
   "dow soulstorm": "dow_soulstorm",
-  "dawn of war - soulstorm": "dow_soulstorm",
   "warhammer": "dow_soulstorm",
-  wh40k: "dow_soulstorm",
+  "warhammer 40k": "dow_soulstorm",
+  "warhammer 40000": "dow_soulstorm",
+  "warhammer 40000 dawn of war": "dow_soulstorm",
+  "warhammer 40000 dawn of war soulstorm": "dow_soulstorm",
+  "warhammer 40,000 dawn of war": "dow_soulstorm",
+  "warhammer 40,000 dawn of war soulstorm": "dow_soulstorm",
+  "warhammer 40,000: dawn of war": "dow_soulstorm",
+  "warhammer 40,000: dawn of war - soulstorm": "dow_soulstorm",
   "dawnofwar": "dow_soulstorm",
   "dawnofwarsoulstorm": "dow_soulstorm",
+  "wh40k": "dow_soulstorm",
 };
 
 function normalizeGameId(gameId) {
@@ -105,7 +108,12 @@ function normalizeGameId(gameId) {
   return gameId
     .toLowerCase()
     .trim()
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " ")
+    .replace(/,/g, "")        // Eliminar comas
+    .replace(/:/g, "")        // Eliminar dos puntos
+    .replace(/-/g, " ")       // Guiones a espacios
+    .replace(/  +/g, " ")     // Espacios dobles a uno
+    .trim();
 }
 
 function getRealGameId(gameId) {
