@@ -5,6 +5,7 @@ const cs16 = require("./cs16");
 const carmageddon2 = require("./carmageddon2");
 const ut99 = require("./ut99");
 const aom = require("./aom");
+const dow_soulstorm = require("./dow_soulstorm"); // <-- Agregar
 
 const gamesRegistry = {
   [quake3.id]: quake3,
@@ -12,6 +13,7 @@ const gamesRegistry = {
   [carmageddon2.id]: carmageddon2,
   [ut99.id]: ut99,
   [aom.id]: aom,
+  [dow_soulstorm.id]: dow_soulstorm, // <-- Agregar
 };
 
 const GAME_ALIASES = {
@@ -69,13 +71,30 @@ const GAME_ALIASES = {
   "unrealtournament": "ut99",
   "unreal tournament 1999": "ut99",
 
-    // Age of Mythology: Extended Edition
+  // Age of Mythology: Extended Edition
   aom: "aom",
   "age of mythology": "aom",
   "age of mythology extended edition": "aom",
   "age of mythology: extended edition": "aom",
   "age of mythology ee": "aom",
   aomx: "aom",
+
+  // Warhammer 40,000: Dawn of War - Soulstorm
+  dow_soulstorm: "dow_soulstorm",
+  "dawn of war": "dow_soulstorm",
+  "dawn of war soulstorm": "dow_soulstorm",
+  "warhammer 40000 dawn of war": "dow_soulstorm",
+  "warhammer 40,000 dawn of war": "dow_soulstorm",
+  "warhammer 40000": "dow_soulstorm",
+  "warhammer 40k": "dow_soulstorm",
+  soulstorm: "dow_soulstorm",
+  dow: "dow_soulstorm",
+  "dow soulstorm": "dow_soulstorm",
+  "dawn of war - soulstorm": "dow_soulstorm",
+  "warhammer": "dow_soulstorm",
+  wh40k: "dow_soulstorm",
+  "dawnofwar": "dow_soulstorm",
+  "dawnofwarsoulstorm": "dow_soulstorm",
 };
 
 function normalizeGameId(gameId) {

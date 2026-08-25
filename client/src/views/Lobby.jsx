@@ -42,6 +42,11 @@ const SUPPORTED_GAMES = [
     name: "Age of Mythology",
     year: "2002",
   },
+  {
+    id: "dow_soulstorm",  // <-- Agregar
+    name: "Warhammer 40,000: Dawn of War - Soulstorm",
+    year: "2008",
+  },
 ];
 
 const GAMES_IN_DEVELOPMENT = [
@@ -127,6 +132,7 @@ const DEFAULT_OPTIONS_BY_GAME = {
   ut99: DEFAULT_UT99_OPTIONS,
   carmageddon2: {},
   aom: {},
+  dow_soulstorm: {},  // <-- Agregar
 };
 
 const isGameSupported = (gameIdOrName) => {

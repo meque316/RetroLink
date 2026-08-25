@@ -1,7 +1,7 @@
 import CS16Options from "./CS16Options";
 import Quake3Options from "./Quake3Options";
 import UT99Options from "./UT99Options";
-import AOMOptions from "./AOMOptions";  // <-- Agregar
+import DOWOptions from "./DOWOptions";  // <-- Agregar import
 
 export default function GameOptionsPanel({
   gameId,
@@ -43,9 +43,12 @@ export default function GameOptionsPanel({
         />
       );
 
-    case "aom":  // <-- Agregar
+    case "aom":
+      return null; // AoM tiene su propio lobby
+
+    case "dow_soulstorm":  // <-- Agregar case
       return (
-        <AOMOptions
+        <DOWOptions
           {...sharedProps}
         />
       );

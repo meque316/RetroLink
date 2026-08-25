@@ -1,12 +1,11 @@
 import CS16MatchInfo from "./CS16MatchInfo";
 import Quake3MatchInfo from "./Quake3MatchInfo";
 import UT99MatchInfo from "./UT99MatchInfo";
-import AOMMatchInfo from "./AOMMatchInfo";
+import DOWMatchInfo from "./DOWMatchInfo";  // <-- Agregar import
 
 export default function MatchInfoPanel({
   gameId,
   gameOptions,
-  isHost,
 }) {
   if (!gameId || !gameOptions) {
     return null;
@@ -33,13 +32,16 @@ export default function MatchInfoPanel({
           gameOptions={gameOptions}
         />
       );
-    case "aom":  
+
+    case "aom":
+      return null; // AoM tiene su propio lobby
+
+    case "dow_soulstorm":  // <-- Agregar case
       return (
-        <AOMMatchInfo
+        <DOWMatchInfo
           gameOptions={gameOptions}
-          isHost={isHost}
         />
-      );  
+      );
 
     default:
       return null;
