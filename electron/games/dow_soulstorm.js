@@ -11,7 +11,7 @@ module.exports = {
   executable: "Soulstorm.exe",
 
   defaultPort: 6112,
-  clientPortBase: 6113,
+  clientPortBase: 6112,
 
   maxClients: 8,
 

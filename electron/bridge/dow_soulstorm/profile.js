@@ -1,7 +1,7 @@
 // electron/bridge/dow_soulstorm/profile.js
 
 const GAME_PORT = 6112;
-const CLIENT_PORT_BASE = 6113;
+const CLIENT_PORT_BASE = 6112;
 const MAX_CLIENTS = 8;
 
 const DEBUG_UDP =
