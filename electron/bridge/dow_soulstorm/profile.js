@@ -20,4 +20,13 @@ module.exports = {
   clientPortBase: CLIENT_PORT_BASE,
   maxClients: MAX_CLIENTS,
   debugUDP: DEBUG_UDP,
+
+  // Soulstorm no usa un puerto de cliente fijo distinto del de host:
+  // el ejecutable envía su probe de conexión desde un puerto UDP
+  // efímero hacia host:6112, y espera la respuesta en ese mismo
+  // puerto efímero. Sin esto, sendToGame() del lado cliente le
+  // devuelve la respuesta a un puerto fijo (6112, el propio socket
+  // de escucha del bridge) en vez del puerto real de origen del
+  // paquete de Soulstorm, y el handshake nunca cierra.
+  dynamicClientEndpoint: true,
 };
