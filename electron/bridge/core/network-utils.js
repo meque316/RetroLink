@@ -28,14 +28,25 @@ function isPrivate172Address(address) {
   );
 }
 
+// ===== NUEVO: Detectar IP de ENE (rango 10.x.x.x o 26.x.x.x) =====
+function isENEIP(address) {
+  return (
+    address.startsWith("10.") ||
+    address.startsWith("26.") ||
+    address.startsWith("100.") // Tailscale u otras VPN
+  );
+}
+// ===== FIN NUEVO =====
+
 /**
  * Obtiene una dirección IPv4 local utilizable.
  *
  * Prioridad actual:
- * 1. VPN/Radmin/Hamachi: 26.x.x.x, 10.x.x.x o 172.16-31.x.x
- * 2. Red LAN: 192.168.x.x
- * 3. Primera IPv4 externa disponible
- * 4. Loopback
+ * 1. IP de ENE: 10.x.x.x o 26.x.x.x
+ * 2. VPN/Radmin/Hamachi: 26.x.x.x, 10.x.x.x o 172.16-31.x.x
+ * 3. Red LAN: 192.168.x.x
+ * 4. Primera IPv4 externa disponible
+ * 5. Loopback
  */
 function getLocalIP() {
   const interfaces =
@@ -61,6 +72,18 @@ function getLocalIP() {
       }
     }
   }
+
+  // ===== MODIFICADO: Prioridad #1: IP de ENE =====
+  const eneIP =
+    addresses.find(
+      ({ address }) => isENEIP(address)
+    );
+
+  if (eneIP) {
+    console.log("[NetworkUtils] IP de ENE detectada:", eneIP.address);
+    return eneIP.address;
+  }
+  // ===== FIN MODIFICADO =====
 
   const vpn =
     addresses.find(
@@ -197,4 +220,5 @@ function createClientPortAllocator({
 module.exports = {
   getLocalIP,
   createClientPortAllocator,
+  isENEIP,
 };

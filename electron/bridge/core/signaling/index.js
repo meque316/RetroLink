@@ -50,8 +50,9 @@ function configureSignaling({
       );
 
       if (state.isHost) {
-        state.hostIP =
-          getLocalIP();
+        // Obtener IP local (prioriza VPN/ENE)
+        state.hostIP = getLocalIP();
+        console.log("[Core-Signaling] Host IP establecida:", state.hostIP);
       }
 
       signaling.emit(
@@ -86,6 +87,7 @@ function configureSignaling({
       ) {
         state.hostIP =
           hostIP;
+        console.log("[Core-Signaling] Cliente recibió Host IP:", hostIP);
       }
     }
   );
@@ -133,6 +135,17 @@ function configureSignaling({
 
         return;
       }
+
+      // ===== NUEVO: Enviar IP del host al cliente que se está uniendo =====
+      if (state.hostIP) {
+        console.log("[DEBUG-SIGNALING] Enviando Host IP al cliente:", state.hostIP);
+        signaling.emit("webrtc-host-ip", {
+          hostIP: state.hostIP,
+        });
+      } else {
+        console.warn("[DEBUG-SIGNALING] No hay Host IP para enviar al cliente");
+      }
+      // ===== FIN NUEVO =====
 
       const clientPort =
         getNextClientPort(

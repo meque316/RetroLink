@@ -6,7 +6,7 @@ function createBridgeStateGetter({
 }) {
   if (typeof getState !== "function") {
     throw new TypeError(
-      "[BridgeState] getState debe ser una funciÃ³n."
+      "[BridgeState] getState debe ser una función."
     );
   }
 
@@ -91,6 +91,9 @@ function createBridgeStateGetter({
       hostIP:
         state.hostIP,
 
+      hostIPReceived:
+        Boolean(state.hostIP),
+
       iceConnectionState:
         state.iceConnectionState,
 
@@ -128,4 +131,3 @@ function createBridgeStateGetter({
 module.exports = {
   createBridgeStateGetter,
 };
-

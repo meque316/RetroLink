@@ -1,4 +1,4 @@
-// electron/bridge/quake3/state.js
+// electron/bridge/core/state.js
 
 function createInitialState() {
   return {
