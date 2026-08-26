@@ -162,7 +162,7 @@ function Room({ room, leaveRoom }) {
     return () => {
       window.removeEventListener('client-port-update', handlePortUpdate);
     };
-  }, [activeRoom]); // <-- Dependencia correcta
+  }, [activeRoom?.gameId, activeRoom?.game]); // <-- Dependencias primitivas, evita loop por referencia de objeto
   // ===== FIN MODIFICADO =====
 
   // ===== NUEVO: Función Test Game =====
