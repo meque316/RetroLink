@@ -12,7 +12,7 @@ export default function ConnectionInfo({ gameId, clientPort, hostIP }) {
     return null;
   }
 
-  // ===== MODIFICADO: Usar hostIP si está disponible =====
+  // ===== MODIFICADO: Usar hostIP si está disponible, sino 127.0.0.1 =====
   const connectionString = `${hostIP || '127.0.0.1'}:${clientPort}`;
   // ===== FIN MODIFICADO =====
 

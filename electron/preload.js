@@ -49,10 +49,13 @@ contextBridge.exposeInMainWorld(
     getLocalIPs: () =>
       ipcRenderer.invoke("get-local-ips"),
 
-    // ===== MODIFICADO: Agregar parámetro gameId =====
+    // ===== NUEVO: getLocalIP (devuelve una IP utilizable) =====
+    getLocalIP: () =>
+      ipcRenderer.invoke("get-local-ip"),
+    // ===== FIN NUEVO =====
+
     getClientPort: (gameId) =>
       ipcRenderer.invoke("get-client-port", gameId),
-    // ===== FIN MODIFICADO =====
 
     // ============ BRIDGE ============
     startRelay: (roomId, isHost, gameId = null) =>
