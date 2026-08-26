@@ -8,7 +8,7 @@ function registerIPCHandlers() {
   registerGameHandlers();
   registerRelayHandlers();
   registerNetworkHandlers();
-
+  
   console.log("[Handlers] IPC handlers registrados");
 }
 

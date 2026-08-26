@@ -49,8 +49,10 @@ contextBridge.exposeInMainWorld(
     getLocalIPs: () =>
       ipcRenderer.invoke("get-local-ips"),
 
-    getClientPort: () =>
-      ipcRenderer.invoke("get-client-port"),
+    // ===== MODIFICADO: Agregar parámetro gameId =====
+    getClientPort: (gameId) =>
+      ipcRenderer.invoke("get-client-port", gameId),
+    // ===== FIN MODIFICADO =====
 
     // ============ BRIDGE ============
     startRelay: (roomId, isHost, gameId = null) =>
@@ -87,13 +89,11 @@ contextBridge.exposeInMainWorld(
     offClientPortAssigned: () =>
       ipcRenderer.removeAllListeners("client-port-assigned"),
 
-    // ===== NUEVO: Evento para actualizar el puerto del cliente =====
     onClientPortUpdate: (callback) =>
       ipcRenderer.on("client-port-update", (_, port) => callback(port)),
 
     offClientPortUpdate: () =>
       ipcRenderer.removeAllListeners("client-port-update"),
-    // ===== FIN NUEVO =====
 
     onClientConnected: (callback) =>
       ipcRenderer.on("client-connected", (_, data) => callback(data)),
@@ -125,9 +125,8 @@ contextBridge.exposeInMainWorld(
     offGameDetected: () =>
       ipcRenderer.removeAllListeners("game-detected"),
 
-    // ============ NUEVO: TEST GAME ============
+    // ============ TEST GAME ============
     testGame: (roomId) =>
       ipcRenderer.invoke("test-game", roomId),
-    // ============ FIN NUEVO ============
   }
 );

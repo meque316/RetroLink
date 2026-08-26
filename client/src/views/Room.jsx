@@ -101,11 +101,46 @@ function Room({ room, leaveRoom }) {
     handleIPSelect,
   } = useHostIPSelector(isHost);
 
-  // Obtener y escuchar el puerto del cliente
+  // ===== NUEVO: Obtener puerto por defecto según el juego =====
+  const getDefaultPort = (gameId) => {
+    const ports = {
+      dow_soulstorm: 6112,
+      aom: 2300,
+      swgb: 2300,
+      quake3: 27960,
+      cs16: 27015,
+      ut99: 7777,
+      carmageddon2: 2300,
+    };
+    return ports[gameId] || 6112;
+  };
+  // ===== FIN NUEVO =====
+
+  // ===== ACTIVE ROOM - DEFINIR ANTES DE USARLO =====
+  const activeRoom = currentRoom ?? room;
+  const members = activeRoom?.members ?? [];
+  const playerCount = members.length;
+  const readyCount = readyPlayers.length;
+  const isReady = readyPlayers.includes(socket.id);
+
+  const isGameConfigured = Boolean(gamePath);
+  const isConnectionReady = relayStatus === "ok";
+  const everyoneReady =
+    playerCount > 0 && readyCount >= playerCount;
+
+  const canStartMatch =
+    isHost &&
+    isGameConfigured &&
+    isConnectionReady &&
+    everyoneReady;
+
+  // ===== MODIFICADO: Obtener y escuchar el puerto del cliente con gameId =====
+  // AHORA activeRoom YA ESTÁ DEFINIDO
   useEffect(() => {
     const getPort = async () => {
       try {
-        const port = await window.retroLink?.getClientPort?.();
+        const gameId = activeRoom?.gameId || activeRoom?.game;
+        const port = await window.retroLink?.getClientPort?.(gameId);
         if (port) {
           setClientPort(port);
           console.log('[Room] Puerto del cliente:', port);
@@ -127,14 +162,14 @@ function Room({ room, leaveRoom }) {
     return () => {
       window.removeEventListener('client-port-update', handlePortUpdate);
     };
-  }, []);
+  }, [activeRoom]); // <-- Dependencia correcta
+  // ===== FIN MODIFICADO =====
 
   // ===== NUEVO: Función Test Game =====
   const handleTestGame = async () => {
     try {
       console.log('[Room] 🧪 Iniciando Test Game...');
 
-      // Mostrar mensaje en el chat
       setMessages((prev) => [
         ...prev,
         {
@@ -185,23 +220,6 @@ function Room({ room, leaveRoom }) {
   };
   // ===== FIN NUEVO =====
 
-  const activeRoom = currentRoom ?? room;
-  const members = activeRoom?.members ?? [];
-  const playerCount = members.length;
-  const readyCount = readyPlayers.length;
-  const isReady = readyPlayers.includes(socket.id);
-
-  const isGameConfigured = Boolean(gamePath);
-  const isConnectionReady = relayStatus === "ok";
-  const everyoneReady =
-    playerCount > 0 && readyCount >= playerCount;
-
-  const canStartMatch =
-    isHost &&
-    isGameConfigured &&
-    isConnectionReady &&
-    everyoneReady;
-
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({
       behavior: "smooth",
@@ -230,6 +248,8 @@ function Room({ room, leaveRoom }) {
     );
   };
 
+  const defaultPort = getDefaultPort(activeRoom?.gameId || activeRoom?.game);
+
   return (
     <div className="h-full overflow-y-auto bg-[#080c11] text-white">
       <div className="mx-auto flex min-h-full w-full max-w-[1540px] flex-col gap-4 p-4 md:p-6 xl:p-8">
@@ -252,10 +272,13 @@ function Room({ room, leaveRoom }) {
               gameConfigured={isGameConfigured}
             />
 
+            {/* ===== MODIFICADO: Pasar hostIP a ConnectionInfo ===== */}
             <ConnectionInfo
               gameId={activeRoom?.gameId || activeRoom?.game}
-              clientPort={clientPort}
+              clientPort={clientPort || defaultPort}
+              hostIP={isHost ? '127.0.0.1' : hostIPReceived}
             />
+            {/* ===== FIN MODIFICADO ===== */}
 
             <section
               className={`rounded-2xl border px-5 py-4 ${

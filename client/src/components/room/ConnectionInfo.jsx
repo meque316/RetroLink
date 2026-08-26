@@ -3,17 +3,18 @@
 import React, { useState } from 'react';
 import { Copy, Check, Wifi } from 'lucide-react';
 
-export default function ConnectionInfo({ gameId, clientPort }) {
+export default function ConnectionInfo({ gameId, clientPort, hostIP }) {
   const [copied, setCopied] = useState(false);
 
-  // Solo mostrar para juegos que necesitan Direct IP
-  const needsDirectIP = ['aom', 'swgb', 'carmageddon2'].includes(gameId);
+  const needsDirectIP = ['aom', 'swgb', 'carmageddon2', 'dow_soulstorm'].includes(gameId);
 
   if (!needsDirectIP || !clientPort) {
     return null;
   }
 
-  const connectionString = `127.0.0.1:${clientPort}`;
+  // ===== MODIFICADO: Usar hostIP si está disponible =====
+  const connectionString = `${hostIP || '127.0.0.1'}:${clientPort}`;
+  // ===== FIN MODIFICADO =====
 
   const handleCopy = async () => {
     try {
@@ -22,7 +23,6 @@ export default function ConnectionInfo({ gameId, clientPort }) {
       setTimeout(() => setCopied(false), 3000);
     } catch (err) {
       console.error('Error al copiar:', err);
-      // Fallback: seleccionar el texto manualmente
       const textarea = document.createElement('textarea');
       textarea.value = connectionString;
       document.body.appendChild(textarea);
@@ -34,7 +34,6 @@ export default function ConnectionInfo({ gameId, clientPort }) {
     }
   };
 
-  // Instrucciones según el juego
   const getInstructions = (gameId) => {
     switch (gameId) {
       case 'aom':
@@ -61,6 +60,15 @@ export default function ConnectionInfo({ gameId, clientPort }) {
             <li>Pega la IP y presiona Connect</li>
           </ol>
         );
+      case 'dow_soulstorm':
+        return (
+          <ol className="mt-1 list-inside list-decimal text-xs text-zinc-400">
+            <li>Abre Warhammer 40,000: Dawn of War - Soulstorm</li>
+            <li>Multiplayer → Anfitrión (Host) o Unirse (Join)</li>
+            <li>Si eres el host, espera a que los jugadores se unan</li>
+            <li>Si eres jugador, pega la IP y presiona Conectar</li>
+          </ol>
+        );
       default:
         return (
           <p className="mt-1 text-xs text-zinc-400">
@@ -74,6 +82,7 @@ export default function ConnectionInfo({ gameId, clientPort }) {
     aom: 'Age of Mythology',
     swgb: 'Star Wars: Galactic Battlegrounds',
     carmageddon2: 'Carmageddon 2',
+    dow_soulstorm: 'Warhammer 40,000: Dawn of War - Soulstorm',
   };
 
   return (
@@ -91,7 +100,9 @@ export default function ConnectionInfo({ gameId, clientPort }) {
             {connectionString}
           </p>
           <p className="text-xs text-zinc-500">
-            Puerto asignado por RetroLink
+            {hostIP && hostIP !== '127.0.0.1' 
+              ? 'IP del host (ENE)' 
+              : 'Puerto asignado por RetroLink'}
           </p>
         </div>
 
