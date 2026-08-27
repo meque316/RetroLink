@@ -1,7 +1,7 @@
 // electron/bridge/dow_soulstorm/profile.js
 
 const GAME_PORT = 6112;
-const CLIENT_PORT_BASE = 6113;
+const CLIENT_PORT_BASE = 6112;
 const MAX_CLIENTS = 8;
 
 const DEBUG_UDP =
@@ -21,7 +21,6 @@ module.exports = {
   maxClients: MAX_CLIENTS,
   debugUDP: DEBUG_UDP,
 
-  // ===== CLAVE: Dynamic Client Endpoint =====
   // Soulstorm no usa un puerto de cliente fijo distinto del de host:
   // el ejecutable envía su probe de conexión desde un puerto UDP
   // efímero hacia host:6112, y espera la respuesta en ese mismo
@@ -30,5 +29,11 @@ module.exports = {
   // de escucha del bridge) en vez del puerto real de origen del
   // paquete de Soulstorm, y el handshake nunca cierra.
   dynamicClientEndpoint: true,
-  // ===== FIN CLAVE =====
+
+  // Asegura que el proxy UDP del host escuche en el mismo puerto
+  // virtual que usa el cliente (en vez de un puerto efímero random),
+  // incluso cuando la conexión cae directo a Relay sin pasar por
+  // WebRTC (donde channel-handlers.js nunca llega a fijar esta
+  // opción explícitamente).
+  bindToClientPort: true,
 };

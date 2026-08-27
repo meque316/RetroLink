@@ -424,8 +424,28 @@ function createBridge({
       createHostUDPProxy,
       createClientUDPTransport,
 
+      /*
+       * Envuelve ensureHostTransportResources para inyectar el
+       * default de bindToClientPort declarado en el profile del
+       * juego. Esto asegura que el proxy UDP del host respete esa
+       * opción incluso cuando lo invoca un módulo genérico (como
+       * relay.js) que no conoce el profile y por lo tanto no puede
+       * pasarlo explícitamente. Cualquier `options` explícito que
+       * el llamador sí pase (por ejemplo channel-handlers.js) tiene
+       * prioridad sobre este default.
+       */
       ensureHostTransportResources:
-        transport.ensureHostTransportResources,
+        (socketId, options = {}) =>
+          transport.ensureHostTransportResources(
+            socketId,
+            {
+              bindToClientPort:
+                profile.bindToClientPort ??
+                false,
+
+              ...options,
+            }
+          ),
 
       ensureClientTransportResources:
         transport.ensureClientTransportResources,
