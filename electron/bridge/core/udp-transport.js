@@ -239,10 +239,13 @@ function createUDPTransportFactory({
     socket.on(
       "message",
       (message, remoteInfo) => {
+        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Host recibió ${message.length} bytes`,
-          `desde ${remoteInfo.address}:${remoteInfo.port}`
+          `desde ${remoteInfo.address}:${remoteInfo.port}`,
+          `hex: ${message.toString("hex")}`
         );
+        // ===== FIN NUEVO =====
 
         // === NUEVO: DETECTAR NetBIOS ===
         // AoM y otros juegos clásicos usan NetBIOS (puerto 137) para discovery
@@ -340,6 +343,14 @@ function createUDPTransportFactory({
         const buffer =
           normalizeMessage(message);
 
+        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
+        debugLog(
+          `Host enviando al juego ${buffer.length} bytes`,
+          `a ${gameHost}:${gamePort}`,
+          `hex: ${buffer.toString("hex")}`
+        );
+        // ===== FIN NUEVO =====
+
         socket.send(
           buffer,
           0,
@@ -406,7 +417,6 @@ function createUDPTransportFactory({
       },
     };
   }
-  // ===== FIN MODIFICADO =====
 
   function createClientUDPTransport({
     localPort,
@@ -496,10 +506,13 @@ function createUDPTransportFactory({
     socket.on(
       "message",
       (message, remoteInfo) => {
+        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Cliente recibió ${message.length} bytes`,
-          `desde ${remoteInfo.address}:${remoteInfo.port}`
+          `desde ${remoteInfo.address}:${remoteInfo.port}`,
+          `hex: ${message.toString("hex")}`
         );
+        // ===== FIN NUEVO =====
 
         if (dynamicClientEndpoint) {
           const endpointChanged =
@@ -648,6 +661,14 @@ function createUDPTransportFactory({
 
           return false;
         }
+
+        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
+        debugLog(
+          `Cliente enviando al juego ${buffer.length} bytes`,
+          `a ${targetAddress}:${targetPort}`,
+          `hex: ${buffer.toString("hex")}`
+        );
+        // ===== FIN NUEVO =====
 
         socket.send(
           buffer,
