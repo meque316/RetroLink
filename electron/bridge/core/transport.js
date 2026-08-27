@@ -65,7 +65,7 @@ function createTransportModule() {
    */
   function ensureHostTransportResources(
     socketId,
-    options = {} // <-- NUEVO: Aceptar opciones
+    options = {}
   ) {
     console.log(
       "[Transport-Debug] [HOST-STEP 1] entrando a ensureHostTransportResources:",
@@ -210,9 +210,14 @@ function createTransportModule() {
           }
         );
 
-        // ===== NUEVO: Extraer onNetBIOS de options =====
         const onNetBIOS = options.onNetBIOS || null;
-        // ===== FIN NUEVO =====
+
+        // ===== MODIFICADO: Extraer bindToClientPort de options =====
+        // Por defecto, bindear en puerto efímero (como antes)
+        // Solo para juegos que necesitan escuchar en el puerto virtual del cliente
+        // (ej: Soulstorm con dynamicClientEndpoint activado)
+        const bindToClientPort = options.bindToClientPort || false;
+        // ===== FIN MODIFICADO =====
 
         client.udpTransport ||=
           deps.createHostUDPProxy({
@@ -253,8 +258,10 @@ function createTransportModule() {
               }
             },
 
-            // ===== NUEVO: Pasar onNetBIOS =====
             onNetBIOS: onNetBIOS,
+
+            // ===== NUEVO: Pasar bindToClientPort =====
+            bindToClientPort: bindToClientPort,
             // ===== FIN NUEVO =====
           });
 
@@ -262,7 +269,7 @@ function createTransportModule() {
           "[Transport-Debug] [HOST-STEP 4] createHostUDPProxy() retornó sin excepción. " +
             "El bind real es asíncrono; ver logs [UDP-Debug] en udp-transport.js " +
             "para confirmar éxito/fallo del bind.",
-          { socketId }
+          { socketId, bindToClientPort }
         );
       } catch (error) {
         console.error(

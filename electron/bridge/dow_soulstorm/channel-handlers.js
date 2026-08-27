@@ -60,13 +60,18 @@ function createChannelHandlers() {
       ?.handleWebRTCMessage(buffer);
   }
 
+  // ===== MODIFICADO: Pasar bindToClientPort: true =====
   function onHostChannelOpen(
     socketId,
     channel
   ) {
     const state = deps.getState();
 
-    const client = deps.ensureHostTransportResources(socketId);
+    // ===== NUEVO: Pasar bindToClientPort para que el host bindee en el puerto del cliente =====
+    const client = deps.ensureHostTransportResources(socketId, {
+      bindToClientPort: true, // <-- Esto hace que el host escuche en el puerto virtual del cliente (6113)
+    });
+    // ===== FIN NUEVO =====
 
     if (!client) {
       return;
@@ -108,6 +113,7 @@ function createChannelHandlers() {
       `¡${connected} jugador(es) conectado(s)! Listos para jugar.`
     );
   }
+  // ===== FIN MODIFICADO =====
 
   function onClientChannelOpen() {
     const state = deps.getState();

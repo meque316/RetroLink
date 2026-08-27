@@ -195,15 +195,17 @@ function createUDPTransportFactory({
     }
   }
 
+  // ===== MODIFICADO: Añadir parámetro bindToClientPort =====
   function createHostUDPProxy({
     socketId,
     clientPort,
     onGamePacket,
-    onNetBIOS, // <-- NUEVO: Callback para NetBIOS
+    onNetBIOS,
+    bindToClientPort = false, // <-- NUEVO
   }) {
     console.log(
       `[UDP-Debug] [${logPrefix}] [HOST-STEP 2] createHostUDPProxy() invocado:`,
-      { socketId, clientPort, gameHost, gamePort, bindHost }
+      { socketId, clientPort, gameHost, gamePort, bindHost, bindToClientPort }
     );
 
     let socket;
@@ -295,12 +297,14 @@ function createUDPTransportFactory({
       }
     );
 
+    // ===== MODIFICADO: Bindear en clientPort si bindToClientPort es true =====
+    const bindPort = bindToClientPort ? clientPort : 0;
     console.log(
-      `[UDP-Debug] [${logPrefix}] [HOST-STEP 3] intentando bind (puerto efímero) para host ${socketId}...`
+      `[UDP-Debug] [${logPrefix}] [HOST-STEP 3] intentando bind en puerto ${bindPort} para host ${socketId}...`
     );
 
     socket.bind(
-      0,
+      bindPort,
       bindHost,
       () => {
         const address =
@@ -319,6 +323,7 @@ function createUDPTransportFactory({
         );
       }
     );
+    // ===== FIN MODIFICADO =====
 
     return {
       socket,
@@ -401,6 +406,7 @@ function createUDPTransportFactory({
       },
     };
   }
+  // ===== FIN MODIFICADO =====
 
   function createClientUDPTransport({
     localPort,
