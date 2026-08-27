@@ -135,7 +135,6 @@ function Room({ room, leaveRoom }) {
     everyoneReady;
 
   // ===== MODIFICADO: Obtener y escuchar el puerto del cliente con gameId =====
-  // AHORA activeRoom YA ESTÁ DEFINIDO
   useEffect(() => {
     const getPort = async () => {
       try {
@@ -162,8 +161,7 @@ function Room({ room, leaveRoom }) {
     return () => {
       window.removeEventListener('client-port-update', handlePortUpdate);
     };
-  }, [activeRoom?.gameId, activeRoom?.game]); // <-- Dependencias primitivas, evita loop por referencia de objeto
-  // ===== FIN MODIFICADO =====
+  }, [activeRoom?.gameId, activeRoom?.game]);
 
   // ===== NUEVO: Función Test Game =====
   const handleTestGame = async () => {
@@ -272,13 +270,13 @@ function Room({ room, leaveRoom }) {
               gameConfigured={isGameConfigured}
             />
 
-            {/* ===== MODIFICADO: Pasar hostIP a ConnectionInfo ===== */}
+            {/* ===== CORREGIDO: hostIP usa la IP, no el booleano ===== */}
             <ConnectionInfo
               gameId={activeRoom?.gameId || activeRoom?.game}
               clientPort={clientPort || defaultPort}
-              hostIP={isHost ? '127.0.0.1' : hostIPReceived}
+              hostIP={isHost ? '127.0.0.1' : hostIP || '127.0.0.1'}
             />
-            {/* ===== FIN MODIFICADO ===== */}
+            {/* ===== FIN CORREGIDO ===== */}
 
             <section
               className={`rounded-2xl border px-5 py-4 ${
