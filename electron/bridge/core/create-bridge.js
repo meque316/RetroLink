@@ -94,6 +94,10 @@ const {
   createPeerModule,
 } = require("./peer");
 
+// ===== NUEVO: Importar ENE =====
+const { ENE } = require('./ene');
+// ===== FIN NUEVO =====
+
 /**
  * Crea y ensambla un bridge de red completo para un juego.
  *
@@ -329,6 +333,50 @@ function createBridge({
         profile.maxClients,
     });
 
+  // ===== NUEVO: Inicializar ENE si el juego lo requiere =====
+  // Detectamos si el juego necesita TUN (Soulstorm o cualquier perfil que lo declare)
+  const needsTUN = profile.id === 'dow_soulstorm' || profile.requiresTUN === true;
+  let eneInstance = null;
+
+  // Esta función se usará para obtener el estado del bridge desde dentro de ENE
+  const getStateForENE = () => {
+    // Devolvemos el estado actual del bridge para que ENE pueda usarlo
+    // (por ejemplo, para enviar paquetes a través del TransportManager)
+    return state;
+  };
+
+  if (needsTUN) {
+    try {
+      eneInstance = new ENE({
+        name: 'retrolink0',
+        network: '10.0.0.0/24',
+        getState: getStateForENE,
+        onPacket: (packet, metadata) => {
+          // Reenviar paquete desde TUN al TransportManager local
+          // El TransportManager se obtiene del estado del bridge
+          const currentState = getState();
+          if (currentState.transportManager) {
+            // Enviar el paquete a través del TransportManager (WebRTC/Relay)
+            currentState.transportManager.send(packet);
+            console.log(`[ENE] 📦 Paquete reenviado desde TUN a TransportManager: ${packet.length} bytes`);
+          } else {
+            console.warn('[ENE] ⚠️ No hay TransportManager disponible para reenviar paquete');
+          }
+        },
+        onError: (error) => {
+          console.error(`[ENE] ❌ Error: ${error.message}`);
+          sendStatus(`Error en ENE: ${error.message}`);
+        },
+      });
+      console.log(`[${identity.bridgeName}] ✅ ENE inicializado`);
+    } catch (error) {
+      console.error(`[${identity.bridgeName}] ❌ Error inicializando ENE:`, error.message);
+      // No detenemos la creación del bridge, pero enviamos un estado de advertencia
+      sendStatus(`⚠️ No se pudo inicializar ENE: ${error.message}. La conexión podría no funcionar correctamente.`);
+    }
+  }
+  // ===== FIN NUEVO =====
+
   /*
    * El engine mantiene el estado y expone
    * la API pública del bridge.
@@ -344,6 +392,10 @@ function createBridge({
 
   let state =
     engine.getMutableState();
+
+  // ===== NUEVO: Guardar la instancia de ENE en el estado =====
+  state.ene = eneInstance;
+  // ===== FIN NUEVO =====
 
   /*
    * Todos los módulos acceden al estado actual

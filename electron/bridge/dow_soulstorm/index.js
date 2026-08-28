@@ -80,15 +80,27 @@ bridge.resetBridge = function(...args) {
 // ===== NUEVO: Guardar el puerto asignado para usarlo en el mensaje =====
 let assignedClientPort = null;
 
+// ===== NUEVO: Función para obtener la IP virtual del host desde ENE =====
+function getVirtualHostIP() {
+  // La IP virtual del host en la red de ENE siempre es 10.0.0.1
+  // Nota: si el host no es 10.0.0.1 (por ejemplo, si se asigna otra IP), 
+  // habría que obtenerla del estado de ENE. Por ahora la fijamos.
+  return '10.0.0.1';
+}
+// ===== FIN NUEVO =====
+
 // ===== NUEVO: Sobrescribir launchGame para inyectar el puerto dinámico =====
 const originalLaunchGame = bridge.launchGame;
 
 bridge.launchGame = function(gamePath, hostIp, roomId, isHost, gameId, gameOptions, extraArgs) {
-  // Obtener el puerto asignado del bridge
-  const port = bridge.getClientPort ? bridge.getClientPort() : 6113;
+  // Obtener el puerto asignado del bridge (esto es para logs internos)
+  const port = bridge.getClientPort ? bridge.getClientPort() : 6112;
   assignedClientPort = port;
 
-  console.log(`[Bridge-DoW] 🎮 Lanzando juego con puerto: ${port}`);
+  console.log(`[Bridge-DoW] 🎮 Lanzando juego con puerto interno: ${port}`);
+
+  // ===== NUEVO: Usar IP virtual de ENE en lugar de 127.0.0.1 =====
+  const virtualIP = getVirtualHostIP();
 
   if (isHost) {
     console.log(`
@@ -99,7 +111,8 @@ bridge.launchGame = function(gamePath, hostIp, roomId, isHost, gameId, gameOptio
 ║  2. Multiplayer → LAN → Create Game
 ║  3. Espera a que los clientes se conecten
 ║
-║  Los clientes deben conectarse a tu IP: ${hostIp || '192.168.x.x'}:${port}
+║  Los clientes deben conectarse a la IP virtual de ENE:
+║  ${virtualIP}:6112
 ╚═══════════════════════════════════════════════════════════════════`);
   } else {
     console.log(`
@@ -108,10 +121,11 @@ bridge.launchGame = function(gamePath, hostIp, roomId, isHost, gameId, gameOptio
 ║
 ║  1. Abre Soulstorm
 ║  2. Multiplayer → LAN → Direct IP
-║  3. Ingresa: 127.0.0.1:${port}
+║  3. Ingresa: ${virtualIP}:6112
 ║  4. Presiona Connect
 ╚═══════════════════════════════════════════════════════════════════`);
   }
+  // ===== FIN NUEVO =====
 
   // Llamar al launch original
   return originalLaunchGame.call(this, gamePath, hostIp, roomId, isHost, gameId, gameOptions, extraArgs);
@@ -119,7 +133,7 @@ bridge.launchGame = function(gamePath, hostIp, roomId, isHost, gameId, gameOptio
 
 // ===== NUEVO: Obtener el puerto asignado =====
 bridge.getAssignedClientPort = function() {
-  return assignedClientPort || 6113;
+  return assignedClientPort || 6112;
 };
 
 // Exportar el bridge y EME
