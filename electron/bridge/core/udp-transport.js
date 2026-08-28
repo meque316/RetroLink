@@ -40,52 +40,8 @@ function createUDPTransportFactory({
   logPrefix = "Game-UDP",
   gameName = "juego",
 
-  /*
-   * Algunos juegos crean el socket del cliente en un puerto
-   * UDP dinámico distinto del puerto del servidor.
-   *
-   * Cuando esta opción está activada, RetroLink aprende el
-   * endpoint real desde el primer paquete enviado por el juego
-   * y devuelve allí las respuestas recibidas desde la red.
-   */
   dynamicClientEndpoint = false,
-
-  /*
-   * Puerto fijo donde debe escuchar el bridge del cliente.
-   *
-   * Si es null, el bridge escucha en el puerto virtual
-   * asignado por RetroLink mediante señalización.
-   *
-   * Ejemplo:
-   *
-   *   Quake III:
-   *     clientListenPort = null
-   *
-   *   UT99:
-   *     clientListenPort = null
-   *
-   *   Counter-Strike 1.6:
-   *     clientListenPort = 27015
-   */
   clientListenPort = null,
-
-  /*
-   * Puerto UDP fijo donde escucha el ejecutable cliente.
-   *
-   * Si no se declara, utiliza gamePort para conservar el
-   * comportamiento anterior.
-   *
-   * Se ignora cuando dynamicClientEndpoint está activado,
-   * porque en ese caso se utiliza el endpoint aprendido.
-   *
-   * Ejemplo:
-   *
-   *   Quake III:
-   *     configuredClientGamePort = gamePort
-   *
-   *   Counter-Strike 1.6:
-   *     configuredClientGamePort = 27005
-   */
   configuredClientGamePort = gamePort,
 } = {}) {
   console.log(
@@ -195,13 +151,13 @@ function createUDPTransportFactory({
     }
   }
 
-  // ===== MODIFICADO: Añadir parámetro bindToClientPort =====
+  // ===== MODIFICADO: createHostUDPProxy con lógica anti-loop =====
   function createHostUDPProxy({
     socketId,
     clientPort,
     onGamePacket,
     onNetBIOS,
-    bindToClientPort = false, // <-- NUEVO
+    bindToClientPort = false,
   }) {
     console.log(
       `[UDP-Debug] [${logPrefix}] [HOST-STEP 2] createHostUDPProxy() invocado:`,
@@ -239,17 +195,13 @@ function createUDPTransportFactory({
     socket.on(
       "message",
       (message, remoteInfo) => {
-        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Host recibió ${message.length} bytes`,
           `desde ${remoteInfo.address}:${remoteInfo.port}`,
           `hex: ${message.toString("hex")}`
         );
-        // ===== FIN NUEVO =====
 
-        // === NUEVO: DETECTAR NetBIOS ===
-        // AoM y otros juegos clásicos usan NetBIOS (puerto 137) para discovery
-        // También detectamos broadcast y multicast que pueden estar relacionados
+        // === DETECTAR NetBIOS ===
         const isNetBIOS =
           remoteInfo.port === 137 ||
           remoteInfo.port === 138 ||
@@ -265,7 +217,6 @@ function createUDPTransportFactory({
             `desde ${remoteInfo.address}:${remoteInfo.port}`
           );
 
-          // Llamar al callback de NetBIOS para que channel-handlers lo reenvíe
           try {
             onNetBIOS(message, remoteInfo);
           } catch (error) {
@@ -275,13 +226,10 @@ function createUDPTransportFactory({
             );
           }
 
-          // No seguir procesando como paquete normal
-          // (NetBIOS no debe ir al juego, solo a otros clientes)
           return;
         }
-        // === FIN NUEVO ===
+        // === FIN NetBIOS ===
 
-        // Procesar paquete normal (para juegos como Quake III, CS 1.6, UT99, etc.)
         const forwarded =
           safelyForwardGamePacket({
             message,
@@ -300,10 +248,14 @@ function createUDPTransportFactory({
       }
     );
 
-    // ===== MODIFICADO: Bindear en clientPort si bindToClientPort es true =====
-    const bindPort = bindToClientPort ? clientPort : 0;
+    // ===== CORRECCIÓN ANTI-LOOP =====
+    // Si bindToClientPort está activo Y clientPort es igual a gamePort,
+    // usar puerto efímero (0) para evitar el loop de auto-alimentación.
+    const shouldBindToClientPort = bindToClientPort && (clientPort !== gamePort);
+    const bindPort = shouldBindToClientPort ? clientPort : 0;
+
     console.log(
-      `[UDP-Debug] [${logPrefix}] [HOST-STEP 3] intentando bind en puerto ${bindPort} para host ${socketId}...`
+      `[UDP-Debug] [${logPrefix}] [HOST-STEP 3] intentando bind en puerto ${bindPort} para host ${socketId} (clientPort=${clientPort}, gamePort=${gamePort}, bindToClientPort=${bindToClientPort}, shouldBindToClientPort=${shouldBindToClientPort})...`
     );
 
     socket.bind(
@@ -326,7 +278,7 @@ function createUDPTransportFactory({
         );
       }
     );
-    // ===== FIN MODIFICADO =====
+    // ===== FIN CORRECCIÓN =====
 
     return {
       socket,
@@ -343,13 +295,11 @@ function createUDPTransportFactory({
         const buffer =
           normalizeMessage(message);
 
-        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Host enviando al juego ${buffer.length} bytes`,
           `a ${gameHost}:${gamePort}`,
           `hex: ${buffer.toString("hex")}`
         );
-        // ===== FIN NUEVO =====
 
         socket.send(
           buffer,
@@ -417,6 +367,7 @@ function createUDPTransportFactory({
       },
     };
   }
+  // ===== FIN MODIFICADO =====
 
   function createClientUDPTransport({
     localPort,
@@ -459,13 +410,6 @@ function createUDPTransportFactory({
       throw error;
     }
 
-    /*
-     * Puerto virtual asignado por RetroLink.
-     *
-     * En la mayoría de los juegos también es el puerto donde
-     * escucha el bridge, pero algunos perfiles pueden declarar
-     * un clientListenPort fijo.
-     */
     const assignedClientPort =
       localPort;
 
@@ -475,11 +419,6 @@ function createUDPTransportFactory({
 
     let closed = false;
 
-    /*
-     * Endpoint UDP real aprendido desde el ejecutable.
-     *
-     * Sólo se utiliza cuando dynamicClientEndpoint está activo.
-     */
     let learnedClientAddress =
       null;
 
@@ -506,13 +445,11 @@ function createUDPTransportFactory({
     socket.on(
       "message",
       (message, remoteInfo) => {
-        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Cliente recibió ${message.length} bytes`,
           `desde ${remoteInfo.address}:${remoteInfo.port}`,
           `hex: ${message.toString("hex")}`
         );
-        // ===== FIN NUEVO =====
 
         if (dynamicClientEndpoint) {
           const endpointChanged =
@@ -635,13 +572,6 @@ function createUDPTransportFactory({
             ? learnedClientPort
             : configuredClientGamePort;
 
-        /*
-         * Cuando el juego usa un endpoint dinámico no debemos
-         * asumir que escucha en gamePort ni en otro puerto fijo.
-         *
-         * Esperamos a que el ejecutable envíe su primer paquete
-         * para aprender el destino correcto.
-         */
         if (
           dynamicClientEndpoint &&
           (
@@ -662,13 +592,11 @@ function createUDPTransportFactory({
           return false;
         }
 
-        // ===== NUEVO: Debug hex temporal para diagnosticar handshake de Soulstorm =====
         debugLog(
           `Cliente enviando al juego ${buffer.length} bytes`,
           `a ${targetAddress}:${targetPort}`,
           `hex: ${buffer.toString("hex")}`
         );
-        // ===== FIN NUEVO =====
 
         socket.send(
           buffer,

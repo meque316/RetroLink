@@ -35,5 +35,8 @@ module.exports = {
   // incluso cuando la conexión cae directo a Relay sin pasar por
   // WebRTC (donde channel-handlers.js nunca llega a fijar esta
   // opción explícitamente).
+  // NOTA: La lógica anti-loop en udp-transport.js detectará
+  // que clientPort === gamePort y usará puerto efímero automáticamente
+  // para evitar el loop de auto-alimentación.
   bindToClientPort: true,
 };

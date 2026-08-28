@@ -212,12 +212,9 @@ function createTransportModule() {
 
         const onNetBIOS = options.onNetBIOS || null;
 
-        // ===== MODIFICADO: Extraer bindToClientPort de options =====
-        // Por defecto, bindear en puerto efímero (como antes)
-        // Solo para juegos que necesitan escuchar en el puerto virtual del cliente
-        // (ej: Soulstorm con dynamicClientEndpoint activado)
+        // ===== Extraer bindToClientPort de options =====
         const bindToClientPort = options.bindToClientPort || false;
-        // ===== FIN MODIFICADO =====
+        // ===== FIN =====
 
         client.udpTransport ||=
           deps.createHostUDPProxy({
@@ -260,9 +257,9 @@ function createTransportModule() {
 
             onNetBIOS: onNetBIOS,
 
-            // ===== NUEVO: Pasar bindToClientPort =====
+            // ===== Pasar bindToClientPort =====
             bindToClientPort: bindToClientPort,
-            // ===== FIN NUEVO =====
+            // ===== FIN =====
           });
 
         console.log(
