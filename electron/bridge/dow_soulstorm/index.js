@@ -50,7 +50,7 @@ const bridge = createBridge({
   profile: dowProfile,
   sendStatus,
   channels,
-  matchmaking, // <-- Esto permite que el bridge use EME
+  matchmaking,
   connectingStatus: 'Conectando al servidor de señales...',
 });
 
@@ -60,13 +60,11 @@ const originalStartBridge = bridge.startBridge;
 bridge.startBridge = async function(...args) {
   console.log('[Bridge-DoW] 🔄 Activando redirección de GameSpy...');
   
-  // Intentar activar la redirección del hosts file
   const success = enableGameSpyRedirect();
   if (!success) {
     console.warn('[Bridge-DoW] ⚠️ No se pudo activar la redirección de GameSpy. Ejecuta como administrador.');
   }
   
-  // Llamar al start original
   return originalStartBridge.apply(this, args);
 };
 
@@ -75,14 +73,55 @@ const originalResetBridge = bridge.resetBridge;
 
 bridge.resetBridge = function(...args) {
   console.log('[Bridge-DoW] 🔄 Desactivando redirección de GameSpy...');
-  
-  // Intentar desactivar la redirección del hosts file
   disableGameSpyRedirect();
-  
-  // Llamar al reset original
   return originalResetBridge.apply(this, args);
 };
 
-// Exportar el bridge y EME (para acceso externo)
+// ===== NUEVO: Guardar el puerto asignado para usarlo en el mensaje =====
+let assignedClientPort = null;
+
+// ===== NUEVO: Sobrescribir launchGame para inyectar el puerto dinámico =====
+const originalLaunchGame = bridge.launchGame;
+
+bridge.launchGame = function(gamePath, hostIp, roomId, isHost, gameId, gameOptions, extraArgs) {
+  // Obtener el puerto asignado del bridge
+  const port = bridge.getClientPort ? bridge.getClientPort() : 6113;
+  assignedClientPort = port;
+
+  console.log(`[Bridge-DoW] 🎮 Lanzando juego con puerto: ${port}`);
+
+  if (isHost) {
+    console.log(`
+╔═══════════════════════════════════════════════════════════════════
+║  🎮 HOST: Warhammer 40,000: Dawn of War - Soulstorm
+║
+║  1. Abre Soulstorm
+║  2. Multiplayer → LAN → Create Game
+║  3. Espera a que los clientes se conecten
+║
+║  Los clientes deben conectarse a tu IP: ${hostIp || '192.168.x.x'}:${port}
+╚═══════════════════════════════════════════════════════════════════`);
+  } else {
+    console.log(`
+╔═══════════════════════════════════════════════════════════════════
+║  🎮 CLIENTE: Warhammer 40,000: Dawn of War - Soulstorm
+║
+║  1. Abre Soulstorm
+║  2. Multiplayer → LAN → Direct IP
+║  3. Ingresa: 127.0.0.1:${port}
+║  4. Presiona Connect
+╚═══════════════════════════════════════════════════════════════════`);
+  }
+
+  // Llamar al launch original
+  return originalLaunchGame.call(this, gamePath, hostIp, roomId, isHost, gameId, gameOptions, extraArgs);
+};
+
+// ===== NUEVO: Obtener el puerto asignado =====
+bridge.getAssignedClientPort = function() {
+  return assignedClientPort || 6113;
+};
+
+// Exportar el bridge y EME
 module.exports = bridge;
 module.exports.matchmaking = matchmaking;
